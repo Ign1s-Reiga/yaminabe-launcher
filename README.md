@@ -5,7 +5,7 @@
 
 ## Features to implement
 
-[] Create a modpack that consists of random mods.
-[] Configure number of mods that will be included in the modpack.
-[] Filter mods by categories. (e.g. API and Library, Technology, Magic, etc.)
-[] Create instance and launch it.
+- [ ] Create a modpack that consists of random mods.
+- [ ] Configure number of mods that will be included in the modpack.
+- [ ] Filter mods by categories. (e.g. API and Library, Technology, Magic, etc.)
+- [ ] Create instance and launch it.

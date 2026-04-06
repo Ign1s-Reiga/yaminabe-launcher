@@ -3,6 +3,20 @@ target = "./index.html"
 
 [serve]
 addresses = ["127.0.0.1"]
-port = 1420
+port = 1421
 open = false
 ws_protocol = "ws"
+
+[watch]
+ignore = ["assets/bundle.css"]
+
+[[hooks]]
+stage = "pre_build"
+command = "cargo"
+command_arguments = [
+    "run",
+    "--manifest-path", "../../bamboo-css/bamboo-css-collector/Cargo.toml",
+    "--quiet",
+    "--",
+    "-f", "../target/styled-fragments"
+]
