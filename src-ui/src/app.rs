@@ -1,25 +1,23 @@
-use std::fmt::{Display, Formatter};
+use crate::components::{
+    install_sidebar::{InstallJob, InstallSidebar},
+};
+use crate::pages::{
+    home::HomePage,
+    library::LibraryPage,
+    search::SearchPage,
+    settings::SettingsPage,
+    instance_detail::InstanceDetailPage,
+    play::PlayPage,
+};
+use crate::ipc;
 use bamboo_css_macro::{css, styled};
-use leptos::{component, IntoView};
-use leptos::control_flow::Show;
 use leptos::prelude::*;
-use phosphor_leptos::{BOOKS, GEAR_SIX, HOUSE, MAGNIFYING_GLASS};
-use serde::{Deserialize, Serialize};
-use wasm_bindgen::prelude::*;
-use crate::components::navigation::NavigationButton;
-use crate::components::page::{HomePage, SettingsPage};
-
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "core"])]
-    async fn invoke(cmd: &str, args: JsValue) -> JsValue;
-}
-
-#[derive(Serialize, Deserialize)]
-struct GreetArgs<'a> {
-    name: &'a str,
-}
-
+use leptos::{component, IntoView, view};
+use leptos_router::components::{Route, Router, Routes};
+use leptos_router::hooks::{use_location, use_navigate};
+use leptos_router::path;
+use phosphor_leptos::{Icon, IconData, IconWeight, BOOKS, GEAR_SIX, HOUSE, MAGNIFYING_GLASS};
+use yaminabe_launcher_shared::datatypes::InstanceMeta;
 
 styled!(MainViewWrapper, div, {
     height: 100vh;
@@ -45,74 +43,99 @@ styled!(MainViewNavbar, nav, {
 
 #[component]
 pub fn App() -> impl IntoView {
-    let (current_nav, set_current_nav) = signal(Navigation::Home);
+    let instances: RwSignal<Vec<InstanceMeta>> = RwSignal::new(vec![]);
+    let refresh: RwSignal<u32> = RwSignal::new(0);
+
+    Effect::new(move |_| {
+        let _ = refresh.get();
+        leptos::task::spawn_local(async move {
+            if let Ok(list) = ipc::call_noargs::<Vec<InstanceMeta>>("get_instances").await {
+                instances.set(list);
+            }
+        });
+    });
+
+    provide_context(instances);
+    provide_context(refresh);
+
+    let install_jobs: RwSignal<Vec<InstallJob>> = RwSignal::new(vec![]);
+    let sidebar_open: RwSignal<bool> = RwSignal::new(false);
+
+    ipc::on_event::<InstallJob, _>("instance-install-progress", move |job| {
+        if !job.done && job.error.is_none() {
+            sidebar_open.set(true);
+        }
+        install_jobs.update(|list| {
+            if let Some(existing) = list.iter_mut().find(|j| j.id == job.id) {
+                *existing = job;
+            } else {
+                list.push(job);
+            }
+        });
+    });
 
     view! {
-        <MainViewWrapper>
-            <MainView>
-                <Show when=move || current_nav.get() == Navigation::Home>
-                    <h1>"# Home"</h1>
-                    <HomePage />
-                </Show>
-                <Show when=move || current_nav.get() == Navigation::Library>
-                    <h1>"# Library"</h1>
-                    <h2>Library Page</h2>
-                </Show>
-                <Show when=move || current_nav.get() == Navigation::Search>
-                    <h1>"# Search"</h1>
-                    <h2>Search Page</h2>
-                </Show>
-                <Show when=move || current_nav.get() == Navigation::Settings>
-                    <h1>"# Settings"</h1>
-                    <SettingsPage />
-                </Show>
-            </MainView>
-            // TODO: Add PLAY button in center of the navbar. Instantly launch recent played profile.
-            <MainViewNavbar>
-                <NavigationButton
-                    nav=Navigation::Library
-                    icon=BOOKS
-                    current_nav=current_nav
-                    on:click=move |_| set_current_nav.set(Navigation::Library)
-                />
-                <NavigationButton
-                    nav=Navigation::Home
-                    icon=HOUSE
-                    current_nav=current_nav
-                    on:click=move |_| set_current_nav.set(Navigation::Home)
-                />
-                <NavigationButton
-                    nav=Navigation::Search
-                    icon=MAGNIFYING_GLASS
-                    current_nav=current_nav
-                    on:click=move |_| set_current_nav.set(Navigation::Search)
-                />
-                <NavigationButton
-                    nav=Navigation::Settings
-                    icon=GEAR_SIX
-                    current_nav=current_nav
-                    on:click=move |_| set_current_nav.set(Navigation::Settings)
-                />
-            </MainViewNavbar>
-        </MainViewWrapper>
+        <Router>
+            <MainViewWrapper>
+                <MainView>
+                    <Routes fallback=|| "Page not found.">
+                        <Route path=path!("") view=HomePage />
+                        <Route path=path!("library") view=move || view! {
+                            <LibraryPage />
+                            <InstallSidebar jobs=install_jobs open=sidebar_open />
+                        }/>
+                        <Route path=path!("library/:id") view=move || view! {
+                            <InstanceDetailPage />
+                            <InstallSidebar jobs=install_jobs open=sidebar_open />
+                        }/>
+                        <Route path=path!("library/:id/play") view=PlayPage />
+                        <Route path=path!("search") view=SearchPage />
+                        <Route path=path!("settings") view=SettingsPage />
+                    </Routes>
+                </MainView>
+                // TODO: Add PLAY button in center of the navbar.
+                <MainViewNavbar>
+                    <NavigationButton href="/library" icon=BOOKS label="Library"/>
+                    <NavigationButton href="/" icon=HOUSE label="Home"/>
+                    <NavigationButton href="/search" icon=MAGNIFYING_GLASS label="Search"/>
+                    <NavigationButton href="/settings" icon=GEAR_SIX label="Settings"/>
+                </MainViewNavbar>
+            </MainViewWrapper>
+        </Router>
     }
 }
 
-#[derive(Clone, PartialEq)]
-pub enum Navigation {
-    Home,
-    Library,
-    Search,
-    Settings,
-}
+#[component]
+pub fn NavigationButton(
+    href: &'static str,
+    icon: IconData,
+    label: &'static str,
+) -> impl IntoView {
+    let location = use_location();
+    let navigate = use_navigate();
+    let is_active = move || location.pathname.get() == href;
 
-impl Display for Navigation {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Navigation::Home => write!(f, "Home"),
-            Navigation::Library => write!(f, "Library"),
-            Navigation::Search => write!(f, "Search"),
-            Navigation::Settings => write!(f, "Settings"),
-        }
+    let container_class = css! {
+        padding: 8px 6px 12px;
+        border-radius: 6px;
+        width: 96px;
+        cursor: pointer;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        transition: background-color 0.3s ease;
+        &:hover { background-color: var(--secondary-color); }
+    };
+
+    view! {
+        <div class=container_class on:click=move |_| { navigate(href, Default::default()); }>
+            <Show
+                when=is_active
+                fallback=move || view! { <Icon icon=icon size="32px" weight=IconWeight::Regular /> }
+            >
+                <Icon icon=icon size="32px" weight=IconWeight::Fill />
+            </Show>
+            <p class=css! { margin: 0; font-weight: 300; }>{label}</p>
+        </div>
     }
 }

@@ -9,3 +9,8 @@
 - [ ] Configure number of mods that will be included in the modpack.
 - [ ] Filter mods by categories. (e.g. API and Library, Technology, Magic, etc.)
 - [ ] Create instance and launch it.
+
+## License
+
+This software/program is distributed under MIT License.
+see [License](LICENSE) file.

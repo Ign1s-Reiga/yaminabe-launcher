@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["src-tauri", "src-ui"]
+members = ["src-shared","src-tauri", "src-ui"]
 
 [workspace.package]
 edition = "2024"
@@ -9,6 +9,7 @@ version = "0.1.0"
 
 [workspace.dependencies]
 leptos = { version = "0.8", features = ["csr"] }
+leptos_router = "0.8"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
@@ -16,9 +17,8 @@ serde = { version = "1", features = ["derive"] }
 serde-wasm-bindgen = "0.6"
 console_error_panic_hook = "0.1.7"
 phosphor-leptos = "0.8"
-styled = "0.3"
-stylist = "0.13"
 uuid = { version = "1", features = ["v4", "js"] }
+yaminabe-launcher-shared = { path = "src-shared" }
 
 [profile.release]
 codegen-units = 1

@@ -1,0 +1,8 @@
+[package]
+name = "yaminabe-launcher-shared"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
