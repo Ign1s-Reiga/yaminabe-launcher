@@ -1,22 +1,25 @@
 mod commands;
+mod install_task;
+mod http_utils;
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
 use tauri::{Emitter, Manager};
-use yaminabe_launcher_shared::datatypes::{AppSettings, InstanceMeta};
-use yaminabe_launcher_shared::datatypes::JavaInstall;
+use yaminabe_launcher_shared::datatypes::{AppSettings, JavaInstall};
+use yaminabe_launcher_shared::error::InitializationError;
 use crate::commands::curseforge::{
-    fetch_minecraft_modloaders, fetch_minecraft_versions,
-    get_minecraft_modloaders, get_minecraft_versions,
-    get_modpack_files, install_curseforge_modpack, McModloader, McVersion,
+    get_modpack_files, install_curseforge_modpack,
     search_curseforge_modpacks,
+};
+use crate::commands::minecraft::{
+    fetch_minecraft_versions, get_minecraft_versions, get_modloader_versions, VersionManifest,
 };
 use crate::commands::instance::{create_instance, download_mods, get_instances, save_instance_settings};
 use crate::commands::launch::launch_instance;
 use crate::commands::java::{detect_java_installs, get_java_installs};
-use crate::commands::settings::{check_paths_exist, get_instance_subfolders, get_settings, open_folder, open_instance_subfolder, pick_folder, save_settings};
+use crate::commands::settings::{get_instance_subfolders, get_settings, open_instance_subfolder, pick_folder, save_settings};
 
 // ── Shared types ─────────────────────────────────────────────────────────────
 
@@ -42,15 +45,41 @@ pub fn emit_progress(app: &tauri::AppHandle, id: &str, name: &str, step: &str, d
 
 pub struct AppState {
     pub settings: Mutex<AppSettings>,
-    pub settings_path: PathBuf,
-    pub versions_dir: PathBuf,
-    pub assets_dir: PathBuf,
-    pub libraries_dir: PathBuf,
-    pub runtimes_dir: PathBuf,
     pub http_client: reqwest::Client,
-    pub mc_versions: Mutex<Vec<McVersion>>,
-    pub mc_modloaders: Mutex<Vec<McModloader>>,
+    pub mc_versions: OnceLock<VersionManifest>,
     pub java_installs: Mutex<Vec<JavaInstall>>,
+}
+
+static TEMP_DIR: OnceLock<PathBuf> = OnceLock::new();
+static SETTINGS_PATH: OnceLock<PathBuf> = OnceLock::new();
+static BIN_DIR: OnceLock<PathBuf> = OnceLock::new();
+static VERSIONS_DIR: OnceLock<PathBuf> = OnceLock::new();
+static ASSETS_DIR: OnceLock<PathBuf> = OnceLock::new();
+static LIBRARIES_DIR: OnceLock<PathBuf> = OnceLock::new();
+static RUNTIMES_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+fn settings_path() -> &'static PathBuf { SETTINGS_PATH.get().unwrap() }
+pub fn temp_dir() -> &'static PathBuf { TEMP_DIR.get().unwrap() }
+pub fn bin_dir() -> &'static PathBuf { BIN_DIR.get().unwrap() }
+pub fn versions_dir() -> &'static PathBuf { VERSIONS_DIR.get().unwrap() }
+pub fn assets_dir() -> &'static PathBuf { ASSETS_DIR.get().unwrap() }
+pub fn libraries_dir() -> &'static PathBuf { LIBRARIES_DIR.get().unwrap() }
+pub fn runtimes_dir() -> &'static PathBuf { RUNTIMES_DIR.get().unwrap() }
+
+fn init_dirs(app: &tauri::App) -> Result<(), InitializationError> {
+    let app_dir = app.path().local_data_dir().map_err(|e| InitializationError::PathResolution(e.to_string()))?.join(".yaminabe");
+    let bin_dir = app_dir.join("bin");
+    BIN_DIR.set(bin_dir.clone())?;
+    TEMP_DIR.set(app.path().temp_dir().map_err(|e| InitializationError::PathResolution(e.to_string()))?)?;
+    VERSIONS_DIR.set(bin_dir.clone().join("versions"))?;
+    LIBRARIES_DIR.set(bin_dir.clone().join("libraries"))?;
+    ASSETS_DIR.set(bin_dir.clone().join("assets"))?;
+    RUNTIMES_DIR.set(bin_dir.join("runtimes"))?;
+    SETTINGS_PATH.set(app_dir.join("settings.json"))?;
+    for p in [versions_dir(), libraries_dir(), assets_dir(), runtimes_dir()] {
+        std::fs::create_dir_all(p)?;
+    }
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -65,55 +94,32 @@ pub fn run() {
             .build()
         )
         .setup(|app| {
-            // Create directory for app data
-            let app_dir = app.path().local_data_dir()?.join(".yaminabe");
-            let versions_dir  = Path::new(&app_dir).join("bin").join("versions");
-            let libraries_dir = Path::new(&app_dir).join("bin").join("libraries");
-            let assets_dir    = Path::new(&app_dir).join("bin").join("assets");
-            let runtimes_dir  = Path::new(&app_dir).join("bin").join("runtimes");
-            for p in [&versions_dir, &libraries_dir, &assets_dir, &runtimes_dir] {
-                std::fs::create_dir_all(p)?;
-            }
+            init_dirs(app)?;
 
             // Initialize and load AppSettings
-            let settings_path = app_dir.join("settings.json");
-            let mut settings: AppSettings = std::fs::read_to_string(&settings_path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default();
+            let settings_text = std::fs::read_to_string(settings_path())?;
+            let mut settings: AppSettings = serde_json::from_str(&settings_text)?;
             if settings.instance_install_dir.is_empty() {
-                settings.instance_install_dir = app_dir.join("instances")
+                settings.instance_install_dir = app.path().local_data_dir()?.join(".yaminabe").join("instances")
                     .to_string_lossy()
                     .into_owned();
             }
-
             std::fs::create_dir_all(Path::new(&settings.instance_install_dir))?;
 
             let java_installs = detect_java_installs();
 
             app.manage(AppState {
                 settings: Mutex::new(settings),
-                settings_path,
-                versions_dir,
-                assets_dir,
-                libraries_dir,
-                runtimes_dir,
                 http_client: reqwest::Client::new(),
-                mc_versions: Mutex::new(Vec::new()),
-                mc_modloaders: Mutex::new(Vec::new()),
+                mc_versions: OnceLock::new(),
                 java_installs: Mutex::new(java_installs),
             });
 
             let handle = app.app_handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state = handle.state::<AppState>();
-                let api_key = state.settings.lock().unwrap().curseforge_api_key.clone();
-                if api_key.is_empty() { return; }
-                if let Ok(versions) = fetch_minecraft_versions(&api_key, &state.http_client).await {
-                    *state.mc_versions.lock().unwrap() = versions;
-                }
-                if let Ok(loaders) = fetch_minecraft_modloaders(&api_key, &state.http_client).await {
-                    *state.mc_modloaders.lock().unwrap() = loaders;
+                if let Ok(manifest) = fetch_minecraft_versions(versions_dir(), &state.http_client).await {
+                    let _ = state.mc_versions.set(manifest);
                 }
             });
 
@@ -123,8 +129,6 @@ pub fn run() {
             get_settings,
             save_settings,
             pick_folder,
-            open_folder,
-            check_paths_exist,
             get_instance_subfolders,
             open_instance_subfolder,
             launch_instance,
@@ -136,7 +140,7 @@ pub fn run() {
             get_instances,
             save_instance_settings,
             get_minecraft_versions,
-            get_minecraft_modloaders,
+            get_modloader_versions,
             get_java_installs,
         ])
         .run(tauri::generate_context!())

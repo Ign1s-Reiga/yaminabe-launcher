@@ -1,47 +1,7 @@
-use leptos::web_sys;
-use serde::{Deserialize, Serialize};
-
 use crate::ipc;
-
-// ── Shared data types (mirrored from backend) ─────────────────────────────────
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-pub struct ModpackInfo {
-    pub id: u32,
-    pub name: String,
-    pub summary: String,
-    pub logo_url: Option<String>,
-    pub download_count: u64,
-    pub game_versions: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-pub struct ModpackVersion {
-    pub id: u32,
-    pub mod_id: u32,
-    pub release_type: String,
-    pub file_name: String,
-    pub download_url: String,
-    pub display_name: String,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-pub struct McVersion {
-    pub id: u32,
-    #[serde(rename = "versionString")]
-    pub version_string: String,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-pub struct McModloader {
-    pub name: String,
-    #[serde(rename = "gameVersion")]
-    pub game_version: String,
-    #[serde(rename = "type")]
-    pub loader_type: u32,
-    pub latest: bool,
-    pub recommended: bool,
-}
+use leptos::web_sys;
+use serde::Serialize;
+use yaminabe_launcher_shared::datatypes::{GameVersion, LoaderVersion, ModpackSearchResults, ModpackVersionFile};
 
 // ── IPC ───────────────────────────────────────────────────────────────────────
 
@@ -57,11 +17,11 @@ struct GetFilesArgs {
     mod_id: u32,
 }
 
-pub async fn call_search(query: String, index: u32) -> Result<Vec<ModpackInfo>, String> {
+pub async fn call_search(query: String, index: u32) -> Result<ModpackSearchResults, String> {
     ipc::call("search_curseforge_modpacks", SearchArgs { query, index }).await
 }
 
-pub async fn call_get_files(mod_id: u32) -> Result<Vec<ModpackVersion>, String> {
+pub async fn call_get_files(mod_id: u32) -> Result<Vec<ModpackVersionFile>, String> {
     ipc::call("get_modpack_files", GetFilesArgs { mod_id }).await
 }
 
@@ -110,19 +70,26 @@ pub async fn call_download_mods(
     ipc::call("download_mods", DownloadModsArgs { file_ids, instance_location, source }).await
 }
 
-pub async fn call_get_minecraft_versions() -> Result<Vec<McVersion>, String> {
+pub async fn call_get_minecraft_versions() -> Result<Vec<GameVersion>, String> {
     ipc::call_noargs("get_minecraft_versions").await
 }
 
-pub async fn call_get_minecraft_modloaders() -> Result<Vec<McModloader>, String> {
-    ipc::call_noargs("get_minecraft_modloaders").await
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LoaderVersionsArgs<'a> {
+    kind: &'a str,
+    mc_version: &'a str,
 }
 
-pub fn fmt_downloads(n: u64) -> String {
+pub async fn call_get_modloader_versions(kind: &str, mc_version: &str) -> Result<Vec<LoaderVersion>, String> {
+    ipc::call("get_modloader_versions", LoaderVersionsArgs { kind, mc_version }).await
+}
+
+pub fn fmt_downloads(n: u32) -> String {
     if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
+        format!("{:.1}M", n as f32 / 1_000_000.0)
     } else if n >= 1_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
+        format!("{:.1}K", n as f32 / 1_000.0)
     } else {
         n.to_string()
     }

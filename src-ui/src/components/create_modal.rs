@@ -1,43 +1,21 @@
-use std::str::FromStr;
+use crate::components::ui::*;
+use crate::curseforge::{call_get_minecraft_versions, call_get_modloader_versions};
+use crate::ipc;
 use bamboo_css_macro::{css, cx};
 use leptos::control_flow::Show;
 use leptos::prelude::*;
-use leptos::{component, IntoView, view, web_sys};
+use leptos::{component, view, IntoView};
 use serde::Serialize;
-use wasm_bindgen::JsCast;
-use yaminabe_launcher_shared::datatypes::{AppSettings, InstanceMeta, ModTool};
-use crate::components::ui::*;
-use crate::curseforge::{call_get_minecraft_modloaders, call_get_minecraft_versions};
-use crate::ipc;
+use std::str::FromStr;
+use log::info;
+use yaminabe_launcher_shared::datatypes::{InstanceMeta, ModLoader, ReleaseType};
 
 // ── IPC arg type ──────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateInstanceArgs {
-    instance_name:     String,
-    instance_location: String,
-    mc_version:        String,
-    mod_tool:          ModTool,
-    mod_tool_version:  Option<String>,
-}
-
-impl CreateInstanceArgs {
-    fn from_form_data(data: &web_sys::FormData, instance_location: String) -> Option<Self> {
-        if instance_location.trim().is_empty() { return None; }
-        let get = |key: &str| data.get(key).as_string().unwrap_or_default();
-        let instance_name = get("instance_name");
-        let mc_version    = get("mc_version");
-        if instance_name.trim().is_empty() || mc_version.trim().is_empty() { return None; }
-        let mod_tool = ModTool::from_str(get("mod_tool").as_str()).unwrap_or(ModTool::Vanilla);
-        let mod_tool_version_str = get("mod_tool_version");
-        let mod_tool_version = if matches!(mod_tool, ModTool::Vanilla) || mod_tool_version_str.trim().is_empty() {
-            None
-        } else {
-            Some(mod_tool_version_str)
-        };
-        Some(Self { instance_name, instance_location, mc_version, mod_tool, mod_tool_version })
-    }
+    instance_meta: InstanceMeta,
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -55,25 +33,79 @@ pub fn CreateInstanceModal(
     let selected_method: RwSignal<Option<u8>> = RwSignal::new(None);
     let show_cancel_dialog = RwSignal::new(false);
 
-    let app_settings = LocalResource::new(|| async move {
-        ipc::call_noargs::<AppSettings>("get_settings").await.unwrap_or_default()
-    });
+    // ── form state ─────────────────────────────────────────────────────────────
+    let instance_name: RwSignal<String> = RwSignal::new(String::new());
+    let category: RwSignal<String> = RwSignal::new(String::new());
+    let selected_mcver: RwSignal<String> = RwSignal::new(String::new());
+    let selected_modloader: RwSignal<String> = RwSignal::new(String::from("vanilla"));
+    let selected_modloader_version: RwSignal<String> = RwSignal::new(String::new());
+
+    // ── version-type filters ───────────────────────────────────────────────────
+    let include_snapshot: RwSignal<bool> = RwSignal::new(false);
+    let include_beta: RwSignal<bool> = RwSignal::new(false);
+    let include_alpha: RwSignal<bool> = RwSignal::new(false);
+
     let mc_versions = LocalResource::new(|| async move {
         call_get_minecraft_versions().await.unwrap_or_default()
     });
-    let mc_modloaders = LocalResource::new(|| async move {
-        call_get_minecraft_modloaders().await.unwrap_or_default()
+
+    // ── lazy modloader fetch (kicked off on entering step 3) ──────────────────
+    // The backend filters by (kind, mc_version), so we re-fetch whenever those change
+    // while the user is on step 3 and has selected a non-vanilla loader.
+    let loader_versions = LocalResource::new(move || {
+        let step = modal_step.get();
+        let kind = selected_modloader.get();
+        let mcver = selected_mcver.get();
+        async move {
+            if step != 3 || kind == "vanilla" || mcver.is_empty() {
+                return Vec::new();
+            }
+            call_get_modloader_versions(&kind, &mcver).await.unwrap_or_default()
+        }
     });
 
-    let selected_modtool: RwSignal<String> = RwSignal::new(String::from("vanilla"));
-    let selected_mcver: RwSignal<String> = RwSignal::new(String::new());
+    let filtered_versions = Memo::new(move |_| {
+        let snapshot = include_snapshot.get();
+        let beta = include_beta.get();
+        let alpha = include_alpha.get();
+        mc_versions.get().unwrap_or_default()
+            .into_iter()
+            .filter(|v| match v.release_type {
+                ReleaseType::Release => true,
+                ReleaseType::Snapshot => snapshot,
+                ReleaseType::Beta => beta,
+                ReleaseType::Alpha => alpha,
+            })
+            .collect::<Vec<_>>()
+    });
 
+    // Keep `selected_mcver` valid as filters change.
     Effect::new(move |_| {
-        if let Some(versions) = mc_versions.get() {
-            if selected_mcver.get_untracked().is_empty() {
-                if let Some(first) = versions.first() {
-                    selected_mcver.set(first.version_string.clone());
-                }
+        let versions = filtered_versions.get();
+        let current = selected_mcver.get_untracked();
+        if !versions.iter().any(|v| v.version_string == current) {
+            if let Some(first) = versions.first() {
+                selected_mcver.set(first.version_string.clone());
+            } else {
+                selected_mcver.set(String::new());
+            }
+        }
+    });
+
+    // Keep `selected_modloader_version` valid as the loader list changes.
+    Effect::new(move |_| {
+        let kind = selected_modloader.get();
+        if kind == "vanilla" {
+            selected_modloader_version.set(String::new());
+            return;
+        }
+        let candidates = loader_versions.get().unwrap_or_default();
+        let current = selected_modloader_version.get_untracked();
+        if !candidates.iter().any(|m| m.version == current) {
+            if let Some(first) = candidates.first() {
+                selected_modloader_version.set(first.version.clone());
+            } else {
+                selected_modloader_version.set(String::new());
             }
         }
     });
@@ -81,47 +113,10 @@ pub fn CreateInstanceModal(
     let reset = move || {
         modal_step.set(1);
         selected_method.set(None);
-    };
-
-    // ── submit handler: convert FormData to CreateInstanceArgs and call IPC ────
-    let on_submit = move |ev: leptos::ev::SubmitEvent| {
-        ev.prevent_default();
-
-        let Some(form) = ev.target()
-            .and_then(|t| t.dyn_into::<web_sys::HtmlFormElement>().ok())
-        else { return };
-
-        let Ok(data) = web_sys::FormData::new_with_form(&form) else { return };
-
-        let instance_location = app_settings.get()
-            .map(|s| s.instance_install_dir)
-            .unwrap_or_default();
-        let Some(args) = CreateInstanceArgs::from_form_data(&data, instance_location) else { return };
-
-        let stub = InstanceMeta {
-            id: String::new(),
-            name: args.instance_name.clone(),
-            mc_version: args.mc_version.clone(),
-            mod_tool: args.mod_tool.to_string(),
-            mod_tool_version: args.mod_tool_version.clone(),
-            category: String::new(),
-            ram_mb: 4096,
-            jvm_args: String::new(),
-            jre_path: String::new(),
-            description: String::new(),
-            window_width: 854,
-            window_height: 480,
-        };
-
-        let instance_name = args.instance_name.clone();
-        show.set(false);
-        reset();
-        if let Some(cb) = on_creating { cb.run(stub); }
-
-        leptos::task::spawn_local(async move {
-            let _ = ipc::call::<_, ()>("create_instance", args).await;
-            if let Some(cb) = on_created { cb.run(instance_name); }
-        });
+        instance_name.set(String::new());
+        category.set(String::new());
+        selected_modloader.set(String::from("vanilla"));
+        selected_modloader_version.set(String::new());
     };
 
     // ── option card styles ─────────────────────────────────────────────────────
@@ -160,6 +155,21 @@ pub fn CreateInstanceModal(
     let option_info  = css! { display: flex; flex-direction: column; gap: 3px; };
     let option_title = css! { font-weight: 600; font-size: 0.9rem; };
     let option_desc  = css! { font-size: 0.8rem; opacity: 0.55; };
+
+    let filter_row = css! {
+        display: flex;
+        gap: 14px;
+        font-size: 0.82rem;
+        opacity: 0.85;
+        margin-bottom: 4px;
+    };
+    let filter_label = css! {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        cursor: pointer;
+        user-select: none;
+    };
 
     view! {
         // ── main modal ────────────────────────────────────────────────────────
@@ -215,76 +225,195 @@ pub fn CreateInstanceModal(
                         </ModalFooter>
                     </Show>
 
-                    // ── Step 2: Create Manually ───────────────────────────────
+                    // ── Step 2: name + game version + category ───────────────
                     <Show when=move || modal_step.get() == 2 && selected_method.get() == Some(1) fallback=|| ()>
-                        <form on:submit=on_submit>
-                            <ModalBody>
-                                <h2 style="margin: 0 0 16px 0;">"Create Manually"</h2>
-                                <FormFields style="margin-top: 8px;">
-                                    <FormField label="Instance Name" uppercase=true>
-                                        <TextInput
-                                            name="instance_name"
-                                            placeholder="My Modpack"
-                                        />
-                                    </FormField>
-                                    <FormField label="Minecraft Version" uppercase=true>
-                                        <SelectInput
-                                            name="mc_version"
-                                            on_change=Callback::new(move |val: String| selected_mcver.set(val))
-                                        >
-                                            <ForEnumerate
-                                                each=move || mc_versions.get().unwrap_or_default()
-                                                key=|v| v.id
-                                                children=|i, v| view! {
-                                                    <option value={v.version_string} selected={move || i.get() == 0}>{v.version_string.clone()}</option>
-                                                }
+                        <ModalBody>
+                            <h2 style="margin: 0 0 16px 0;">"Create Manually"</h2>
+                            <FormFields style="margin-top: 8px;">
+                                <FormField label="Instance Name" uppercase=true>
+                                    <TextInput
+                                        placeholder="My Modpack"
+                                        default_value=instance_name.get_untracked()
+                                        on_change=Callback::new(move |v: String| instance_name.set(v))
+                                    />
+                                </FormField>
+                                <FormField label="Minecraft Version" uppercase=true>
+                                    <div class=filter_row>
+                                        <label class=filter_label>
+                                            <input
+                                                type="checkbox"
+                                                prop:checked=move || include_snapshot.get()
+                                                on:change=move |ev| include_snapshot.set(event_target_checked(&ev))
                                             />
-                                        </SelectInput>
-                                    </FormField>
-                                    <FormField label="Mod Tool" uppercase=true>
-                                        <SelectInput
-                                            name="mod_tool"
-                                            on_change=Callback::new(move |val: String| selected_modtool.set(val))
-                                        >
-                                            <option value="vanilla" selected>"Vanilla"</option>
-                                            <option value="forge">"Forge"</option>
-                                            <option value="fabric">"Fabric"</option>
-                                            <option value="neoforge">"NeoForge"</option>
-                                            <option value="quilt">"Quilt"</option>
-                                        </SelectInput>
-                                    </FormField>
-                                    <FormField label="Mod Tool Version" uppercase=true>
-                                        {move || view! {
-                                            <SelectInput name="mod_tool_version" disabled={modtool_to_id(&selected_modtool.get()) == 0}>
-                                                <ForEnumerate
-                                                    each=move || {
-                                                        mc_modloaders.get().unwrap_or_default()
-                                                            .into_iter()
-                                                            .filter(|m| m.loader_type == modtool_to_id(&selected_modtool.get()) && m.game_version == selected_mcver.get())
-                                                            .collect::<Vec<_>>()
+                                            "Snapshot"
+                                        </label>
+                                        <label class=filter_label>
+                                            <input
+                                                type="checkbox"
+                                                prop:checked=move || include_beta.get()
+                                                on:change=move |ev| include_beta.set(event_target_checked(&ev))
+                                            />
+                                            "Beta"
+                                        </label>
+                                        <label class=filter_label>
+                                            <input
+                                                type="checkbox"
+                                                prop:checked=move || include_alpha.get()
+                                                on:change=move |ev| include_alpha.set(event_target_checked(&ev))
+                                            />
+                                            "Alpha"
+                                        </label>
+                                    </div>
+                                    {move || {
+                                        let versions = filtered_versions.get();
+                                        let current = selected_mcver.get();
+                                        view! {
+                                            <SelectInput
+                                                on_change=Callback::new(move |val: String| selected_mcver.set(val))
+                                            >
+                                                {versions.into_iter().map(|v| {
+                                                    let is_selected = v.version_string == current;
+                                                    let label = if v.release_type == ReleaseType::Release {
+                                                        v.version_string.clone()
+                                                    } else {
+                                                        format!("{} [{}]", v.version_string, v.release_type)
+                                                    };
+                                                    view! {
+                                                        <option value=v.version_string.clone() selected=is_selected>{label}</option>
                                                     }
-                                                    key=|m| m.name.clone()
-                                                    children=|i, m| view! {
-                                                        <option value={m.name} selected={move || i.get() == 0}>{m.name.clone()}</option>
-                                                    }
-                                                />
+                                                }).collect_view()}
                                             </SelectInput>
-                                        }}
-                                    </FormField>
-                                </FormFields>
-                            </ModalBody>
-                            <ModalFooter>
-                                <Button
-                                    variant=ButtonVariant::Secondary
-                                    on_click=Callback::new(move |_| modal_step.set(1))
-                                >
-                                    "← Back"
-                                </Button>
-                                <Button variant=ButtonVariant::Primary button_type="submit">
-                                    "Create"
-                                </Button>
-                            </ModalFooter>
-                        </form>
+                                        }
+                                    }}
+                                </FormField>
+                                <FormField label="Category" uppercase=true>
+                                    <TextInput
+                                        placeholder="e.g. Modded, Survival (optional)"
+                                        default_value=category.get_untracked()
+                                        on_change=Callback::new(move |v: String| category.set(v))
+                                    />
+                                </FormField>
+                            </FormFields>
+                        </ModalBody>
+                        <ModalFooter>
+                            <Button
+                                variant=ButtonVariant::Secondary
+                                on_click=Callback::new(move |_| modal_step.set(1))
+                            >
+                                "← Back"
+                            </Button>
+                            <Button
+                                variant=ButtonVariant::Primary
+                                disabled=Signal::derive(move || {
+                                    instance_name.get().trim().is_empty() || selected_mcver.get().is_empty()
+                                })
+                                on_click=Callback::new(move |_| {
+                                    modal_step.set(3);
+                                })
+                            >
+                                "Next →"
+                            </Button>
+                        </ModalFooter>
+                    </Show>
+
+                    // ── Step 3: mod loader ────────────────────────────────────
+                    <Show when=move || modal_step.get() == 3 && selected_method.get() == Some(1) fallback=|| ()>
+                        <ModalBody>
+                            <h2 style="margin: 0 0 16px 0;">"Mod Loader"</h2>
+                            <FormFields style="margin-top: 8px;">
+                                <FormField label="Mod Loader" uppercase=true>
+                                    {move || {
+                                        let current = selected_modloader.get();
+                                        view! {
+                                            <SelectInput
+                                                on_change=Callback::new(move |val: String| selected_modloader.set(val))
+                                            >
+                                                <option value="vanilla" selected={current == "vanilla"}>"Vanilla (no mod loader)"</option>
+                                                <option value="forge" selected={current == "forge"}>"Forge"</option>
+                                                <option value="fabric" selected={current == "fabric"}>"Fabric"</option>
+                                                <option value="neoforge" selected={current == "neoforge"}>"NeoForge"</option>
+                                                <option value="quilt" selected={current == "quilt"}>"Quilt"</option>
+                                            </SelectInput>
+                                        }
+                                    }}
+                                </FormField>
+                                <FormField label="Mod Loader Version" uppercase=true>
+                                    {move || {
+                                        let is_vanilla = selected_modloader.get() == "vanilla";
+                                        let candidates = if is_vanilla {
+                                            Vec::new()
+                                        } else {
+                                            loader_versions.get().unwrap_or_default()
+                                        };
+                                        let current = selected_modloader_version.get();
+                                        view! {
+                                            <SelectInput
+                                                disabled=is_vanilla
+                                                on_change=Callback::new(move |val: String| selected_modloader_version.set(val))
+                                            >
+                                                {candidates.into_iter().map(|m| {
+                                                    let is_selected = m.version == current;
+                                                    view! {
+                                                        <option value=m.version.clone() selected=is_selected>{m.version.clone()}</option>
+                                                    }
+                                                }).collect_view()}
+                                            </SelectInput>
+                                        }
+                                    }}
+                                </FormField>
+                            </FormFields>
+                        </ModalBody>
+                        <ModalFooter>
+                            <Button
+                                variant=ButtonVariant::Secondary
+                                on_click=Callback::new(move |_| modal_step.set(2))
+                            >
+                                "← Back"
+                            </Button>
+                            <Button
+                                variant=ButtonVariant::Primary
+                                disabled=Signal::derive(move || {
+                                    selected_modloader.get() != "vanilla"
+                                        && selected_modloader_version.get().trim().is_empty()
+                                })
+                                on_click=Callback::new(move |_| {
+                                    let mod_loader = ModLoader::from_str(&selected_modloader.get_untracked())
+                                        .unwrap_or(ModLoader::Vanilla);
+                                    let mod_loader_version = if matches!(mod_loader, ModLoader::Vanilla) {
+                                        None
+                                    } else {
+                                        let v = selected_modloader_version.get_untracked();
+                                        if v.trim().is_empty() { None } else { Some(v) }
+                                    };
+
+                                    let meta = InstanceMeta {
+                                        name: instance_name.get_untracked(),
+                                        game_version: selected_mcver.get_untracked(),
+                                        mod_loader,
+                                        mod_loader_version,
+                                        category: category.get_untracked(),
+                                        ..InstanceMeta::default()
+                                    };
+                                    info!("{:?}", meta);
+
+                                    // Defer DOM-mutating signal updates and IPC out of the
+                                    // event handler so the button's RefCell event listener
+                                    // is no longer borrowed when the modal unmounts.
+                                    leptos::task::spawn_local(async move {
+                                        show.set(false);
+                                        reset();
+                                        if let Some(cb) = on_creating { cb.run(meta.clone()); }
+
+                                        let name = meta.name.clone();
+                                        let args = CreateInstanceArgs { instance_meta: meta };
+                                        ipc::call::<_, ()>("create_instance", args).await.ok();
+                                        if let Some(cb) = on_created { cb.run(name); }
+                                    });
+                                })
+                            >
+                                "Create"
+                            </Button>
+                        </ModalFooter>
                     </Show>
                 </ModalBox>
             </ModalOverlay>
@@ -319,15 +448,5 @@ pub fn CreateInstanceModal(
                 </DialogBox>
             </DialogOverlay>
         </Show>
-    }
-}
-
-fn modtool_to_id(s: &str) -> u32 {
-    match s {
-        "forge" => 1,
-        "fabric" => 4,
-        "quilt" => 5,
-        "neoforge" => 6,
-        _ => 0,
     }
 }

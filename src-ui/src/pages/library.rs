@@ -162,15 +162,3 @@ pub fn LibraryPage() -> impl IntoView {
         </Show>
     }
 }
-
-// ── Data model ────────────────────────────────────────────────────────────────
-
-pub fn mod_tool_color(mod_tool: &str) -> &'static str {
-    match mod_tool {
-        "Forge"    => "#6b5040",
-        "Fabric"   => "#40506b",
-        "Quilt"    => "#50406b",
-        "NeoForge" => "#6b5b40",
-        _          => "#406b50",
-    }
-}

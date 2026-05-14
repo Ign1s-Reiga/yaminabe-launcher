@@ -3,7 +3,6 @@ use leptos::prelude::*;
 use leptos::{component, IntoView, view};
 use leptos_router::hooks::use_navigate;
 use yaminabe_launcher_shared::datatypes::InstanceMeta;
-use crate::pages::library::mod_tool_color;
 
 #[component]
 pub fn InstanceCard(
@@ -41,10 +40,10 @@ pub fn InstanceCard(
         opacity: 0.6;
     };
 
-    let bg = format!("background-color: {}", mod_tool_color(&instance.mod_tool));
+    let bg = format!("background-color: {}", &instance.mod_loader.get_modloader_color());
     let name = instance.name.clone();
-    let mc_version = format!("MC {}", instance.mc_version);
-    let mod_tool = instance.mod_tool.clone();
+    let mc_version = format!("MC {}", instance.game_version);
+    let mod_loader = instance.mod_loader.clone();
 
     view! {
         <div
@@ -55,7 +54,7 @@ pub fn InstanceCard(
             <CardBody>
                 <span class=name_style>{name}</span>
                 <span class=meta_style>{mc_version}</span>
-                <span class=meta_style>{mod_tool}</span>
+                <span class=meta_style>{mod_loader.to_string()}</span>
             </CardBody>
         </div>
     }

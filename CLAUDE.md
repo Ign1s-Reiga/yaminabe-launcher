@@ -111,6 +111,10 @@ Do NOT refactor styling unless explicitly requested.
 - Use `serde_json`.
 - Do not use `serde_json::Value` as type of parsed JSON.
 
+### Rust Code Rules
+
+- Do not use `let _ = ...` pattern to consume value.
+
 ### Formatting Prefrences
 - **No Vertical Alignment**: Do not align values or assignments vertically. Avoid adding extra spaces before `=` or `:` to match the positioning of other lines.
 - **Single Space Only**: Use only a single space around operators and after delimiters.
@@ -141,4 +145,3 @@ If instructions are ambiguous:
 - Do not rewrite large sections
 - Do not "improve" unrelated code
 - Do not introduce new architecture
-- Do not output large amounts of code

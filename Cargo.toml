@@ -8,18 +8,19 @@ authors = ["Ign1s-Reiga"]
 version = "0.1.0"
 
 [workspace.dependencies]
-leptos = { version = "0.8", features = ["csr"] }
-leptos_router = "0.8"
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
 serde = { version = "1", features = ["derive"] }
-serde-wasm-bindgen = "0.6"
-console_error_panic_hook = "0.1.7"
-phosphor-leptos = "0.8"
+serde_json = "1"
 uuid = { version = "1", features = ["v4", "js"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "query"] }
 yaminabe-launcher-shared = { path = "src-shared" }
+log = "0.4"
+
+[profile.dev]
+opt-level = 1
+lto = true
 
 [profile.release]
+debug = "line-tables-only"
+opt-level = "z"
 codegen-units = 1
 lto = true

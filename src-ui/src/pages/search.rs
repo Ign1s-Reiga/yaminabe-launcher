@@ -4,13 +4,13 @@ use leptos::prelude::*;
 use leptos::{component, IntoView, view, web_sys};
 use wasm_bindgen::JsCast;
 use phosphor_leptos::{Icon, IconWeight, CARET_LEFT, CARET_RIGHT};
-use yaminabe_launcher_shared::datatypes::AppSettings;
+use yaminabe_launcher_shared::datatypes::{AppSettings, ModpackInfo};
 use crate::components::install_modpack_modal::{InstallModpackModal, InstallState};
 use crate::components::ui::*;
-use crate::curseforge::{call_get_files, call_install, call_search, fmt_downloads, InstallArgs, ModpackInfo};
+use crate::curseforge::{call_get_files, call_install, call_search, fmt_downloads, InstallArgs};
 use crate::ipc;
 
-const PAGE_SIZE: usize = 20;
+const PAGE_SIZE: usize = 50;
 
 #[derive(Clone, Default)]
 struct SearchQuery {
@@ -23,8 +23,7 @@ struct SearchState {
     is_loading: bool,
     error: Option<String>,
     results: Vec<ModpackInfo>,
-    has_next: bool,
-    last_page: Option<usize>,
+    total: u32,
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -37,6 +36,17 @@ pub fn SearchPage() -> impl IntoView {
     let install: RwSignal<Option<InstallState>> = RwSignal::new(None);
     let install_name: RwSignal<String> = RwSignal::new(String::new());
     let default_location: RwSignal<String> = RwSignal::new(String::new());
+    let results_wrapper_ref: NodeRef<leptos::html::Div> = NodeRef::new();
+
+    // Reset the scroll position whenever the active query/page changes so
+    // the user lands at the top of the new result set instead of inheriting
+    // the previous page's scroll offset.
+    Effect::new(move |_| {
+        let _ = search_query.get();
+        if let Some(el) = results_wrapper_ref.get() {
+            el.set_scroll_top(0);
+        }
+    });
 
     leptos::task::spawn_local(async move {
         if let Ok(s) = ipc::call_noargs::<AppSettings>("get_settings").await {
@@ -52,26 +62,20 @@ pub fn SearchPage() -> impl IntoView {
         }
         search_state.update(|s| {
             s.is_loading = true;
-            s.has_next = false;
             s.error = None;
         });
         let index = (q.page * PAGE_SIZE) as u32;
         leptos::task::spawn_local(async move {
             match call_search(q.query, index).await {
                 Ok(data) => {
-                    let is_last = data.len() < PAGE_SIZE;
                     search_state.update(|s| {
-                        s.has_next = !is_last;
-                        if is_last {
-                            s.last_page = Some(q.page);
-                        }
-                        s.results = data;
+                        s.total = data.total;
+                        s.results = data.items;
                         s.is_loading = false;
                     });
                 }
                 Err(e) => {
                     search_state.update(|s| {
-                        s.has_next = false;
                         s.error = Some(e);
                         s.is_loading = false;
                     });
@@ -82,7 +86,6 @@ pub fn SearchPage() -> impl IntoView {
 
     let do_search = move || {
         let q = search_input.get_untracked();
-        search_state.update(|s| s.last_page = None);
         search_query.set(SearchQuery { query: q, page: 0 });
     };
 
@@ -150,17 +153,24 @@ pub fn SearchPage() -> impl IntoView {
         });
     };
 
-    // ── pagination page list ──────────────────────────────────────────────────
+    // ── pagination derived values ─────────────────────────────────────────────
+    // `total_pages` is 0 when the result set is empty, otherwise the index of the
+    // last page (so a 50-item set with PAGE_SIZE=20 has last_page=2).
+    let last_page: Signal<usize> = Signal::derive(move || {
+        let total = search_state.get().total as usize;
+        if total == 0 { 0 } else { (total - 1) / PAGE_SIZE }
+    });
+
     let page_items: Signal<Vec<Option<usize>>> = Signal::derive(move || {
-        let state = search_state.get();
+        let last = last_page.get();
         let cur = search_query.get().page;
 
         let mut set = std::collections::BTreeSet::new();
         set.insert(0usize);
         if cur > 0 { set.insert(cur - 1); }
         set.insert(cur);
-        if state.has_next { set.insert(cur + 1); }
-        if let Some(l) = state.last_page { set.insert(l); }
+        if cur < last { set.insert(cur + 1); }
+        set.insert(last);
 
         let mut result: Vec<Option<usize>> = vec![];
         let mut prev: Option<usize> = None;
@@ -269,6 +279,20 @@ pub fn SearchPage() -> impl IntoView {
         overflow: hidden;
         margin-bottom: 6px;
         line-height: 1.45;
+    };
+    let card_categories = css! {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-bottom: 6px;
+    };
+    let card_category_chip = css! {
+        padding: 2px 8px;
+        border-radius: 999px;
+        background-color: var(--secondary-color);
+        font-size: 0.7rem;
+        line-height: 1.4;
+        opacity: 0.8;
     };
     let card_meta = css! {
         font-size: 0.76rem;
@@ -386,7 +410,7 @@ pub fn SearchPage() -> impl IntoView {
 
         // ── scrollable result cards ───────────────────────────────────────────
         <Show when=move || !search_state.get().results.is_empty() fallback=|| ()>
-            <div class=results_wrapper>
+            <div class=results_wrapper node_ref=results_wrapper_ref>
                 <div class=results_list>
                     {move || search_state.get().results.into_iter().map(|pack| {
                         let pack_btn = pack.clone();
@@ -401,6 +425,16 @@ pub fn SearchPage() -> impl IntoView {
                                 <div class=card_body>
                                     <div class=card_name>{pack.name.clone()}</div>
                                     <div class=card_summary>{pack.summary.clone()}</div>
+                                    <Show when={
+                                        let cats = pack.category.clone();
+                                        move || !cats.is_empty()
+                                    } fallback=|| ()>
+                                        <div class=card_categories>
+                                            {pack.category.clone().into_iter().map(|c| view! {
+                                                <span class=card_category_chip>{c}</span>
+                                            }).collect_view()}
+                                        </div>
+                                    </Show>
                                     <div class=card_meta>
                                         {format!(
                                             "{} downloads{}",
@@ -428,9 +462,7 @@ pub fn SearchPage() -> impl IntoView {
         <div
             class=pagination
             style=move || {
-                let q = search_query.get();
-                let s = search_state.get();
-                if q.page == 0 && !s.has_next { "visibility: hidden;" } else { "visibility: visible;" }
+                if last_page.get() == 0 { "visibility: hidden;" } else { "visibility: visible;" }
             }
         >
             <button
@@ -471,8 +503,8 @@ pub fn SearchPage() -> impl IntoView {
             <button
                 class=page_btn
                 disabled=move || {
-                    let s = search_state.get();
-                    !s.has_next || s.is_loading
+                    let cur = search_query.get().page;
+                    cur >= last_page.get() || search_state.get().is_loading
                 }
                 on:click=move |_| next_page()
             >

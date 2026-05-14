@@ -4,7 +4,7 @@ use serde::Deserialize;
 use tauri::State;
 
 use yaminabe_launcher_shared::datatypes::JavaInstall;
-use crate::AppState;
+use crate::{runtimes_dir, AppState};
 
 // ── Local detection ───────────────────────────────────────────────────────────
 
@@ -104,17 +104,16 @@ struct RuntimeDownload {
 /// Skips download if `javaw.exe` already exists.
 pub async fn download_java_runtime(
     component: &str,
-    runtimes_dir: &Path,
     client: &reqwest::Client,
 ) -> Result<PathBuf, String> {
-    let runtime_dir = runtimes_dir.join(component);
+    let runtime_dir = runtimes_dir().join(component);
     let javaw_path  = runtime_dir.join("bin").join("javaw.exe");
     if javaw_path.exists() {
         return Ok(javaw_path);
     }
 
     let all: HashMap<String, HashMap<String, Vec<JavaRuntimeEntry>>> = client
-        .get("https://launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json")
+        .get("https://piston-meta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json")
         .send().await
         .map_err(|e| format!("Failed to fetch Mojang JRE list: {e}"))?
         .json().await

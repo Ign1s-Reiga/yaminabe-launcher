@@ -13,10 +13,14 @@ extern "C" {
 }
 
 /// Call a Tauri command with named args (any Serialize struct).
-pub async fn call<A: Serialize, R: for<'de> serde::Deserialize<'de>>(
+pub async fn call<A, R>(
     cmd: &str,
     args: A,
-) -> Result<R, String> {
+) -> Result<R, String>
+where
+    A: Serialize,
+    R: for<'de> serde::Deserialize<'de>,
+{
     let js_args = serde_wasm_bindgen::to_value(&args).map_err(|e| e.to_string())?;
     let result = invoke(cmd, js_args).await.map_err(|e| format!("{e:?}"))?;
     serde_wasm_bindgen::from_value(result).map_err(|e| e.to_string())

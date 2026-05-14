@@ -1,7 +1,6 @@
 use crate::components::settings::{SaveState, SettingsProp, SettingsSection};
 use crate::components::ui::{Button, ButtonSize, ButtonVariant, SelectInput, SliderInput, TabBar, Textarea, input_class};
 use crate::ipc;
-use crate::pages::library::mod_tool_color;
 use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::ev::SubmitEvent;
@@ -66,10 +65,10 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     let active_tab = RwSignal::new(String::from("Description"));
     let save_state: RwSignal<SaveState> = RwSignal::new(SaveState::Idle);
 
-    let header_bg = format!("background-color: {}", mod_tool_color(&instance.mod_tool));
+    let header_bg = format!("background-color: {}", &instance.mod_loader.get_modloader_color());
     let instance_name = instance.name.clone();
     let category_label = if instance.category.is_empty() { "Default".to_string() } else { instance.category.clone() };
-    let meta_text = format!("MC {}  ·  {}  ·  {}", instance.mc_version, instance.mod_tool, category_label);
+    let meta_text = format!("MC {}  ·  {}  ·  {}", instance.game_version, instance.mod_loader, category_label);
 
     let instance_id = instance.id.clone();
     let instance_id_play = instance_id.clone();

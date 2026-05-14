@@ -4,5 +4,12 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 
+[lib]
+name = "yaminabe_launcher_shared"
+crate-type = ["rlib"]
+
 [dependencies]
-serde = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+thiserror = "2"

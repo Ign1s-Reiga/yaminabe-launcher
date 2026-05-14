@@ -5,7 +5,7 @@ use leptos::{component, IntoView, view};
 use leptos_router::hooks::{use_navigate, use_params};
 use leptos_router::params::Params;
 use serde::{Deserialize, Serialize};
-use yaminabe_launcher_shared::datatypes::InstanceMeta;
+use yaminabe_launcher_shared::datatypes::{InstanceMeta, ModLoader};
 use crate::components::ui::{Button, ButtonVariant};
 use crate::ipc;
 
@@ -27,7 +27,7 @@ pub struct LogLine {
 struct LaunchArgs {
     instance_id: String,
     mc_version: String,
-    mod_tool: String,
+    mod_loader: ModLoader,
 }
 
 styled!(LogBox, div, {
@@ -89,8 +89,8 @@ pub fn PlayPage() -> impl IntoView {
         leptos::task::spawn_local(async move {
             let _ = ipc::call::<_, ()>("launch_instance", LaunchArgs {
                 instance_id: inst.id.clone(),
-                mc_version:  inst.mc_version.clone(),
-                mod_tool:    inst.mod_tool.clone(),
+                mc_version: inst.game_version.clone(),
+                mod_loader: inst.mod_loader.clone(),
             }).await;
         });
     });
