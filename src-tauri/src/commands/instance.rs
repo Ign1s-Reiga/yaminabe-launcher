@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use log::info;
 use tauri::State;
 use yaminabe_launcher_shared::datatypes::{ModLoader, InstanceMeta};
@@ -22,86 +21,6 @@ pub fn find_instance_dir(install_dir: &Path, id: &str) -> Result<PathBuf, Error>
             if meta.id == id { Some(path) } else { None }
         })
         .ok_or_else(|| Error::NotExists(format!("Instance '{id}'")))
-}
-
-async fn download_mods_modrinth(
-    version_ids: &[String],
-    instance_location: &str,
-    client: &reqwest::Client,
-) -> Result<(), Error> {
-    if version_ids.is_empty() {
-        return Ok(());
-    }
-
-    let mods_dir = PathBuf::from(instance_location).join("mods");
-    std::fs::create_dir_all(&mods_dir)?;
-
-    let ids_json = serde_json::to_string(version_ids)?;
-    let versions: serde_json::Value = client
-        .get("https://api.modrinth.com/v2/versions")
-        .query(&[("ids", ids_json.as_str())])
-        .send().await?
-        .json().await
-        .map_err(|e| Error::InvalidResponse(e))?;
-
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(3));
-    let mut handles: Vec<tokio::task::JoinHandle<Result<(), Error>>> = Vec::new();
-
-    for version in versions.as_array().unwrap_or(&vec![]) {
-        let files = version["files"].as_array();
-        let file = files.and_then(|f| {
-            f.iter().find(|e| e["primary"].as_bool() == Some(true)).or_else(|| f.first())
-        });
-        let Some(file) = file else { continue };
-
-        let url      = file["url"].as_str().unwrap_or_default().to_string();
-        let filename = file["filename"].as_str().unwrap_or_default().to_string();
-        if url.is_empty() || filename.is_empty() { continue }
-
-        let client   = client.clone();
-        let mods_dir = mods_dir.clone();
-        let sem      = Arc::clone(&semaphore);
-
-        handles.push(tokio::spawn(async move {
-            let _permit = sem.acquire_owned().await
-                .map_err(|e| Error::ChildProcess(format!("semaphore acquire: {e}")))?;
-            let resp = client.get(&url).send().await?;
-            if !resp.status().is_success() {
-                return Err(Error::HttpRequestRejected(resp.status().as_u16(), url));
-            }
-            let bytes = resp.bytes().await.map_err(Error::InvalidResponse)?;
-            std::fs::write(mods_dir.join(&filename), &bytes)?;
-            info!("Downloaded {filename}");
-            Ok(())
-        }));
-    }
-
-    for handle in handles {
-        handle.await.map_err(|e| Error::ChildProcess(format!("download task panicked: {e}")))??;
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn download_mods(
-    file_ids: Vec<String>,
-    instance_location: String,
-    source: Option<String>,
-    state: State<'_, AppState>,
-) -> Result<(), Error> {
-    match source.as_deref().unwrap_or("modrinth") {
-        "curseforge" => {
-            let ids: Vec<u32> = file_ids.iter()
-                .filter_map(|s| s.parse().ok())
-                .collect();
-            let api_key = state.settings.lock().unwrap().curseforge_api_key.clone();
-            crate::commands::curseforge::download_mods_core(
-                ids, &instance_location, &api_key, &state.http_client,
-            ).await
-        }
-        _ => download_mods_modrinth(&file_ids, &instance_location, &state.http_client).await,
-    }
 }
 
 #[tauri::command]
@@ -178,6 +97,8 @@ pub async fn create_instance(
 
     let require_hint = || mod_loader_version.as_deref()
         .ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")));
+
+    // TODO: Show version what is installing
     match &mod_loader {
         ModLoader::Fabric => {
             step!("Installing Fabric");
