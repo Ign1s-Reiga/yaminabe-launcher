@@ -6,6 +6,8 @@ members = ["src-shared","src-tauri", "src-ui"]
 edition = "2024"
 authors = ["Ign1s-Reiga"]
 version = "0.1.0"
+license = "MIT"
+license-file = "LICENSE"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
