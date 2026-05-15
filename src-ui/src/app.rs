@@ -65,6 +65,7 @@ pub fn App() -> impl IntoView {
         if !job.done && job.error.is_none() {
             sidebar_open.set(true);
         }
+        let job_succeeded = job.done && job.error.is_none();
         install_jobs.update(|list| {
             if let Some(existing) = list.iter_mut().find(|j| j.id == job.id) {
                 *existing = job;
@@ -72,6 +73,9 @@ pub fn App() -> impl IntoView {
                 list.push(job);
             }
         });
+        if job_succeeded {
+            refresh.update(|n| *n += 1);
+        }
     });
 
     view! {

@@ -4,12 +4,13 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use log::info;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tauri::State;
 use yaminabe_launcher_shared::datatypes::{InstanceMeta, ModLoader, ModpackInfo, ModpackSearchResults, ModpackVersionFile};
-use crate::{emit_progress, AppState};
 use yaminabe_launcher_shared::error::Error;
+use crate::{emit_progress, AppState};
 use crate::http_utils::fetch_json;
+use crate::install_task::{ensure_fabric, ensure_forge, ensure_neoforge, ensure_quilt, ensure_vanilla};
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
@@ -107,43 +108,33 @@ struct CfManifestLoader {
     primary: bool,
 }
 
-fn loader_id_to_mod_tool(id: &str) -> &'static str {
-    let s = id.to_ascii_lowercase();
-    if s.starts_with("neoforge")     { "NeoForge" }
-    else if s.starts_with("forge")   { "Forge" }
-    else if s.starts_with("fabric")  { "Fabric" }
-    else if s.starts_with("quilt")   { "Quilt" }
-    else                             { "Vanilla" }
-}
+// ── Platform implementations ──────────────────────────────────────────────────
 
-// ── Commands ──────────────────────────────────────────────────────────────────
-
-#[tauri::command]
-pub async fn search_curseforge_modpacks(
-    query: String,
+pub async fn search_modpacks(
+    query: &str,
     index: u32,
-    state: State<'_, AppState>,
+    http_client: &reqwest::Client,
+    api_key: &str,
 ) -> Result<ModpackSearchResults, Error> {
     if query.trim().is_empty() {
         return Ok(ModpackSearchResults { items: vec![], total: 0 });
     }
 
-    let api_key = state.settings.lock().unwrap().curseforge_api_key.clone();
     let index_str = index.to_string();
 
     let body = fetch_json::<CurseForgePaginatedResponse<SearchModsEntry>>(
-        &state.http_client,
+        http_client,
         "https://api.curseforge.com/v1/mods/search",
         &[
             ("gameId", "432"),
             ("classId", "4471"),
-            ("searchFilter", query.as_str()),
+            ("searchFilter", query),
             ("sortField", "2"),
             ("pageSize", "50"),
             ("sortOrder", "desc"),
             ("index", index_str.as_str()),
         ],
-        Some(api_key),
+        Some(api_key.to_string()),
     ).await?;
 
     let total = body.pagination.total_count;
@@ -176,18 +167,16 @@ pub async fn search_curseforge_modpacks(
     Ok(ModpackSearchResults { items, total })
 }
 
-#[tauri::command]
 pub async fn get_modpack_files(
     mod_id: u32,
-    state: State<'_, AppState>,
+    http_client: &reqwest::Client,
+    api_key: &str,
 ) -> Result<Vec<ModpackVersionFile>, Error> {
-    let api_key = state.settings.lock().unwrap().curseforge_api_key.clone();
-
     let body = fetch_json::<CurseForgeArrayResponse<ModFilesEntry>>(
-        &state.http_client,
+        http_client,
         &format!("https://api.curseforge.com/v1/mods/{mod_id}/files"),
         &[("pageSize", "50")],
-        Some(api_key),
+        Some(api_key.to_string()),
     ).await?;
 
     let mut entries = body.data;
@@ -214,51 +203,17 @@ pub async fn get_modpack_files(
     Ok(versions)
 }
 
-#[tauri::command]
-pub async fn install_curseforge_modpack(
-    app_handle: tauri::AppHandle,
-    download_url: String,
-    instance_name: String,
-    install_dir: String,
-    category: String,
-    state: State<'_, AppState>,
-) -> Result<(), Error> {
-    let id = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .to_string();
-
-    let api_key = state.settings.lock().unwrap().curseforge_api_key.clone();
-
-    let result = install_modpack_inner(
-        &app_handle, &id, &instance_name,
-        download_url, install_dir, category,
-        &api_key, &state.http_client,
-    ).await;
-
-    match result {
-        Ok(()) => {
-            emit_progress(&app_handle, &id, &instance_name, "Done", true, None);
-            Ok(())
-        }
-        Err(e) => {
-            emit_progress(&app_handle, &id, &instance_name, "Failed", false, Some(e.to_string()));
-            Err(e)
-        }
-    }
-}
-
-async fn install_modpack_inner(
+pub async fn install_modpack(
     app_handle: &tauri::AppHandle,
     id: &str,
     instance_name: &str,
     download_url: String,
     instance_location: String,
-    category: String,
+    _category: String,
     api_key: &str,
-    http_client: &reqwest::Client,
+    state: &State<'_, AppState>,
 ) -> Result<(), Error> {
+    let http_client = &state.http_client;
     emit_progress(app_handle, id, instance_name, "Downloading modpack", false, None);
 
     let resp = http_client
@@ -285,7 +240,7 @@ async fn install_modpack_inner(
     };
 
     let mc_version = manifest.minecraft.version.clone();
-    let mod_loader = manifest.minecraft.mod_loaders.iter()
+    let mod_loader_id = manifest.minecraft.mod_loaders.iter()
         .find(|l| l.primary)
         .or_else(|| manifest.minecraft.mod_loaders.first())
         .map(|l| l.id.to_ascii_lowercase())
@@ -294,6 +249,38 @@ async fn install_modpack_inner(
         .filter(|f| f.required)
         .map(|f| f.file_id)
         .collect();
+
+    // CurseForge manifest mod-loader ids are `{name}-{version}` (e.g.
+    // `neoforge-21.1.228`); split before resolving the enum.
+    let (loader_name, loader_version) = mod_loader_id.split_once('-')
+        .map(|(n, v)| (n, Some(v.to_string())))
+        .unwrap_or((mod_loader_id.as_str(), None));
+    let mod_loader = ModLoader::from_str(loader_name)?;
+
+    emit_progress(app_handle, id, instance_name, &format!("Installing Minecraft {mc_version}"), false, None);
+    ensure_vanilla(&mc_version, state).await?;
+
+    let require_loader_version = || loader_version.as_deref()
+        .ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")));
+    match &mod_loader {
+        ModLoader::Fabric => {
+            emit_progress(app_handle, id, instance_name, "Installing Fabric", false, None);
+            ensure_fabric(&mc_version, require_loader_version()?, http_client).await?;
+        }
+        ModLoader::Quilt => {
+            emit_progress(app_handle, id, instance_name, "Installing Quilt", false, None);
+            ensure_quilt(&mc_version, require_loader_version()?, http_client).await?;
+        }
+        ModLoader::Forge => {
+            emit_progress(app_handle, id, instance_name, "Installing Forge", false, None);
+            ensure_forge(&mc_version, require_loader_version()?, http_client).await?;
+        }
+        ModLoader::NeoForge => {
+            emit_progress(app_handle, id, instance_name, "Installing NeoForge", false, None);
+            ensure_neoforge(&mc_version, require_loader_version()?, http_client).await?;
+        }
+        ModLoader::Vanilla => {}
+    }
 
     let instance_path = PathBuf::from(&instance_location).join(instance_name.to_lowercase());
     std::fs::create_dir_all(&instance_path)?;
@@ -326,15 +313,15 @@ async fn install_modpack_inner(
     }
 
     emit_progress(app_handle, id, instance_name, "Downloading mods", false, None);
-    download_mods_core(file_ids, instance_path.to_str().unwrap_or_default(), api_key, http_client).await?;
+    download_mods(file_ids, instance_path.to_str().unwrap_or_default(), api_key, http_client).await?;
 
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
 
-    let mod_loader = ModLoader::from_str(mod_loader.as_str()).unwrap();
     let meta = InstanceMeta {
         name: instance_name.to_string(),
         game_version: mc_version.clone(),
         mod_loader: mod_loader.clone(),
+        mod_loader_version: loader_version,
         ..InstanceMeta::default()
     };
 
@@ -347,7 +334,7 @@ async fn install_modpack_inner(
     Ok(())
 }
 
-pub(crate) async fn download_mods_core(
+pub async fn download_mods(
     file_ids: Vec<u32>,
     instance_location: &str,
     api_key: &str,
@@ -404,7 +391,7 @@ pub(crate) async fn download_mods_core(
     }
 
     for handle in handles {
-        handle.await.map_err(|e| Error::ChildProcess(format!("download task panicked: {e}")))?? ;
+        handle.await.map_err(|e| Error::ChildProcess(format!("download task panicked: {e}")))??;
     }
 
     Ok(())

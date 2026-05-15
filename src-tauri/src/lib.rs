@@ -1,5 +1,6 @@
 mod commands;
 mod install_task;
+mod mod_repo;
 mod http_utils;
 
 use std::path::{Path, PathBuf};
@@ -9,14 +10,14 @@ use serde::Serialize;
 use tauri::{Emitter, Manager};
 use yaminabe_launcher_shared::datatypes::{AppSettings, JavaInstall};
 use yaminabe_launcher_shared::error::InitializationError;
-use crate::commands::curseforge::{
-    get_modpack_files, install_curseforge_modpack,
+use crate::commands::modfile::{
+    download_mods, get_modpack_files, install_curseforge_modpack,
     search_curseforge_modpacks,
 };
 use crate::commands::minecraft::{
     fetch_minecraft_versions, get_minecraft_versions, get_modloader_versions, VersionManifest,
 };
-use crate::commands::instance::{create_instance, download_mods, get_instances, save_instance_settings};
+use crate::commands::instance::{create_instance, get_instances, save_instance_settings};
 use crate::commands::launch::launch_instance;
 use crate::commands::java::{detect_java_installs, get_java_installs};
 use crate::commands::settings::{get_instance_subfolders, get_settings, open_instance_subfolder, pick_folder, save_settings};

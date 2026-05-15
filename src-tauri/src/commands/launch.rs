@@ -162,30 +162,35 @@ enum ArgumentItem {
 
 // ── Helper functions ──────────────────────────────────────────────────────────
 
-fn find_version_id(versions_dir: &Path, mc_version: &str, mod_loader: &ModLoader) -> String {
-    if matches!(mod_loader, ModLoader::Vanilla) {
-        return mc_version.to_string();
-    }
-    let prefix = match mod_loader {
-        ModLoader::Fabric => "fabric-loader-".to_string(),
-        ModLoader::Quilt => "quilt-loader-".to_string(),
-        ModLoader::Forge => format!("{mc_version}-forge-"),
-        ModLoader::NeoForge => "neoforge-".to_string(),
-        _ => return mc_version.to_string(),
-    };
-    let Ok(entries) = std::fs::read_dir(versions_dir) else {
-        return mc_version.to_string();
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(&prefix) {
-            let loader_needs_mc = matches!(mod_loader, ModLoader::Fabric | ModLoader::Quilt);
-            if !loader_needs_mc || name.ends_with(mc_version) {
-                return name;
-            }
+/// Compute the exact `versions/<id>` folder name for the given loader and
+/// `mod_loader_version` recorded in the instance meta. Returns the version-id
+/// string and the on-disk manifest path so the caller can verify it exists.
+/// Does NOT scan the directory or fall back to other installed versions — if
+/// the precise version isn't installed, the caller must surface a clear error
+/// rather than launching with whatever happens to be present.
+fn resolve_version_id(mc_version: &str, mod_loader: &ModLoader, mod_loader_version: Option<&str>) -> Result<String, Error> {
+    let id = match mod_loader {
+        ModLoader::Vanilla => mc_version.to_string(),
+        ModLoader::Fabric => {
+            let v = mod_loader_version.ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")))?;
+            format!("fabric-loader-{v}-{mc_version}")
         }
-    }
-    mc_version.to_string()
+        ModLoader::Quilt => {
+            let v = mod_loader_version.ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")))?;
+            format!("quilt-loader-{v}-{mc_version}")
+        }
+        ModLoader::Forge => {
+            let v = mod_loader_version.ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")))?;
+            let build = v.strip_prefix("forge-").unwrap_or(v);
+            format!("{mc_version}-forge-{build}")
+        }
+        ModLoader::NeoForge => {
+            let v = mod_loader_version.ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")))?;
+            let build = v.strip_prefix("neoforge-").unwrap_or(v);
+            format!("neoforge-{build}")
+        }
+    };
+    Ok(id)
 }
 
 fn load_manifest(versions_dir: &Path, version_id: &str) -> Result<ClientManifest, Error> {
@@ -650,7 +655,16 @@ pub async fn launch_instance(
     }
 
     log!("Resolving version JSON...");
-    let version_id = find_version_id(versions_dir(), &mc_version, &mod_loader);
+    let mod_loader_version = instance_meta.as_ref()
+        .and_then(|m| m.mod_loader_version.clone());
+    let version_id = match resolve_version_id(&mc_version, &mod_loader, mod_loader_version.as_deref()) {
+        Ok(id) => id,
+        Err(e) => fail!(e),
+    };
+    let manifest_path = versions_dir().join(&version_id).join(format!("{version_id}.json"));
+    if !manifest_path.exists() {
+        fail!(Error::Invalid("The required versions for launch could not be found.".to_string()));
+    }
     let manifest = match merge_manifest(versions_dir(), &version_id) {
         Ok(m) => m,
         Err(e) => fail!(e),
