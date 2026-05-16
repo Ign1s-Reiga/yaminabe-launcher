@@ -1,12 +1,14 @@
 use crate::components::ui::{Button, ButtonVariant};
 use crate::ipc;
 use bamboo_css_macro::css;
+use leptos::__reexports::send_wrapper::SendWrapper;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{IntoView, component, html, view, web_sys};
 use leptos_router::hooks::{use_navigate, use_params};
 use leptos_router::params::Params;
 use serde::{Deserialize, Serialize};
+use std::{cell::RefCell, rc::Rc};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use yaminabe_launcher_shared::datatypes::{InstanceMeta, ModLoader};
@@ -58,9 +60,13 @@ fn schedule_scroll_to_bottom(
         return;
     }
 
+    let callback = Rc::new(RefCell::new(None::<Closure<dyn FnMut()>>));
+    let callback_on_timeout = callback.clone();
+
     scroll_pending.set_value(true);
-    let callback = Closure::<dyn FnMut()>::new(move || {
+    *callback.borrow_mut() = Some(Closure::<dyn FnMut()>::new(move || {
         scroll_pending.set_value(false);
+        let _callback = callback_on_timeout.borrow_mut().take();
         if !auto_scroll_enabled.get_untracked()
             || selecting_text.get_untracked()
             || has_text_selection()
@@ -70,21 +76,23 @@ fn schedule_scroll_to_bottom(
         if let Some(el) = log_box_ref.get() {
             el.set_scroll_top(el.scroll_height());
         }
-    });
+    }));
 
     if let Some(window) = web_sys::window() {
-        let scheduled = window
-            .set_timeout_with_callback_and_timeout_and_arguments_0(
-                callback.as_ref().unchecked_ref(),
-                LOG_SCROLL_THROTTLE_MS,
-            )
-            .is_ok();
-        if scheduled {
-            callback.forget();
-            return;
+        if let Some(callback) = callback.borrow().as_ref() {
+            let scheduled = window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(
+                    callback.as_ref().unchecked_ref(),
+                    LOG_SCROLL_THROTTLE_MS,
+                )
+                .is_ok();
+            if scheduled {
+                return;
+            }
         }
     }
 
+    let _callback = callback.borrow_mut().take();
     scroll_pending.set_value(false);
 }
 
@@ -250,11 +258,12 @@ fn PlayContent(
             .unchecked_ref::<js_sys::Function>()
             .clone();
         let _ = window.add_event_listener_with_callback("mouseup", listener.as_ref());
-        callback.forget();
+        let callback = SendWrapper::new(callback);
         on_cleanup(move || {
             if let Some(window) = web_sys::window() {
                 let _ = window.remove_event_listener_with_callback("mouseup", listener.as_ref());
             }
+            drop(callback);
         });
     }
 
