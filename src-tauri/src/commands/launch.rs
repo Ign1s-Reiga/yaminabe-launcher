@@ -547,14 +547,24 @@ async fn download_assets(
     assets_dir: &Path,
     asset_index: &AssetIndex,
     client: &reqwest::Client,
+    mut log_progress: impl FnMut(String),
 ) -> Result<(), Error> {
     let indexes_dir = assets_dir.join("indexes");
     std::fs::create_dir_all(&indexes_dir)?;
-    let index_path = indexes_dir.join(format!("{}.json", asset_index.id));
+    let asset_index_file_name = format!("{}.json", asset_index.id);
+    let index_path = indexes_dir.join(&asset_index_file_name);
 
     let index_bytes = if index_path.exists() {
+        log_progress(format!(
+            "Assets: using cached asset index {} (file: {}).",
+            asset_index.id, asset_index_file_name
+        ));
         std::fs::read(&index_path)?
     } else {
+        log_progress(format!(
+            "Assets: downloading asset index {} (file: {}).",
+            asset_index.id, asset_index_file_name
+        ));
         let url = asset_index.url.as_ref()
             .ok_or_else(|| Error::Invalid(format!("asset index {} missing url", asset_index.id)))?;
         let sha1 = asset_index.sha1.as_ref()
@@ -566,6 +576,13 @@ async fn download_assets(
 
     let parsed: AssetIndexJson = serde_json::from_slice(&index_bytes)?;
     let objects_dir = assets_dir.join("objects");
+    let total_assets = parsed.objects.len();
+    let mut checked_assets = 0usize;
+    let mut cached_assets = 0usize;
+    let mut downloaded_assets = 0usize;
+    const ASSET_PROGRESS_INTERVAL: usize = 100;
+
+    log_progress(format!("[AssetManager/INFO]: Verifying {total_assets} indexed asset files..."));
 
     for (path, object) in &parsed.objects {
         if object.hash.len() < 2 {
@@ -574,11 +591,63 @@ async fn download_assets(
         let prefix = &object.hash[..2];
         let dest_dir = objects_dir.join(prefix);
         let dest = dest_dir.join(&object.hash);
-        if dest.exists() { continue; }
-        let url = format!("https://resources.download.minecraft.net/{prefix}/{}", object.hash);
-        let bytes = fetch_and_verify(client, &url, &object.hash, &format!("asset {path}")).await?;
-        std::fs::create_dir_all(&dest_dir)?;
-        std::fs::write(&dest, &bytes)?;
+        let needs_download = if dest.exists() {
+            match std::fs::read(&dest) {
+                Ok(bytes) => {
+                    let hex = Sha1::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect::<String>();
+                    if hex == object.hash {
+                        cached_assets += 1;
+                        false
+                    } else {
+                        log_progress(format!(
+                            "[AssetManager/ERROR]: Failed to verify '{path}' (Hash mismatch: expected {}, got {}).",
+                            object.hash, hex
+                        ));
+                        true
+                    }
+                }
+                Err(e) => {
+                    log_progress(format!(
+                        "[AssetManager/ERROR]: Failed to read cached asset '{path}' ({e})."
+                    ));
+                    true
+                }
+            }
+        } else {
+            true
+        };
+        if needs_download {
+            let url = format!("https://resources.download.minecraft.net/{prefix}/{}", object.hash);
+            let bytes = match fetch_and_verify(client, &url, &object.hash, &format!("asset {path}")).await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    log_progress(format!("[AssetManager/ERROR]: Failed to download '{path}' ({e})."));
+                    return Err(e);
+                }
+            };
+            std::fs::create_dir_all(&dest_dir)?;
+            std::fs::write(&dest, &bytes)?;
+            downloaded_assets += 1;
+        }
+
+        checked_assets += 1;
+        if checked_assets == total_assets || checked_assets % ASSET_PROGRESS_INTERVAL == 0 {
+            let percent = if total_assets == 0 { 100 } else { checked_assets * 100 / total_assets };
+            let filled = percent / 10;
+            let bar = format!("{}{}", "#".repeat(filled), "-".repeat(10 - filled));
+            log_progress(format!(
+                "[AssetManager/PROGRESS]: Downloading Assets: [{bar}] {percent}% ({checked_assets}/{total_assets}); {downloaded_assets} downloaded, {cached_assets} verified."
+            ));
+        }
+    }
+    if total_assets == 0 {
+        log_progress("[AssetManager/INFO]: Asset verification complete. Asset index contained no files.".to_string());
+    } else if downloaded_assets == 0 {
+        log_progress("[AssetManager/INFO]: Asset verification complete. All files matched.".to_string());
+    } else {
+        log_progress(format!(
+            "[AssetManager/INFO]: Asset synchronization complete. {downloaded_assets} downloaded, {cached_assets} verified."
+        ));
     }
     Ok(())
 }
@@ -680,8 +749,14 @@ pub async fn launch_instance(
         Some(idx) => idx,
         None => fail!(Error::Invalid("assetIndex not found in version JSON".into())),
     };
-    log!(format!("Downloading assets ({})...", asset_index.id));
-    if let Err(e) = download_assets(assets_dir(), asset_index, &state.http_client).await {
+    let asset_index_file_name = format!("{}.json", asset_index.id);
+    log!(format!(
+        "[AssetManager/INFO]: Loading asset index: {} (id: {})",
+        asset_index_file_name, asset_index.id
+    ));
+    if let Err(e) = download_assets(assets_dir(), asset_index, &state.http_client, |line| {
+        log!(line);
+    }).await {
         fail!(e);
     }
 
