@@ -75,6 +75,8 @@ struct AssetObject {
 struct Library {
     name: String,
     #[serde(default)]
+    rules: Vec<ArgRule>,
+    #[serde(default)]
     downloads: Option<LibraryDownloads>,
     #[serde(default)]
     natives: HashMap<String, String>,
@@ -279,6 +281,7 @@ fn extract_natives(
     std::fs::create_dir_all(natives_root)?;
     let mut native_dirs = Vec::new();
     for lib in libraries {
+        if !eval_rules(&lib.rules) { continue; }
         let key = lib.natives.get("windows").map(|s| s.replace("${arch}", "64"));
         let Some(key) = key else { continue; };
         let Some((group, artifact_name, version, _)) = maven_parts(&lib.name) else { continue; };
@@ -334,6 +337,7 @@ fn find_main_class_jar(
 ) -> Option<PathBuf> {
     let mut seen: HashSet<String> = HashSet::new();
     for lib in libraries {
+        if !eval_rules(&lib.rules) { continue; }
         if !lib.natives.is_empty() { continue; }
         let key = version_agnostic_name(&lib.name);
         if !seen.insert(key) { continue; }
@@ -377,6 +381,7 @@ fn build_classpath(
     let mut paths: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
     for lib in libraries {
+        if !eval_rules(&lib.rules) { continue; }
         if !lib.natives.is_empty() { continue; }
         let key = version_agnostic_name(&lib.name);
         if !seen.insert(key) { continue; }
