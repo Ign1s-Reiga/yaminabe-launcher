@@ -253,26 +253,35 @@ fn merge_manifest(
 }
 
 fn maven_to_path(name: &str) -> Option<String> {
-    let mut parts = name.splitn(4, ':');
-    let group    = parts.next()?.replace('.', "/");
-    let artifact = parts.next()?;
-    let version  = parts.next()?;
-    let suffix   = match parts.next() {
+    let (group, artifact, version, classifier) = maven_parts(name)?;
+    let group = group.replace('.', "/");
+    let suffix = match classifier {
         Some(cls) => format!("{artifact}-{version}-{cls}.jar"),
-        None      => format!("{artifact}-{version}.jar"),
+        None => format!("{artifact}-{version}.jar"),
     };
     Some(format!("{group}/{artifact}/{version}/{suffix}"))
+}
+
+fn maven_parts(name: &str) -> Option<(&str, &str, &str, Option<&str>)> {
+    let mut parts = name.splitn(4, ':');
+    let group = parts.next()?;
+    let artifact = parts.next()?;
+    let version = parts.next()?;
+    let classifier = parts.next();
+    Some((group, artifact, version, classifier))
 }
 
 fn extract_natives(
     libraries: &[Library],
     libraries_dir: &Path,
-    natives_dir: &Path,
-) -> Result<(), Error> {
-    std::fs::create_dir_all(natives_dir)?;
+    natives_root: &Path,
+) -> Result<Vec<PathBuf>, Error> {
+    std::fs::create_dir_all(natives_root)?;
+    let mut native_dirs = Vec::new();
     for lib in libraries {
         let key = lib.natives.get("windows").map(|s| s.replace("${arch}", "64"));
         let Some(key) = key else { continue; };
+        let Some((group, artifact_name, version, _)) = maven_parts(&lib.name) else { continue; };
         let Some(classifiers) = lib.downloads.as_ref().and_then(|d| d.classifiers.as_ref()) else { continue; };
         let Some(artifact) = classifiers.get(&key) else { continue; };
         let Some(path) = &artifact.path else { continue; };
@@ -280,89 +289,62 @@ fn extract_natives(
         if !jar_path.exists() { continue; }
         let Ok(file)    = std::fs::File::open(&jar_path) else { continue; };
         let Ok(mut zip) = zip::ZipArchive::new(file) else { continue; };
+        let native_dir = natives_root
+            .join(group.replace('.', "/"))
+            .join(artifact_name)
+            .join(version);
+        std::fs::create_dir_all(&native_dir)?;
         for i in 0..zip.len() {
             let Ok(mut entry) = zip.by_index(i) else { continue; };
             let name = entry.name().to_string();
             if !name.ends_with(".dll") && !name.ends_with(".so") && !name.ends_with(".dylib") { continue; }
-            let dest = natives_dir.join(&name);
+            let Some(file_name) = Path::new(&name).file_name() else { continue; };
+            let dest = native_dir.join(file_name);
             if dest.exists() { continue; }
             let Ok(mut f) = std::fs::File::create(&dest) else { continue; };
             std::io::copy(&mut entry, &mut f).ok();
         }
+        native_dirs.push(native_dir);
     }
-    Ok(())
-}
-
-/// Build the path to a mod loader's patched client jar, based on the maven
-/// coordinate (`{group}:{artifact}:{version}`) of its entry in the merged
-/// libraries list. Layout: `libraries/{group as dirs}/{artifact}/{version}/{artifact}-{version}-client.jar`.
-fn loader_patched_client_jar(
-    libraries: &[Library],
-    libraries_dir: &Path,
-    group: &str,
-    artifact: &str,
-) -> Option<PathBuf> {
-    let prefix = format!("{group}:{artifact}:");
-    let version = libraries.iter()
-        .find_map(|l| l.name.strip_prefix(&prefix).and_then(|rest| rest.split(':').next()))?;
-    let mut path = libraries_dir.to_path_buf();
-    for part in group.split('.') {
-        path = path.join(part);
-    }
-    Some(path.join(artifact).join(version).join(format!("{artifact}-{version}-client.jar")))
-}
-
-/// Resolve the on-disk path of a library identified by `{group}:{artifact}`
-/// prefix, using the `downloads.artifact.path` recorded in the manifest entry.
-/// Unlike `loader_patched_client_jar` this works for ordinary library jars
-/// (no `:client` classifier appended), which is what modern NeoForge needs
-/// for the FML loader jar that hosts `mainClass`.
-fn library_jar_path(
-    libraries: &[Library],
-    libraries_dir: &Path,
-    group_artifact_prefix: &str,
-) -> Option<PathBuf> {
-    let lib = libraries.iter().find(|l| l.name.starts_with(group_artifact_prefix))?;
-    let path = lib.downloads.as_ref()?.artifact.as_ref()?.path.as_deref()?;
-    Some(libraries_dir.join(path))
-}
-
-/// Resolve the application jar that should be appended to the classpath.
-///
-/// Confirmed cases:
-/// * Vanilla → `versions/{mc_version}/{mc_version}.jar`.
-/// * Fabric → vanilla parent jar; the loader is supplied via the regular
-///   `libraries` entries (see `build_classpath`).
-/// * Forge (26.1.2+) → patched client jar under `libraries/net/minecraftforge/forge/…-client.jar`.
-///
-/// Unconfirmed but assumed to follow the same shape as their counterparts:
-/// Quilt mirrors Fabric, NeoForge mirrors Forge.
-fn entry_jar_path(
-    libraries: &[Library],
-    libraries_dir: &Path,
-    versions_dir: &Path,
-    mc_version: &str,
-    mod_loader: &ModLoader,
-) -> Option<PathBuf> {
-    match mod_loader {
-        ModLoader::Vanilla | ModLoader::Fabric | ModLoader::Quilt => {
-            Some(versions_dir.join(mc_version).join(format!("{mc_version}.jar")))
-        }
-        ModLoader::Forge => {
-            loader_patched_client_jar(libraries, libraries_dir, "net.minecraftforge", "forge")
-        }
-        ModLoader::NeoForge => {
-            // NeoForge does not emit a patched `:client` classifier jar; the
-            // `mainClass` (e.g. `net.neoforged.fml.startup.Client`) lives in
-            // `net.neoforged.fancymodloader:loader:…`.
-            library_jar_path(libraries, libraries_dir, "net.neoforged.fancymodloader:loader:")
-        }
-    }
+    Ok(native_dirs)
 }
 
 /// Strip the version segment from a maven coordinate so duplicates with
 /// different versions collapse. Classifier (if present) is preserved so e.g.
 /// `forge:…:universal` and `forge:…:client` remain distinct entries.
+fn library_path(lib: &Library, libraries_dir: &Path) -> Option<PathBuf> {
+    if let Some(path) = lib.downloads.as_ref().and_then(|d| d.artifact.as_ref()).and_then(|a| a.path.as_deref()) {
+        Some(libraries_dir.join(path))
+    } else {
+        maven_to_path(&lib.name).map(|rel| libraries_dir.join(rel))
+    }
+}
+
+fn jar_contains_class(jar_path: &Path, main_class: &str) -> bool {
+    let class_path = format!("{}.class", main_class.replace('.', "/"));
+    let Ok(file) = std::fs::File::open(jar_path) else { return false; };
+    let Ok(mut zip) = zip::ZipArchive::new(file) else { return false; };
+    zip.by_name(&class_path).is_ok()
+}
+
+fn find_main_class_jar(
+    libraries: &[Library],
+    libraries_dir: &Path,
+    main_class: &str,
+) -> Option<PathBuf> {
+    let mut seen: HashSet<String> = HashSet::new();
+    for lib in libraries {
+        if !lib.natives.is_empty() { continue; }
+        let key = version_agnostic_name(&lib.name);
+        if !seen.insert(key) { continue; }
+        let Some(path) = library_path(lib, libraries_dir) else { continue; };
+        if path.exists() && jar_contains_class(&path, main_class) {
+            return Some(path);
+        }
+    }
+    None
+}
+
 fn version_agnostic_name(maven_coord: &str) -> String {
     let parts: Vec<&str> = maven_coord.splitn(4, ':').collect();
     let group = parts.first().copied().unwrap_or("");
@@ -665,6 +647,11 @@ pub async fn launch_instance(
     if !manifest_path.exists() {
         fail!(Error::Invalid("The required versions for launch could not be found.".to_string()));
     }
+    let child_manifest = match load_manifest(versions_dir(), &version_id) {
+        Ok(m) => m,
+        Err(e) => fail!(e),
+    };
+    let has_parent_manifest = child_manifest.inherits_from.is_some();
     let manifest = match merge_manifest(versions_dir(), &version_id) {
         Ok(m) => m,
         Err(e) => fail!(e),
@@ -684,17 +671,6 @@ pub async fn launch_instance(
         path.exists().then(|| path.to_string_lossy().into_owned())
     }).unwrap_or_else(|| "java".to_string());
 
-    let entry_jar = match entry_jar_path(&manifest.libraries, libraries_dir(), versions_dir(), &mc_version, &mod_loader) {
-        Some(p) => p,
-        None => fail!(Error::Invalid(format!(
-            "could not resolve entry jar for mod loader {mod_loader} \
-             (missing loader entry in manifest libraries?)"
-        ))),
-    };
-    if !entry_jar.exists() {
-        fail!(Error::NotExists(entry_jar.to_string_lossy().into_owned()));
-    }
-
     let asset_index = match manifest.asset_index.as_ref() {
         Some(idx) => idx,
         None => fail!(Error::Invalid("assetIndex not found in version JSON".into())),
@@ -704,15 +680,40 @@ pub async fn launch_instance(
         fail!(e);
     }
 
-    let natives_dir = versions_dir().join(&version_id).join("natives");
+    let natives_dir = libraries_dir().join("natives");
     log!("Extracting natives...");
-    if let Err(e) = extract_natives(&manifest.libraries, libraries_dir(), &natives_dir) {
-        log!(format!("Warning: natives: {e}"));
-    }
+    let native_dirs = match extract_natives(&manifest.libraries, libraries_dir(), &natives_dir) {
+        Ok(dirs) => dedup_preserve_order(dirs.into_iter().map(|p| p.to_string_lossy().into_owned())),
+        Err(e) => {
+            log!(format!("Warning: natives: {e}"));
+            Vec::new()
+        }
+    };
 
     if manifest.main_class.is_empty() {
         fail!(Error::Invalid("mainClass not found in version JSON".into()));
     }
+
+    let entry_libraries = if has_parent_manifest {
+        &child_manifest.libraries
+    } else {
+        &manifest.libraries
+    };
+    let entry_jar = find_main_class_jar(entry_libraries, libraries_dir(), &manifest.main_class)
+        .or_else(|| {
+            if has_parent_manifest {
+                return None;
+            }
+            let vanilla_jar = versions_dir().join(&mc_version).join(format!("{mc_version}.jar"));
+            (vanilla_jar.exists() && jar_contains_class(&vanilla_jar, &manifest.main_class)).then_some(vanilla_jar)
+        });
+    let Some(entry_jar) = entry_jar else {
+        fail!(Error::Invalid(format!(
+            "could not resolve entry jar containing mainClass {}",
+            manifest.main_class
+        )));
+    };
+    log!(format!("Entry jar: {}", entry_jar.display()));
 
     let (classpath, missing_libs) = build_classpath(&manifest.libraries, libraries_dir(), versions_dir(), &mc_version, &mod_loader);
     for m in &missing_libs {
@@ -725,7 +726,11 @@ pub async fn launch_instance(
     let game_dir = PathBuf::from(&instance_location);
     std::fs::create_dir_all(&game_dir)?;
     let game_dir_str = game_dir.to_string_lossy().into_owned();
-    let natives_str  = natives_dir.to_string_lossy().into_owned();
+    let natives_str = if native_dirs.is_empty() {
+        natives_dir.to_string_lossy().into_owned()
+    } else {
+        native_dirs.join(if cfg!(windows) { ";" } else { ":" })
+    };
     let asset_index_name = asset_index.id.clone();
     let assets_dir = assets_dir().to_string_lossy().into_owned();
 
@@ -774,10 +779,7 @@ pub async fn launch_instance(
             jvm_section.extend(default_jvm);
         }
         jvm_section.extend(process_args(&args.jvm, &vars));
-        // Deduplicate JVM args: parent + child manifests can each independently
-        // set the same flag (e.g. `-XX:+UseCompactObjectHeaders` from vanilla's
-        // default-user-jvm and Forge's jvm list). Keep the first occurrence.
-        launch_args.extend(dedup_preserve_order(jvm_section));
+        launch_args.extend(jvm_section);
 
         // All loaders (including Forge/NeoForge) launch via the manifest's
         // mainClass with a populated classpath. For Forge that main class is
