@@ -60,6 +60,9 @@ struct LogScrollState {
     selecting_text: RwSignal<bool>,
     scroll_pending: StoredValue<bool>,
     scheduled_scroll: ScheduledScrollState,
+    /// Last observed `scrollTop`, used by `handle_scroll_event` to discriminate
+    /// user-initiated upward scrolls from programmatic catch-up scrolls.
+    last_scroll_top: StoredValue<i32>,
 }
 
 impl LogScrollState {
@@ -111,6 +114,32 @@ impl LogScrollState {
         self.auto_scroll_enabled
             .set(log_is_near_bottom(self.log_box_ref));
         self.schedule_scroll_to_bottom();
+    }
+
+    /// Update `auto_scroll_enabled` from a `scroll` DOM event.
+    ///
+    /// `scroll` events fire for both user input and programmatic
+    /// `scrollTop = scrollHeight` writes. When logs arrive faster than the
+    /// 50ms scroll throttle, content added between the write and the event
+    /// makes `log_is_near_bottom` return false even though we just scrolled
+    /// to the bottom — that race used to disable auto-scroll permanently
+    /// during heavy log bursts. Only upward movement (`new_top < prev_top`)
+    /// can disable auto-scroll now; downward / stationary events at most
+    /// re-enable it when the view actually reaches the bottom.
+    fn handle_scroll_event(&self) {
+        if self.selecting_text.get_untracked() {
+            return;
+        }
+        let Some(el) = self.log_box_ref.get() else { return; };
+        let new_top = el.scroll_top();
+        let prev_top = self.last_scroll_top.get_value();
+        self.last_scroll_top.set_value(new_top);
+
+        if new_top < prev_top {
+            self.auto_scroll_enabled.set(log_is_near_bottom(self.log_box_ref));
+        } else if log_is_near_bottom(self.log_box_ref) {
+            self.auto_scroll_enabled.set(true);
+        }
     }
 }
 
@@ -172,11 +201,10 @@ fn log_box_class() -> &'static str {
         font-weight: 400;
         font-size: 0.8rem;
         line-height: 1.6;
-        overflow-y: auto;
+        overflow: auto;
         max-height: calc(100vh - 340px);
         min-height: 240px;
-        white-space: pre-wrap;
-        word-break: break-all;
+        white-space: pre;
         color: #d4d4d4;
         flex: 1;
     }
@@ -274,8 +302,8 @@ fn PlayContent(
         selecting_text: RwSignal::new(false),
         scroll_pending: StoredValue::new(false),
         scheduled_scroll: SendWrapper::new(Rc::new(RefCell::new(None::<ScheduledScroll>))),
+        last_scroll_top: StoredValue::new(0),
     };
-    let auto_scroll_enabled = scroll.auto_scroll_enabled;
     let selecting_text = scroll.selecting_text;
 
     if let Some(window) = web_sys::window() {
@@ -400,10 +428,9 @@ fn PlayContent(
                 <div
                     class=log_box_class()
                     node_ref=log_box_ref
-                    on:scroll=move |_| {
-                        if !selecting_text.get_untracked() {
-                            auto_scroll_enabled.set(log_is_near_bottom(log_box_ref));
-                        }
+                    on:scroll={
+                        let scroll = scroll.clone();
+                        move |_| scroll.handle_scroll_event()
                     }
                     on:mousedown=move |_| {
                         selecting_text.set(true);
