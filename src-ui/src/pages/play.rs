@@ -1,3 +1,4 @@
+use crate::components::open_in_file_manager::OpenInFileManager;
 use crate::components::ui::{Button, ButtonVariant};
 use crate::ipc;
 use bamboo_css_macro::css;
@@ -60,6 +61,9 @@ struct LogScrollState {
     selecting_text: RwSignal<bool>,
     scroll_pending: StoredValue<bool>,
     scheduled_scroll: ScheduledScrollState,
+    /// Last observed `scrollTop`, used by `handle_scroll_event` to discriminate
+    /// user-initiated upward scrolls from programmatic catch-up scrolls.
+    last_scroll_top: StoredValue<i32>,
 }
 
 impl LogScrollState {
@@ -112,6 +116,32 @@ impl LogScrollState {
             .set(log_is_near_bottom(self.log_box_ref));
         self.schedule_scroll_to_bottom();
     }
+
+    /// Update `auto_scroll_enabled` from a `scroll` DOM event.
+    ///
+    /// `scroll` events fire for both user input and programmatic
+    /// `scrollTop = scrollHeight` writes. When logs arrive faster than the
+    /// 50ms scroll throttle, content added between the write and the event
+    /// makes `log_is_near_bottom` return false even though we just scrolled
+    /// to the bottom — that race used to disable auto-scroll permanently
+    /// during heavy log bursts. Only upward movement (`new_top < prev_top`)
+    /// can disable auto-scroll now; downward / stationary events at most
+    /// re-enable it when the view actually reaches the bottom.
+    fn handle_scroll_event(&self) {
+        if self.selecting_text.get_untracked() {
+            return;
+        }
+        let Some(el) = self.log_box_ref.get() else { return; };
+        let new_top = el.scroll_top();
+        let prev_top = self.last_scroll_top.get_value();
+        self.last_scroll_top.set_value(new_top);
+
+        if new_top < prev_top {
+            self.auto_scroll_enabled.set(log_is_near_bottom(self.log_box_ref));
+        } else if log_is_near_bottom(self.log_box_ref) {
+            self.auto_scroll_enabled.set(true);
+        }
+    }
 }
 
 #[derive(PartialEq, Clone, Params)]
@@ -135,20 +165,47 @@ struct LaunchArgs {
     mod_loader: ModLoader,
 }
 
-fn log_box_class() -> &'static str {
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KillArgs {
+    instance_id: String,
+}
+
+fn log_viewer_class() -> &'static str {
     css! {
+        display: flex;
+        flex-direction: column;
         background-color: #0d0d0d;
         border-radius: 8px;
+        overflow: hidden;
+        flex: 1;
+        min-height: 0;
+    }
+}
+
+fn log_viewer_header_class() -> &'static str {
+    css! {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        padding: 8px 12px;
+        background-color: #161616;
+        border-bottom: 1px solid #2a2a2a;
+    }
+}
+
+fn log_box_class() -> &'static str {
+    css! {
         padding: 16px;
         font-family: "Roboto Mono", monospace;
         font-weight: 400;
         font-size: 0.8rem;
         line-height: 1.6;
-        overflow-y: auto;
-        max-height: calc(100vh - 300px);
+        overflow: auto;
+        max-height: calc(100vh - 340px);
         min-height: 240px;
-        white-space: pre-wrap;
-        word-break: break-all;
+        white-space: pre;
         color: #d4d4d4;
         flex: 1;
     }
@@ -177,6 +234,10 @@ pub fn PlayPage() -> impl IntoView {
 
     let log_lines: RwSignal<Vec<String>> = RwSignal::new(vec![]);
     let running: RwSignal<bool> = RwSignal::new(false);
+    // True only after the backend has spawned the Java process and registered
+    // its PID — Stop is gated on this so a click during version/asset
+    // preparation can't race kill_instance against an empty PID map.
+    let process_started: RwSignal<bool> = RwSignal::new(false);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
 
     ipc::on_event::<LogLine, _>("instance-log", move |msg| {
@@ -186,9 +247,16 @@ pub fn PlayPage() -> impl IntoView {
         log_lines.update(|v| v.push(msg.line.clone()));
         if msg.done {
             running.set(false);
+            process_started.set(false);
             if msg.error.is_some() {
                 error.set(msg.error);
             }
+        }
+    });
+
+    ipc::on_event::<String, _>("instance-process-started", move |started_id| {
+        if started_id == id.get_untracked() {
+            process_started.set(true);
         }
     });
 
@@ -203,6 +271,7 @@ pub fn PlayPage() -> impl IntoView {
         launched_instance_id.set(Some(inst.id.clone()));
 
         running.set(true);
+        process_started.set(false);
         log_lines.set(vec![]);
         error.set(None);
 
@@ -222,7 +291,7 @@ pub fn PlayPage() -> impl IntoView {
     view! {
         <Show when=move || instance.get().is_some()>
             {move || instance.get().map(|inst| view! {
-                <PlayContent instance=inst log_lines running error />
+                <PlayContent instance=inst log_lines running process_started error />
             })}
         </Show>
     }
@@ -233,10 +302,13 @@ fn PlayContent(
     instance: InstanceMeta,
     log_lines: RwSignal<Vec<String>>,
     running: RwSignal<bool>,
+    process_started: RwSignal<bool>,
     error: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let navigate = use_navigate();
     let inst_name = instance.name.clone();
+    let kill_instance_id = instance.id.clone();
+    let open_instance_id = instance.id.clone();
     let back_path = format!("/library/{}", instance.id);
     let log_box_ref: NodeRef<html::Div> = NodeRef::new();
     let scroll = LogScrollState {
@@ -245,8 +317,8 @@ fn PlayContent(
         selecting_text: RwSignal::new(false),
         scroll_pending: StoredValue::new(false),
         scheduled_scroll: SendWrapper::new(Rc::new(RefCell::new(None::<ScheduledScroll>))),
+        last_scroll_top: StoredValue::new(0),
     };
-    let auto_scroll_enabled = scroll.auto_scroll_enabled;
     let selecting_text = scroll.selecting_text;
 
     if let Some(window) = web_sys::window() {
@@ -350,22 +422,43 @@ fn PlayContent(
                 </Show>
             </div>
 
-            <div
-                class=log_box_class()
-                node_ref=log_box_ref
-                on:scroll=move |_| {
-                    if !selecting_text.get_untracked() {
-                        auto_scroll_enabled.set(log_is_near_bottom(log_box_ref));
+            <div class=log_viewer_class()>
+                <div class=log_viewer_header_class()>
+                    <OpenInFileManager instance_id=open_instance_id />
+                    <Button
+                        variant=ButtonVariant::Danger
+                        disabled=Signal::derive(move || !process_started.get())
+                        on_click=Callback::new(move |_| {
+                            let id = kill_instance_id.clone();
+                            leptos::task::spawn_local(async move {
+                                if let Err(e) = ipc::call::<_, ()>(
+                                    "kill_instance",
+                                    KillArgs { instance_id: id },
+                                ).await {
+                                    log_lines.update(|v| v.push(format!("[kill_instance failed] {e}")));
+                                }
+                            });
+                        })
+                    >
+                        "Stop"
+                    </Button>
+                </div>
+                <div
+                    class=log_box_class()
+                    node_ref=log_box_ref
+                    on:scroll={
+                        let scroll = scroll.clone();
+                        move |_| scroll.handle_scroll_event()
                     }
-                }
-                on:mousedown=move |_| {
-                    selecting_text.set(true);
-                }
-                on:mouseup=move |_| {
-                    scroll.finish_text_selection();
-                }
-            >
-                {move || log_lines.get().join("\n")}
+                    on:mousedown=move |_| {
+                        selecting_text.set(true);
+                    }
+                    on:mouseup=move |_| {
+                        scroll.finish_text_selection();
+                    }
+                >
+                    {move || log_lines.get().join("\n")}
+                </div>
             </div>
         </div>
     }

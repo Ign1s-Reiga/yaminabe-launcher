@@ -593,7 +593,7 @@ async fn download_assets(
     let mut downloaded_assets = 0usize;
     const ASSET_PROGRESS_INTERVAL: usize = 100;
 
-    log_progress(format!("[AssetManager/INFO]: Verifying {total_assets} indexed asset files..."));
+    log_progress(format!("Verifying {total_assets} indexed asset files..."));
 
     for (path, object) in &parsed.objects {
         if object.hash.len() < 2 {
@@ -611,7 +611,7 @@ async fn download_assets(
                         false
                     } else {
                         log_progress(format!(
-                            "[AssetManager/ERROR]: Failed to verify '{path}' (Hash mismatch: expected {}, got {}).",
+                            "Failed to verify '{path}' (Hash mismatch: expected {}, got {}).",
                             object.hash, hex
                         ));
                         true
@@ -619,7 +619,7 @@ async fn download_assets(
                 }
                 Err(e) => {
                     log_progress(format!(
-                        "[AssetManager/ERROR]: Failed to read cached asset '{path}' ({e})."
+                        "Failed to read cached asset '{path}' ({e})."
                     ));
                     true
                 }
@@ -632,7 +632,7 @@ async fn download_assets(
             let bytes = match fetch_and_verify(client, &url, &object.hash, &format!("asset {path}")).await {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    log_progress(format!("[AssetManager/ERROR]: Failed to download '{path}' ({e})."));
+                    log_progress(format!("Failed to download '{path}' ({e})."));
                     return Err(e);
                 }
             };
@@ -644,20 +644,18 @@ async fn download_assets(
         checked_assets += 1;
         if checked_assets == total_assets || checked_assets % ASSET_PROGRESS_INTERVAL == 0 {
             let percent = if total_assets == 0 { 100 } else { checked_assets * 100 / total_assets };
-            let filled = percent / 10;
-            let bar = format!("{}{}", "#".repeat(filled), "-".repeat(10 - filled));
             log_progress(format!(
-                "[AssetManager/PROGRESS]: Downloading Assets: [{bar}] {percent}% ({checked_assets}/{total_assets}); {downloaded_assets} downloaded, {cached_assets} verified."
+                "Downloading Assets: {percent}% ({checked_assets}/{total_assets}); {downloaded_assets} downloaded, {cached_assets} verified."
             ));
         }
     }
     if total_assets == 0 {
-        log_progress("[AssetManager/INFO]: Asset verification complete. Asset index contained no files.".to_string());
+        log_progress("Asset verification complete. Asset index contained no files.".to_string());
     } else if downloaded_assets == 0 {
-        log_progress("[AssetManager/INFO]: Asset verification complete. All files matched.".to_string());
+        log_progress("Asset verification complete. All files matched.".to_string());
     } else {
         log_progress(format!(
-            "[AssetManager/INFO]: Asset synchronization complete. {downloaded_assets} downloaded, {cached_assets} verified."
+            "Asset synchronization complete. {downloaded_assets} downloaded, {cached_assets} verified."
         ));
     }
     Ok(())
@@ -934,6 +932,13 @@ pub async fn launch_instance(
         Ok(c) => c,
         Err(e) => fail!(Error::ChildProcess(format!("spawning Java process: {e}"))),
     };
+    if let Some(pid) = child.id() {
+        state.running_children.lock().unwrap().insert(instance_id.clone(), pid);
+        // Frontend gates its Stop control on this event — without it, a click
+        // during the preparation phase would race kill_instance against the
+        // not-yet-populated `running_children` map.
+        app_handle.emit("instance-process-started", &instance_id).ok();
+    }
 
     // Read bytes (not lines) so we can decode lossily. Java emits stderr in the
     // system codepage on Windows (e.g. CP932 on Japanese locales), and
@@ -979,6 +984,7 @@ pub async fn launch_instance(
     let t2 = tokio::spawn(drain(stderr, app_handle.clone(), instance_id.clone(), true));
 
     let status = child.wait().await?;
+    state.running_children.lock().unwrap().remove(&instance_id);
     t1.await.ok();
     t2.await.ok();
 
@@ -1006,5 +1012,45 @@ pub async fn launch_instance(
 
     done!(format!("Done (exit code {exit_code})"));
     info!("Instance {instance_id} exited: {status}");
+    Ok(())
+}
+
+/// Terminate the Java process tree for a running instance. We shell out to
+/// `taskkill /F /T /PID <pid>` rather than calling `tokio::Child::kill` because
+/// the `Child` is owned by `launch_instance` (which holds it across an `await`
+/// on `wait()`) and forwarding ownership would require restructuring the entire
+/// drain/wait pipeline. `/T` walks the descendant tree so child JVMs/launchers
+/// spawned by the game (e.g. crash reporters) get cleaned up too.
+#[tauri::command]
+pub async fn kill_instance(
+    instance_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), Error> {
+    let pid = state.running_children.lock().unwrap().get(&instance_id).copied();
+    let Some(pid) = pid else {
+        return Err(Error::NotExists(format!("running instance '{instance_id}'")));
+    };
+
+    #[cfg(windows)]
+    {
+        let status = tokio::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .creation_flags(0x08000000)
+            .status().await
+            .map_err(|e| Error::ChildProcess(format!("invoking taskkill for pid {pid}: {e}")))?;
+        if !status.success() {
+            return Err(Error::ChildProcess(format!("taskkill for pid {pid} exited with {status}")));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let status = tokio::process::Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status().await
+            .map_err(|e| Error::ChildProcess(format!("invoking kill for pid {pid}: {e}")))?;
+        if !status.success() {
+            return Err(Error::ChildProcess(format!("kill for pid {pid} exited with {status}")));
+        }
+    }
     Ok(())
 }
