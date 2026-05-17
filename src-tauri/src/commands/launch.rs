@@ -593,7 +593,7 @@ async fn download_assets(
     let mut downloaded_assets = 0usize;
     const ASSET_PROGRESS_INTERVAL: usize = 100;
 
-    log_progress(format!("[AssetManager/INFO]: Verifying {total_assets} indexed asset files..."));
+    log_progress(format!("Verifying {total_assets} indexed asset files..."));
 
     for (path, object) in &parsed.objects {
         if object.hash.len() < 2 {
@@ -611,7 +611,7 @@ async fn download_assets(
                         false
                     } else {
                         log_progress(format!(
-                            "[AssetManager/ERROR]: Failed to verify '{path}' (Hash mismatch: expected {}, got {}).",
+                            "Failed to verify '{path}' (Hash mismatch: expected {}, got {}).",
                             object.hash, hex
                         ));
                         true
@@ -619,7 +619,7 @@ async fn download_assets(
                 }
                 Err(e) => {
                     log_progress(format!(
-                        "[AssetManager/ERROR]: Failed to read cached asset '{path}' ({e})."
+                        "Failed to read cached asset '{path}' ({e})."
                     ));
                     true
                 }
@@ -632,7 +632,7 @@ async fn download_assets(
             let bytes = match fetch_and_verify(client, &url, &object.hash, &format!("asset {path}")).await {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    log_progress(format!("[AssetManager/ERROR]: Failed to download '{path}' ({e})."));
+                    log_progress(format!("Failed to download '{path}' ({e})."));
                     return Err(e);
                 }
             };
@@ -644,20 +644,18 @@ async fn download_assets(
         checked_assets += 1;
         if checked_assets == total_assets || checked_assets % ASSET_PROGRESS_INTERVAL == 0 {
             let percent = if total_assets == 0 { 100 } else { checked_assets * 100 / total_assets };
-            let filled = percent / 10;
-            let bar = format!("{}{}", "#".repeat(filled), "-".repeat(10 - filled));
             log_progress(format!(
-                "[AssetManager/PROGRESS]: Downloading Assets: [{bar}] {percent}% ({checked_assets}/{total_assets}); {downloaded_assets} downloaded, {cached_assets} verified."
+                "Downloading Assets: {percent}% ({checked_assets}/{total_assets}); {downloaded_assets} downloaded, {cached_assets} verified."
             ));
         }
     }
     if total_assets == 0 {
-        log_progress("[AssetManager/INFO]: Asset verification complete. Asset index contained no files.".to_string());
+        log_progress("Asset verification complete. Asset index contained no files.".to_string());
     } else if downloaded_assets == 0 {
-        log_progress("[AssetManager/INFO]: Asset verification complete. All files matched.".to_string());
+        log_progress("Asset verification complete. All files matched.".to_string());
     } else {
         log_progress(format!(
-            "[AssetManager/INFO]: Asset synchronization complete. {downloaded_assets} downloaded, {cached_assets} verified."
+            "Asset synchronization complete. {downloaded_assets} downloaded, {cached_assets} verified."
         ));
     }
     Ok(())
@@ -936,6 +934,10 @@ pub async fn launch_instance(
     };
     if let Some(pid) = child.id() {
         state.running_children.lock().unwrap().insert(instance_id.clone(), pid);
+        // Frontend gates its Stop control on this event — without it, a click
+        // during the preparation phase would race kill_instance against the
+        // not-yet-populated `running_children` map.
+        app_handle.emit("instance-process-started", &instance_id).ok();
     }
 
     // Read bytes (not lines) so we can decode lossily. Java emits stderr in the
