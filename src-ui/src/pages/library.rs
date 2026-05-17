@@ -6,6 +6,10 @@ use leptos::prelude::*;
 use leptos::{component, view, IntoView};
 use yaminabe_launcher_shared::datatypes::InstanceMeta;
 
+fn matches_active_category(inst: &InstanceMeta, active: &str) -> bool {
+    if active == "Default" { inst.category.is_empty() } else { inst.category == active }
+}
+
 #[component]
 pub fn LibraryPage() -> impl IntoView {
     // ── instance state ─────────────────────────────────────────────────────
@@ -75,10 +79,7 @@ pub fn LibraryPage() -> impl IntoView {
                 each=move || {
                     let active = active_category.get();
                     instances.get().into_iter()
-                        .filter(|inst| {
-                            if active == "Default" { inst.category.is_empty() }
-                            else { inst.category == active }
-                        })
+                        .filter(|inst| matches_active_category(inst, &active))
                         .collect::<Vec<_>>()
                 }
                 key=|v| v.id.clone()
@@ -90,10 +91,7 @@ pub fn LibraryPage() -> impl IntoView {
                 each=move || {
                     let active = active_category.get();
                     pending_instances.get().into_iter()
-                        .filter(|inst| {
-                            if active == "Default" { inst.category.is_empty() }
-                            else { inst.category == active }
-                        })
+                        .filter(|inst| matches_active_category(inst, &active))
                         .collect::<Vec<_>>()
                 }
                 key=|v| v.id.clone()

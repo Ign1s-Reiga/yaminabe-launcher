@@ -51,6 +51,10 @@ pub fn get_resource_name(url: &str) -> Option<&str> {
     }
 }
 
+pub fn sha1_hex(bytes: &[u8]) -> String {
+    Sha1::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
 pub async fn download_from_maven(
     client: &Client,
     repo_url: &str,
@@ -79,7 +83,7 @@ pub async fn download_from_maven(
     }
     let bytes = resp.bytes().await.map_err(Error::InvalidResponse)?;
 
-    let hex = Sha1::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let hex = sha1_hex(&bytes);
     if hex != sha1.trim() {
         return Err(Error::ChecksumMismatch { resource: dep, sha1, hex });
     }

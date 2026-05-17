@@ -377,36 +377,26 @@ pub fn SearchPage() -> impl IntoView {
         </div>
 
         // ── status messages (outside scroll area) ─────────────────────────────
-        <Show when=move || search_state.get().is_loading fallback=|| ()>
-            <div class=status_area>"Searching…"</div>
-        </Show>
-        <Show when=move || !search_state.get().is_loading && search_query.get().query.is_empty() fallback=|| ()>
-            <div class=status_area>
-                <div style="font-size: 2.5rem; opacity: 0.8;">"🔍"</div>
-                "Type a modpack name above and press Search to begin."
-            </div>
-        </Show>
-        <Show
-            when=move || {
-                let s = search_state.get();
-                !s.is_loading && !search_query.get().query.is_empty() && s.error.is_some()
+        {move || {
+            let s = search_state.get();
+            let q = search_query.get();
+            if s.is_loading {
+                view! { <div class=status_area>"Searching…"</div> }.into_any()
+            } else if q.query.is_empty() {
+                view! {
+                    <div class=status_area>
+                        <div style="font-size: 2.5rem; opacity: 0.8;">"🔍"</div>
+                        "Type a modpack name above and press Search to begin."
+                    </div>
+                }.into_any()
+            } else if let Some(e) = s.error {
+                view! { <div class=status_area>{e}</div> }.into_any()
+            } else if s.results.is_empty() {
+                view! { <div class=status_area>"No modpacks found."</div> }.into_any()
+            } else {
+                ().into_any()
             }
-            fallback=|| ()
-        >
-            <div class=status_area>{move || search_state.get().error.unwrap_or_default()}</div>
-        </Show>
-        <Show
-            when=move || {
-                let s = search_state.get();
-                !s.is_loading
-                    && !search_query.get().query.is_empty()
-                    && s.results.is_empty()
-                    && s.error.is_none()
-            }
-            fallback=|| ()
-        >
-            <div class=status_area>"No modpacks found."</div>
-        </Show>
+        }}
 
         // ── scrollable result cards ───────────────────────────────────────────
         <Show when=move || !search_state.get().results.is_empty() fallback=|| ()>

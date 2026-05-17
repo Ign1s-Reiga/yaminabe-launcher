@@ -1,8 +1,7 @@
 use bamboo_css_macro::{css, styled};
 use leptos::prelude::*;
-use leptos::{component, IntoView, view, web_sys};
+use leptos::{component, IntoView, view};
 use serde::Serialize;
-use wasm_bindgen::JsCast;
 use crate::components::settings::{SaveState, SettingsSection, SettingsProp};
 use crate::components::ui::*;
 use crate::ipc;
@@ -26,11 +25,7 @@ pub fn SettingsPage() -> impl IntoView {
     let save_state: RwSignal<SaveState> = RwSignal::new(SaveState::Idle);
 
     let on_submit = move |ev: leptos::ev::SubmitEvent| {
-        ev.prevent_default();
-        let Some(form) = ev.target()
-            .and_then(|t| t.dyn_into::<web_sys::HtmlFormElement>().ok())
-        else { return };
-        let Ok(data) = web_sys::FormData::new_with_form(&form) else { return };
+        let Some(data) = ipc::form_data_from_submit(&ev) else { return };
         let get = |k: &str| data.get(k).as_string().unwrap_or_default();
         let get_u32 = |k: &str| data.get(k).as_string().unwrap_or_default().parse::<u32>().unwrap_or(0);
 

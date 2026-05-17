@@ -2,11 +2,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use log::info;
 use serde::{Deserialize, Serialize};
-use sha1::{Digest, Sha1};
 use tauri::{Emitter, State};
 use yaminabe_launcher_shared::datatypes::{InstanceMeta, ModLoader};
 use yaminabe_launcher_shared::error::Error;
 use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, AppState};
+use crate::http_utils::sha1_hex;
 
 use crate::commands::instance::find_instance_dir;
 
@@ -507,10 +507,6 @@ fn process_args(items: &[ArgumentItem], vars: &LaunchVars) -> Vec<String> {
         }
     }
     out
-}
-
-fn sha1_hex(bytes: &[u8]) -> String {
-    Sha1::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Fetch `url`, verify its SHA1 matches `expected_sha1`, and return the bytes.

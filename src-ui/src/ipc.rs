@@ -1,3 +1,4 @@
+use leptos::web_sys;
 use serde::Serialize;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
@@ -31,6 +32,15 @@ pub async fn call_noargs<R: for<'de> serde::Deserialize<'de>>(cmd: &str) -> Resu
     #[derive(Serialize)]
     struct NoArgs {}
     call(cmd, NoArgs {}).await
+}
+
+/// Calls `prevent_default()` on `ev` and returns the form's `FormData`, or
+/// `None` if the target is not an `HtmlFormElement` or `FormData` construction
+/// fails. Centralises the boilerplate every form submit handler needs.
+pub fn form_data_from_submit(ev: &leptos::ev::SubmitEvent) -> Option<web_sys::FormData> {
+    ev.prevent_default();
+    let form = ev.target()?.dyn_into::<web_sys::HtmlFormElement>().ok()?;
+    web_sys::FormData::new_with_form(&form).ok()
 }
 
 /// Subscribe to a Tauri backend event for the lifetime of the app.
