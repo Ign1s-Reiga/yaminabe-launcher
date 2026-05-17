@@ -9,13 +9,12 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use log::info;
 use serde::Deserialize;
-use sha1::{Digest, Sha1};
 use tauri::State;
 use zip::ZipArchive;
 use yaminabe_launcher_shared::datatypes::ModLoader;
 use yaminabe_launcher_shared::error::Error;
 use crate::{libraries_dir, temp_dir, versions_dir, AppState};
-use crate::http_utils::{download_from_maven, download_resource, fetch_json, get_resource_name};
+use crate::http_utils::{download_from_maven, download_resource, fetch_json, get_resource_name, sha1_hex};
 
 // ── Vanilla ───────────────────────────────────────────────────────────────────
 
@@ -76,37 +75,47 @@ struct FabricLikeMetadata {
     url: String,
 }
 
-pub async fn ensure_fabric(
+async fn ensure_fabric_like(
+    loader: ModLoader,
+    label: &str,
+    meta_url: &str,
+    version_id_prefix: &str,
     mc_version: &str,
     loader_version: &str,
     client: &reqwest::Client,
 ) -> Result<(), Error> {
-    let installer_url = fetch_json::<Vec<FabricLikeMetadata>>(
-        client,
-        "https://meta.fabricmc.net/v2/versions/installer",
-        &[],
-        None,
-    ).await?
+    let installer_url = fetch_json::<Vec<FabricLikeMetadata>>(client, meta_url, &[], None)
+        .await?
         .into_iter().next()
-        .ok_or_else(|| Error::Invalid("No Fabric installer metadata available".into()))?
+        .ok_or_else(|| Error::Invalid(format!("No {label} installer metadata available")))?
         .url;
 
     let temp_installer_path = temp_dir().join(get_resource_name(&installer_url).unwrap_or_default());
     download_resource(client, &installer_url, temp_installer_path).await?;
 
-    fabric_like::run_installer(
-        &ModLoader::Fabric,
-        &installer_url,
+    fabric_like::run_installer(&loader, &installer_url, mc_version, loader_version, client).await?;
+
+    let version_id = format!("{version_id_prefix}-loader-{loader_version}-{mc_version}");
+    fabric_like::pre_download_libraries(&version_id, client).await?;
+
+    info!("Installed {label} {loader_version} for MC {mc_version}");
+    Ok(())
+}
+
+pub async fn ensure_fabric(
+    mc_version: &str,
+    loader_version: &str,
+    client: &reqwest::Client,
+) -> Result<(), Error> {
+    ensure_fabric_like(
+        ModLoader::Fabric,
+        "Fabric",
+        "https://meta.fabricmc.net/v2/versions/installer",
+        "fabric",
         mc_version,
         loader_version,
         client,
-    ).await?;
-
-    let version_id = format!("fabric-loader-{loader_version}-{mc_version}");
-    fabric_like::pre_download_libraries(&version_id, client).await?;
-
-    info!("Installed Fabric {loader_version} for MC {mc_version}");
-    Ok(())
+    ).await
 }
 
 pub async fn ensure_quilt(
@@ -114,32 +123,15 @@ pub async fn ensure_quilt(
     loader_version: &str,
     client: &reqwest::Client,
 ) -> Result<(), Error> {
-    let installer_url = fetch_json::<Vec<FabricLikeMetadata>>(
-        client,
+    ensure_fabric_like(
+        ModLoader::Quilt,
+        "Quilt",
         "https://meta.quiltmc.org/v3/versions/installer",
-        &[],
-        None,
-    ).await?
-        .into_iter().next()
-        .ok_or_else(|| Error::Invalid("No Quilt installer metadata available".into()))?
-        .url;
-
-    let temp_installer_path = temp_dir().join(get_resource_name(&installer_url).unwrap_or_default());
-    download_resource(client, &installer_url, temp_installer_path).await?;
-
-    fabric_like::run_installer(
-        &ModLoader::Quilt,
-        &installer_url,
+        "quilt",
         mc_version,
         loader_version,
         client,
-    ).await?;
-
-    let version_id = format!("quilt-loader-{loader_version}-{mc_version}");
-    fabric_like::pre_download_libraries(&version_id, client).await?;
-
-    info!("Installed Quilt {loader_version} for MC {mc_version}");
-    Ok(())
+    ).await
 }
 
 // ── Forge ─────────────────────────────────────────────────────────────────────
@@ -309,6 +301,3 @@ fn maven_coord_to_path(coord: &str) -> PathBuf {
     group.split('.').collect::<PathBuf>().join(artifact).join(version).join(filename)
 }
 
-fn sha1_hex(bytes: &[u8]) -> String {
-    Sha1::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
-}

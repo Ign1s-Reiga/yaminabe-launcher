@@ -5,11 +5,10 @@ use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::{component, view, web_sys, IntoView};
+use leptos::{component, view, IntoView};
 use leptos_router::hooks::{use_navigate, use_params};
 use leptos_router::params::Params;
 use serde::Serialize;
-use wasm_bindgen::JsCast;
 use yaminabe_launcher_shared::datatypes::{InstanceMeta, JavaInstall};
 
 #[derive(Params, PartialEq, Clone)]
@@ -84,11 +83,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     let jvm_args_init: RwSignal<String> = RwSignal::new(instance.jvm_args.clone());
 
     let on_settings_submit = move |ev: SubmitEvent| {
-        ev.prevent_default();
-        let Some(form) = ev.target()
-            .and_then(|t| t.dyn_into::<web_sys::HtmlFormElement>().ok())
-        else { return };
-        let Ok(data) = web_sys::FormData::new_with_form(&form) else { return };
+        let Some(data) = ipc::form_data_from_submit(&ev) else { return };
         let get = |k: &str| data.get(k).as_string().unwrap_or_default();
         let get_u32 = |k: &str| data.get(k).as_string().unwrap_or_default().parse::<u32>().unwrap_or(0);
         let args = SaveInstanceSettingsArgs {

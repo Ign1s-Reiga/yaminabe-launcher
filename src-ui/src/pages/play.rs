@@ -53,73 +53,65 @@ fn has_text_selection() -> bool {
         .map_or(false, |is_collapsed| !is_collapsed)
 }
 
-fn schedule_scroll_to_bottom(
+#[derive(Clone)]
+struct LogScrollState {
     log_box_ref: NodeRef<html::Div>,
     auto_scroll_enabled: RwSignal<bool>,
     selecting_text: RwSignal<bool>,
     scroll_pending: StoredValue<bool>,
     scheduled_scroll: ScheduledScrollState,
-) {
-    if !auto_scroll_enabled.get_untracked()
-        || selecting_text.get_untracked()
-        || has_text_selection()
-        || scroll_pending.get_value()
-    {
-        return;
-    }
-
-    let scheduled_scroll_on_timeout = scheduled_scroll.clone();
-
-    scroll_pending.set_value(true);
-    let callback = Closure::<dyn FnMut()>::new(move || {
-        scroll_pending.set_value(false);
-        let _scheduled_scroll = scheduled_scroll_on_timeout.borrow_mut().take();
-        if !auto_scroll_enabled.get_untracked()
-            || selecting_text.get_untracked()
-            || has_text_selection()
-        {
-            return;
-        }
-        if let Some(el) = log_box_ref.get() {
-            el.set_scroll_top(el.scroll_height());
-        }
-    });
-
-    if let Some(window) = web_sys::window() {
-        if let Ok(handle) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-            callback.as_ref().unchecked_ref(),
-            LOG_SCROLL_THROTTLE_MS,
-        ) {
-            *scheduled_scroll.borrow_mut() = Some(ScheduledScroll {
-                handle,
-                _callback: callback,
-            });
-            return;
-        }
-    }
-
-    scroll_pending.set_value(false);
 }
 
-fn finish_log_text_selection(
-    log_box_ref: NodeRef<html::Div>,
-    auto_scroll_enabled: RwSignal<bool>,
-    selecting_text: RwSignal<bool>,
-    scroll_pending: StoredValue<bool>,
-    scheduled_scroll: ScheduledScrollState,
-) {
-    if !selecting_text.get_untracked() {
-        return;
+impl LogScrollState {
+    fn should_skip_scroll(&self) -> bool {
+        !self.auto_scroll_enabled.get_untracked()
+            || self.selecting_text.get_untracked()
+            || has_text_selection()
     }
-    selecting_text.set(false);
-    auto_scroll_enabled.set(log_is_near_bottom(log_box_ref));
-    schedule_scroll_to_bottom(
-        log_box_ref,
-        auto_scroll_enabled,
-        selecting_text,
-        scroll_pending,
-        scheduled_scroll,
-    );
+
+    fn schedule_scroll_to_bottom(&self) {
+        if self.should_skip_scroll() || self.scroll_pending.get_value() {
+            return;
+        }
+
+        let on_timeout = self.clone();
+        self.scroll_pending.set_value(true);
+        let callback = Closure::<dyn FnMut()>::new(move || {
+            on_timeout.scroll_pending.set_value(false);
+            let _taken = on_timeout.scheduled_scroll.borrow_mut().take();
+            if on_timeout.should_skip_scroll() {
+                return;
+            }
+            if let Some(el) = on_timeout.log_box_ref.get() {
+                el.set_scroll_top(el.scroll_height());
+            }
+        });
+
+        if let Some(window) = web_sys::window() {
+            if let Ok(handle) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                callback.as_ref().unchecked_ref(),
+                LOG_SCROLL_THROTTLE_MS,
+            ) {
+                *self.scheduled_scroll.borrow_mut() = Some(ScheduledScroll {
+                    handle,
+                    _callback: callback,
+                });
+                return;
+            }
+        }
+
+        self.scroll_pending.set_value(false);
+    }
+
+    fn finish_text_selection(&self) {
+        if !self.selecting_text.get_untracked() {
+            return;
+        }
+        self.selecting_text.set(false);
+        self.auto_scroll_enabled
+            .set(log_is_near_bottom(self.log_box_ref));
+        self.schedule_scroll_to_bottom();
+    }
 }
 
 #[derive(PartialEq, Clone, Params)]
@@ -247,21 +239,20 @@ fn PlayContent(
     let inst_name = instance.name.clone();
     let back_path = format!("/library/{}", instance.id);
     let log_box_ref: NodeRef<html::Div> = NodeRef::new();
-    let auto_scroll_enabled = RwSignal::new(true);
-    let selecting_text = RwSignal::new(false);
-    let scroll_pending = StoredValue::new(false);
-    let scheduled_scroll = SendWrapper::new(Rc::new(RefCell::new(None::<ScheduledScroll>)));
+    let scroll = LogScrollState {
+        log_box_ref,
+        auto_scroll_enabled: RwSignal::new(true),
+        selecting_text: RwSignal::new(false),
+        scroll_pending: StoredValue::new(false),
+        scheduled_scroll: SendWrapper::new(Rc::new(RefCell::new(None::<ScheduledScroll>))),
+    };
+    let auto_scroll_enabled = scroll.auto_scroll_enabled;
+    let selecting_text = scroll.selecting_text;
 
     if let Some(window) = web_sys::window() {
-        let scheduled_scroll_on_mouseup = scheduled_scroll.clone();
+        let scroll_for_mouseup = scroll.clone();
         let callback = Closure::<dyn FnMut()>::new(move || {
-            finish_log_text_selection(
-                log_box_ref,
-                auto_scroll_enabled,
-                selecting_text,
-                scroll_pending,
-                scheduled_scroll_on_mouseup.clone(),
-            );
+            scroll_for_mouseup.finish_text_selection();
         });
         let listener = callback
             .as_ref()
@@ -277,25 +268,19 @@ fn PlayContent(
         });
     }
 
-    let scheduled_scroll_on_cleanup = scheduled_scroll.clone();
+    let scroll_for_cleanup = scroll.clone();
     on_cleanup(move || {
-        if let Some(scheduled_scroll) = scheduled_scroll_on_cleanup.borrow_mut().take() {
+        if let Some(scheduled) = scroll_for_cleanup.scheduled_scroll.borrow_mut().take() {
             if let Some(window) = web_sys::window() {
-                window.clear_timeout_with_handle(scheduled_scroll.handle);
+                window.clear_timeout_with_handle(scheduled.handle);
             }
         }
     });
 
-    let scheduled_scroll_on_effect = scheduled_scroll.clone();
+    let scroll_for_effect = scroll.clone();
     Effect::new(move |_| {
         let _ = log_lines.get();
-        schedule_scroll_to_bottom(
-            log_box_ref,
-            auto_scroll_enabled,
-            selecting_text,
-            scroll_pending,
-            scheduled_scroll_on_effect.clone(),
-        );
+        scroll_for_effect.schedule_scroll_to_bottom();
     });
 
     let play_root = css! {
@@ -377,13 +362,7 @@ fn PlayContent(
                     selecting_text.set(true);
                 }
                 on:mouseup=move |_| {
-                    finish_log_text_selection(
-                        log_box_ref,
-                        auto_scroll_enabled,
-                        selecting_text,
-                        scroll_pending,
-                        scheduled_scroll.clone(),
-                    );
+                    scroll.finish_text_selection();
                 }
             >
                 {move || log_lines.get().join("\n")}

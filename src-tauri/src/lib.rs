@@ -68,14 +68,17 @@ pub fn libraries_dir() -> &'static PathBuf { LIBRARIES_DIR.get().unwrap() }
 pub fn runtimes_dir() -> &'static PathBuf { RUNTIMES_DIR.get().unwrap() }
 
 fn init_dirs(app: &tauri::App) -> Result<(), InitializationError> {
-    let app_dir = app.path().local_data_dir().map_err(|e| InitializationError::PathResolution(e.to_string()))?.join(".yaminabe");
+    fn path_err(e: tauri::Error) -> InitializationError {
+        InitializationError::PathResolution(e.to_string())
+    }
+    let app_dir = app.path().local_data_dir().map_err(path_err)?.join(".yaminabe");
     let bin_dir = app_dir.join("bin");
-    BIN_DIR.set(bin_dir.clone())?;
-    TEMP_DIR.set(app.path().temp_dir().map_err(|e| InitializationError::PathResolution(e.to_string()))?)?;
-    VERSIONS_DIR.set(bin_dir.clone().join("versions"))?;
-    LIBRARIES_DIR.set(bin_dir.clone().join("libraries"))?;
-    ASSETS_DIR.set(bin_dir.clone().join("assets"))?;
+    TEMP_DIR.set(app.path().temp_dir().map_err(path_err)?)?;
+    VERSIONS_DIR.set(bin_dir.join("versions"))?;
+    LIBRARIES_DIR.set(bin_dir.join("libraries"))?;
+    ASSETS_DIR.set(bin_dir.join("assets"))?;
     RUNTIMES_DIR.set(bin_dir.join("runtimes"))?;
+    BIN_DIR.set(bin_dir)?;
     SETTINGS_PATH.set(app_dir.join("settings.json"))?;
     for p in [versions_dir(), libraries_dir(), assets_dir(), runtimes_dir()] {
         std::fs::create_dir_all(p)?;

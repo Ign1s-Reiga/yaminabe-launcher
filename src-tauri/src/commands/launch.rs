@@ -2,11 +2,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use log::info;
 use serde::{Deserialize, Serialize};
-use sha1::{Digest, Sha1};
 use tauri::{Emitter, State};
 use yaminabe_launcher_shared::datatypes::{InstanceMeta, ModLoader};
 use yaminabe_launcher_shared::error::Error;
 use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, AppState};
+use crate::http_utils::sha1_hex;
 
 use crate::commands::instance::find_instance_dir;
 
@@ -171,23 +171,19 @@ enum ArgumentItem {
 /// the precise version isn't installed, the caller must surface a clear error
 /// rather than launching with whatever happens to be present.
 fn resolve_version_id(mc_version: &str, mod_loader: &ModLoader, mod_loader_version: Option<&str>) -> Result<String, Error> {
+    let require_version = || mod_loader_version
+        .ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")));
     let id = match mod_loader {
         ModLoader::Vanilla => mc_version.to_string(),
-        ModLoader::Fabric => {
-            let v = mod_loader_version.ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")))?;
-            format!("fabric-loader-{v}-{mc_version}")
-        }
-        ModLoader::Quilt => {
-            let v = mod_loader_version.ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")))?;
-            format!("quilt-loader-{v}-{mc_version}")
-        }
+        ModLoader::Fabric => format!("fabric-loader-{}-{mc_version}", require_version()?),
+        ModLoader::Quilt => format!("quilt-loader-{}-{mc_version}", require_version()?),
         ModLoader::Forge => {
-            let v = mod_loader_version.ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")))?;
+            let v = require_version()?;
             let build = v.strip_prefix("forge-").unwrap_or(v);
             format!("{mc_version}-forge-{build}")
         }
         ModLoader::NeoForge => {
-            let v = mod_loader_version.ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")))?;
+            let v = require_version()?;
             let build = v.strip_prefix("neoforge-").unwrap_or(v);
             format!("neoforge-{build}")
         }
@@ -385,12 +381,7 @@ fn build_classpath(
         if !lib.natives.is_empty() { continue; }
         let key = version_agnostic_name(&lib.name);
         if !seen.insert(key) { continue; }
-        let p = if let Some(path) = lib.downloads.as_ref().and_then(|d| d.artifact.as_ref()).and_then(|a| a.path.as_deref()) {
-            Some(libraries_dir.join(path))
-        } else if let Some(rel) = maven_to_path(&lib.name) {
-            Some(libraries_dir.join(rel))
-        } else { None };
-        if let Some(p) = p {
+        if let Some(p) = library_path(lib, libraries_dir) {
             if p.exists() {
                 paths.push(p.to_string_lossy().into_owned());
             } else {
@@ -476,15 +467,19 @@ fn dedup_preserve_order(items: impl IntoIterator<Item = String>) -> Vec<String> 
     items.into_iter().filter(|s| seen.insert(s.clone())).collect()
 }
 
+fn extend_from_arg_value(out: &mut Vec<String>, value: &ArgValue, mut map: impl FnMut(&str) -> String) {
+    match value {
+        ArgValue::One(s) => out.push(map(s)),
+        ArgValue::Many(v) => out.extend(v.iter().map(|s| map(s))),
+    }
+}
+
 fn collect_default_jvm(items: &[DefaultJvmItem]) -> Vec<String> {
     let mut out = Vec::new();
     for item in items {
         if item.rules.iter().any(|r| r.features.is_some()) { continue; }
         if !eval_rules(&item.rules) { continue; }
-        match &item.value {
-            ArgValue::One(s)  => out.push(s.clone()),
-            ArgValue::Many(v) => out.extend(v.iter().cloned()),
-        }
+        extend_from_arg_value(&mut out, &item.value, |s| s.to_string());
     }
     out
 }
@@ -501,19 +496,13 @@ fn process_args(items: &[ArgumentItem], vars: &LaunchVars) -> Vec<String> {
                 });
                 if feature_applies {
                     if has_resolution {
-                        match value {
-                            ArgValue::One(s)  => out.push(substitute_vars(s, vars)),
-                            ArgValue::Many(v) => out.extend(v.iter().map(|s| substitute_vars(s, vars))),
-                        }
+                        extend_from_arg_value(&mut out, value, |s| substitute_vars(s, vars));
                     }
                     continue;
                 }
                 if rules.iter().any(|r| r.features.is_some()) { continue; }
                 if !eval_rules(rules) { continue; }
-                match value {
-                    ArgValue::One(s)  => out.push(substitute_vars(s, vars)),
-                    ArgValue::Many(v) => out.extend(v.iter().map(|s| substitute_vars(s, vars))),
-                }
+                extend_from_arg_value(&mut out, value, |s| substitute_vars(s, vars));
             }
         }
     }
@@ -532,7 +521,7 @@ async fn fetch_and_verify(
         return Err(Error::HttpRequestRejected(resp.status().as_u16(), url.to_string()));
     }
     let bytes = resp.bytes().await.map_err(Error::InvalidResponse)?.to_vec();
-    let hex = Sha1::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let hex = sha1_hex(&bytes);
     if hex != expected_sha1 {
         return Err(Error::ChecksumMismatch {
             resource: resource.to_string(),
@@ -594,7 +583,7 @@ async fn download_assets(
         let needs_download = if dest.exists() {
             match std::fs::read(&dest) {
                 Ok(bytes) => {
-                    let hex = Sha1::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect::<String>();
+                    let hex = sha1_hex(&bytes);
                     if hex == object.hash {
                         cached_assets += 1;
                         false
