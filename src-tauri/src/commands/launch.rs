@@ -7,8 +7,10 @@ use yaminabe_launcher_shared::datatypes::{InstanceMeta, ModLoader};
 use yaminabe_launcher_shared::error::Error;
 use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, AppState};
 use crate::http_utils::sha1_hex;
+use crate::install_task::forge_version_id;
 
 use crate::commands::instance::find_instance_dir;
+use crate::commands::java::download_java_runtime;
 
 // ── IPC event ─────────────────────────────────────────────────────────────────
 
@@ -180,7 +182,7 @@ fn resolve_version_id(mc_version: &str, mod_loader: &ModLoader, mod_loader_versi
         ModLoader::Forge => {
             let v = require_version()?;
             let build = v.strip_prefix("forge-").unwrap_or(v);
-            format!("{mc_version}-forge-{build}")
+            forge_version_id(mc_version, build)
         }
         ModLoader::NeoForge => {
             let v = require_version()?;
@@ -360,7 +362,7 @@ fn build_classpath(
     libraries_dir: &Path,
     versions_dir: &Path,
     mc_version: &str,
-    mod_loader: &ModLoader,
+    version_id: &str,
 ) -> (String, Vec<String>) {
     // Two filters before each library becomes a classpath entry:
     //   1. Skip old-style natives libs (non-empty `natives` map). Their
@@ -376,6 +378,16 @@ fn build_classpath(
     let mut seen: HashSet<String> = HashSet::new();
     let mut paths: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
+    // Per-version primary jar at `versions/<id>/<id>.jar`. This is the patched
+    // client jar for Forge/NeoForge and the vanilla client jar for Vanilla.
+    // Any manifest library entry pointing to the same artifact (e.g.
+    // `net.minecraftforge:forge:<ver>` for V1 Forge) intentionally resolves to
+    // a path under `libraries/` that no longer holds the file — we suppress
+    // the corresponding `missing` warning below.
+    let primary_jar = versions_dir.join(version_id).join(format!("{version_id}.jar"));
+    if primary_jar.exists() {
+        paths.push(primary_jar.to_string_lossy().into_owned());
+    }
     for lib in libraries {
         if !eval_rules(&lib.rules) { continue; }
         if !lib.natives.is_empty() { continue; }
@@ -384,21 +396,31 @@ fn build_classpath(
         if let Some(p) = library_path(lib, libraries_dir) {
             if p.exists() {
                 paths.push(p.to_string_lossy().into_owned());
-            } else {
+            } else if !is_primary_jar_lib(&lib.name) {
                 missing.push(format!("{} (expected at {})", lib.name, p.display()));
             }
         }
     }
-    // For mainClass-based loaders (Vanilla/Fabric/Quilt/NeoForge), append the
-    // per-version client jar that lives under `versions/`. Forge is the
-    // exception: its patched client jar lives under `libraries/` and was
-    // already picked up above as a manifest library entry, so the vanilla jar
-    // is not used at runtime.
-    if !matches!(mod_loader, ModLoader::Forge) {
-        let jar = versions_dir.join(mc_version).join(format!("{mc_version}.jar"));
-        if jar.exists() { paths.push(jar.to_string_lossy().into_owned()); }
+    // Vanilla client jar is also required for non-Vanilla loaders that don't
+    // bundle the unmodified vanilla classes into their patched jar (Fabric,
+    // Quilt, and pre-1.13 Forge). For Vanilla itself this is the primary jar
+    // already appended above; skip the duplicate.
+    if version_id != mc_version {
+        let vanilla_jar = versions_dir.join(mc_version).join(format!("{mc_version}.jar"));
+        if vanilla_jar.exists() { paths.push(vanilla_jar.to_string_lossy().into_owned()); }
     }
     (paths.join(";"), missing)
+}
+
+/// Library entries whose artifact IS the primary (patched client) jar that
+/// now lives in `versions/<id>/<id>.jar`. The library's `path` still points
+/// into `libraries/` but no file is written there — keep the entry quiet.
+fn is_primary_jar_lib(maven_name: &str) -> bool {
+    let mut parts = maven_name.splitn(3, ':');
+    matches!(
+        (parts.next(), parts.next()),
+        (Some("net.minecraftforge"), Some("forge")) | (Some("net.neoforged"), Some("neoforge"))
+    )
 }
 
 struct LaunchVars<'a> {
@@ -721,18 +743,32 @@ pub async fn launch_instance(
     };
 
     // jrePath in instance.json overrides everything; otherwise use the JRE
-    // recommended by client.json (javaVersion.component → runtimes/<component>);
-    // fall back to system java if neither is usable.
+    // recommended by client.json (javaVersion.component → runtimes/<component>).
+    // If the Recommended runtime is missing on disk, fetch it on demand —
+    // launching with the wrong major version is a silent ClassCastException
+    // (LaunchWrapper needs Java 8) so falling back to system `java` is unsafe.
     //
     // We pick `java.exe` (not `javaw.exe`): javaw is a windowless launcher that
     // suppresses stdout/stderr — including JVM startup errors — which makes
     // crashes unobservable. With `CREATE_NO_WINDOW` set on spawn we still avoid
     // the console pop-up.
-    let java = instance_jre_path.or_else(|| {
-        let component = &manifest.java_version.as_ref()?.component;
-        let path = runtimes_dir().join(component).join("bin").join("java.exe");
-        path.exists().then(|| path.to_string_lossy().into_owned())
-    }).unwrap_or_else(|| "java".to_string());
+    let java = if let Some(custom) = instance_jre_path {
+        custom
+    } else if let Some(component) = manifest.java_version.as_ref().map(|jv| jv.component.clone()) {
+        let java_exe = runtimes_dir().join(&component).join("bin").join("java.exe");
+        if !java_exe.exists() {
+            log!(format!("Recommended runtime '{component}' missing; downloading..."));
+            if let Err(e) = download_java_runtime(&component, &state.http_client).await {
+                fail!(Error::Invalid(format!("failed to download recommended JRE '{component}': {e}")));
+            }
+        }
+        if !java_exe.exists() {
+            fail!(Error::Invalid(format!("java.exe not found after downloading runtime '{component}'")));
+        }
+        java_exe.to_string_lossy().into_owned()
+    } else {
+        "java".to_string()
+    };
 
     let asset_index = match manifest.asset_index.as_ref() {
         Some(idx) => idx,
@@ -784,7 +820,7 @@ pub async fn launch_instance(
     };
     log!(format!("Entry jar: {}", entry_jar.display()));
 
-    let (classpath, missing_libs) = build_classpath(&manifest.libraries, libraries_dir(), versions_dir(), &mc_version, &mod_loader);
+    let (classpath, missing_libs) = build_classpath(&manifest.libraries, libraries_dir(), versions_dir(), &mc_version, &version_id);
     for m in &missing_libs {
         log!(format!("Warning: manifest library missing on disk: {m}"));
     }

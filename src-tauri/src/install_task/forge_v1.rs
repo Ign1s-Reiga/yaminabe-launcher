@@ -17,7 +17,6 @@ struct InstallProfile {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct InstallInfo {
-    path: String,
     file_path: String,
 }
 
@@ -65,18 +64,6 @@ pub async fn install(installer_path: &Path, client: &reqwest::Client) -> Result<
         serde_json::from_str(&buf)?
     };
 
-    let forge_jar_path = libraries_dir().join(maven_coord_to_path(&profile.install.path));
-    if !forge_jar_path.exists() {
-        if let Some(parent) = forge_jar_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut bytes = Vec::new();
-        zip.by_name(&profile.install.file_path)
-            .map_err(|e| Error::Invalid(format!("Embedded JAR '{}' not found: {e}", profile.install.file_path)))?
-            .read_to_end(&mut bytes)?;
-        std::fs::write(&forge_jar_path, &bytes)?;
-    }
-
     let version_id = profile.version_info.id.clone();
     let version_dir = versions_dir().join(&version_id);
     std::fs::create_dir_all(&version_dir)?;
@@ -84,6 +71,20 @@ pub async fn install(installer_path: &Path, client: &reqwest::Client) -> Result<
         version_dir.join(format!("{version_id}.json")),
         serde_json::to_string(&profile.version_info)?,
     )?;
+
+    // Primary (patched) jar lives alongside the version profile so every loader
+    // follows the same `versions/<id>/<id>.jar` convention. The manifest still
+    // carries a `net.minecraftforge:forge:<ver>` library entry pointing into
+    // libraries/, but that file is no longer materialized — launch.rs adds the
+    // primary jar to the classpath via the version-id path instead.
+    let primary_jar_path = version_dir.join(format!("{version_id}.jar"));
+    if !primary_jar_path.exists() {
+        let mut bytes = Vec::new();
+        zip.by_name(&profile.install.file_path)
+            .map_err(|e| Error::Invalid(format!("Embedded JAR '{}' not found: {e}", profile.install.file_path)))?
+            .read_to_end(&mut bytes)?;
+        std::fs::write(&primary_jar_path, &bytes)?;
+    }
 
     for lib in &profile.version_info.libraries {
         if lib.url.is_empty() || lib.name.split(':').nth(3).is_some() {

@@ -87,13 +87,9 @@ pub async fn create_instance(
     };
 
     step!(&format!("Downloading Java ({java_component})"));
-    let _ = match download_java_runtime(&java_component, &state.http_client).await {
-        Ok(path) => path.to_string_lossy().into_owned(),
-        Err(e) => {
-            log::warn!("JRE download failed ({e}), falling back to system javaw");
-            "javaw".to_string()
-        }
-    };
+    if let Err(e) = download_java_runtime(&java_component, &state.http_client).await {
+        fail!(Error::Invalid(format!("failed to download recommended JRE '{java_component}': {e}")));
+    }
 
     let require_hint = || mod_loader_version.as_deref()
         .ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")));

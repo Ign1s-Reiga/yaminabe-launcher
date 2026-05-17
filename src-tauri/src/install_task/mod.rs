@@ -13,7 +13,7 @@ use tauri::State;
 use zip::ZipArchive;
 use yaminabe_launcher_shared::datatypes::ModLoader;
 use yaminabe_launcher_shared::error::Error;
-use crate::{libraries_dir, temp_dir, versions_dir, AppState};
+use crate::{temp_dir, versions_dir, AppState};
 use crate::http_utils::{download_from_maven, download_resource, fetch_json, get_resource_name, sha1_hex};
 
 // ── Vanilla ───────────────────────────────────────────────────────────────────
@@ -141,13 +141,46 @@ fn is_old_format(mc_version: &str) -> bool {
     matches!(parts.as_slice(), [1, minor, ..] if *minor <= 5)
 }
 
+/// Naming convention tier for Forge based on MC version:
+/// - `Modern` (1.12+): version_id `{mc}-forge-{loader}`, maven `{mc}-{loader}`
+/// - `Old` (1.8 – 1.11.2): version_id `{mc}-forge{mc}-{loader}`, maven `{mc}-{loader}-{mc}`
+/// - `VeryOld` (1.7.10 and earlier): version_id `{mc}-Forge{loader}-{mc}`, maven `{mc}-{loader}-{mc}`
+pub enum ForgeNaming { Modern, Old, VeryOld }
+
+pub fn forge_naming(mc_version: &str) -> ForgeNaming {
+    let parts: Vec<u32> = mc_version.split('.').filter_map(|p| p.parse().ok()).collect();
+    let minor = parts.get(1).copied().unwrap_or(0);
+    if minor >= 12 { ForgeNaming::Modern }
+    else if minor >= 8 { ForgeNaming::Old }
+    else { ForgeNaming::VeryOld }
+}
+
+/// Forge maven artifact version (the `<ver>` in `net.minecraftforge:forge:<ver>`
+/// and in the file path `forge/<ver>/forge-<ver>-installer.jar`).
+pub fn forge_maven_version(mc_version: &str, loader_version: &str) -> String {
+    match forge_naming(mc_version) {
+        ForgeNaming::Modern => format!("{mc_version}-{loader_version}"),
+        ForgeNaming::Old | ForgeNaming::VeryOld => format!("{mc_version}-{loader_version}-{mc_version}"),
+    }
+}
+
+/// Launcher-side version id (the folder name under `versions/`) matching the
+/// `id` that each era's Forge installer writes into its own `install_profile.json`.
+pub fn forge_version_id(mc_version: &str, loader_version: &str) -> String {
+    match forge_naming(mc_version) {
+        ForgeNaming::Modern => format!("{mc_version}-forge-{loader_version}"),
+        ForgeNaming::Old => format!("{mc_version}-forge{mc_version}-{loader_version}"),
+        ForgeNaming::VeryOld => format!("{mc_version}-Forge{loader_version}-{mc_version}"),
+    }
+}
+
 pub async fn ensure_forge(
     mc_version: &str,
     loader_version: &str,
     client: &reqwest::Client,
 ) -> Result<(), Error> {
     let forge_build = loader_version.strip_prefix("forge-").unwrap_or(loader_version);
-    let forge_version = format!("{mc_version}-{forge_build}");
+    let forge_version = forge_maven_version(mc_version, forge_build);
 
     let (install_type, installer_path) = if is_old_format(mc_version) {
         download_from_maven(
@@ -182,7 +215,8 @@ pub async fn ensure_forge(
 
     match install_type {
         ForgeInstallType::NoProfile => {
-            forge_noprofile::install(&installer_path, &forge_version)?;
+            let version_id = forge_version_id(mc_version, forge_build);
+            forge_noprofile::install(&installer_path, &forge_version, &version_id)?;
         }
         ForgeInstallType::V1 => {
             let version_id = read_v1_version(&installer_path)?;
@@ -193,7 +227,7 @@ pub async fn ensure_forge(
             forge_v1::install(&installer_path, client).await?;
         }
         ForgeInstallType::V2 => {
-            let version_id = format!("{mc_version}-forge-{forge_build}");
+            let version_id = forge_version_id(mc_version, forge_build);
             if versions_dir().join(&version_id).exists() {
                 info!("Forge {forge_build} already installed, skipping installer");
             } else {
