@@ -234,6 +234,10 @@ pub fn PlayPage() -> impl IntoView {
 
     let log_lines: RwSignal<Vec<String>> = RwSignal::new(vec![]);
     let running: RwSignal<bool> = RwSignal::new(false);
+    // True only after the backend has spawned the Java process and registered
+    // its PID — Stop is gated on this so a click during version/asset
+    // preparation can't race kill_instance against an empty PID map.
+    let process_started: RwSignal<bool> = RwSignal::new(false);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
 
     ipc::on_event::<LogLine, _>("instance-log", move |msg| {
@@ -243,9 +247,16 @@ pub fn PlayPage() -> impl IntoView {
         log_lines.update(|v| v.push(msg.line.clone()));
         if msg.done {
             running.set(false);
+            process_started.set(false);
             if msg.error.is_some() {
                 error.set(msg.error);
             }
+        }
+    });
+
+    ipc::on_event::<String, _>("instance-process-started", move |started_id| {
+        if started_id == id.get_untracked() {
+            process_started.set(true);
         }
     });
 
@@ -260,6 +271,7 @@ pub fn PlayPage() -> impl IntoView {
         launched_instance_id.set(Some(inst.id.clone()));
 
         running.set(true);
+        process_started.set(false);
         log_lines.set(vec![]);
         error.set(None);
 
@@ -279,7 +291,7 @@ pub fn PlayPage() -> impl IntoView {
     view! {
         <Show when=move || instance.get().is_some()>
             {move || instance.get().map(|inst| view! {
-                <PlayContent instance=inst log_lines running error />
+                <PlayContent instance=inst log_lines running process_started error />
             })}
         </Show>
     }
@@ -290,6 +302,7 @@ fn PlayContent(
     instance: InstanceMeta,
     log_lines: RwSignal<Vec<String>>,
     running: RwSignal<bool>,
+    process_started: RwSignal<bool>,
     error: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let navigate = use_navigate();
@@ -414,14 +427,16 @@ fn PlayContent(
                     <OpenInFileManager instance_id=open_instance_id />
                     <Button
                         variant=ButtonVariant::Danger
-                        disabled=Signal::derive(move || !running.get())
+                        disabled=Signal::derive(move || !process_started.get())
                         on_click=Callback::new(move |_| {
                             let id = kill_instance_id.clone();
                             leptos::task::spawn_local(async move {
-                                let _ = ipc::call::<_, ()>(
+                                if let Err(e) = ipc::call::<_, ()>(
                                     "kill_instance",
                                     KillArgs { instance_id: id },
-                                ).await;
+                                ).await {
+                                    log_lines.update(|v| v.push(format!("[kill_instance failed] {e}")));
+                                }
                             });
                         })
                     >

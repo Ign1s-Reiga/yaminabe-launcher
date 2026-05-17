@@ -934,6 +934,10 @@ pub async fn launch_instance(
     };
     if let Some(pid) = child.id() {
         state.running_children.lock().unwrap().insert(instance_id.clone(), pid);
+        // Frontend gates its Stop control on this event — without it, a click
+        // during the preparation phase would race kill_instance against the
+        // not-yet-populated `running_children` map.
+        app_handle.emit("instance-process-started", &instance_id).ok();
     }
 
     // Read bytes (not lines) so we can decode lossily. Java emits stderr in the
