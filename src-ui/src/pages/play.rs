@@ -1,3 +1,4 @@
+use crate::components::open_in_file_manager::OpenInFileManager;
 use crate::components::ui::{Button, ButtonVariant};
 use crate::ipc;
 use bamboo_css_macro::css;
@@ -294,6 +295,7 @@ fn PlayContent(
     let navigate = use_navigate();
     let inst_name = instance.name.clone();
     let kill_instance_id = instance.id.clone();
+    let open_instance_id = instance.id.clone();
     let back_path = format!("/library/{}", instance.id);
     let log_box_ref: NodeRef<html::Div> = NodeRef::new();
     let scroll = LogScrollState {
@@ -409,6 +411,7 @@ fn PlayContent(
 
             <div class=log_viewer_class()>
                 <div class=log_viewer_header_class()>
+                    <OpenInFileManager instance_id=open_instance_id />
                     <Button
                         variant=ButtonVariant::Danger
                         disabled=Signal::derive(move || !running.get())
