@@ -135,17 +135,45 @@ struct LaunchArgs {
     mod_loader: ModLoader,
 }
 
-fn log_box_class() -> &'static str {
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KillArgs {
+    instance_id: String,
+}
+
+fn log_viewer_class() -> &'static str {
     css! {
+        display: flex;
+        flex-direction: column;
         background-color: #0d0d0d;
         border-radius: 8px;
+        overflow: hidden;
+        flex: 1;
+        min-height: 0;
+    }
+}
+
+fn log_viewer_header_class() -> &'static str {
+    css! {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        padding: 8px 12px;
+        background-color: #161616;
+        border-bottom: 1px solid #2a2a2a;
+    }
+}
+
+fn log_box_class() -> &'static str {
+    css! {
         padding: 16px;
         font-family: "Roboto Mono", monospace;
         font-weight: 400;
         font-size: 0.8rem;
         line-height: 1.6;
         overflow-y: auto;
-        max-height: calc(100vh - 300px);
+        max-height: calc(100vh - 340px);
         min-height: 240px;
         white-space: pre-wrap;
         word-break: break-all;
@@ -237,6 +265,7 @@ fn PlayContent(
 ) -> impl IntoView {
     let navigate = use_navigate();
     let inst_name = instance.name.clone();
+    let kill_instance_id = instance.id.clone();
     let back_path = format!("/library/{}", instance.id);
     let log_box_ref: NodeRef<html::Div> = NodeRef::new();
     let scroll = LogScrollState {
@@ -350,22 +379,41 @@ fn PlayContent(
                 </Show>
             </div>
 
-            <div
-                class=log_box_class()
-                node_ref=log_box_ref
-                on:scroll=move |_| {
-                    if !selecting_text.get_untracked() {
-                        auto_scroll_enabled.set(log_is_near_bottom(log_box_ref));
+            <div class=log_viewer_class()>
+                <div class=log_viewer_header_class()>
+                    <Button
+                        variant=ButtonVariant::Danger
+                        disabled=Signal::derive(move || !running.get())
+                        on_click=Callback::new(move |_| {
+                            let id = kill_instance_id.clone();
+                            leptos::task::spawn_local(async move {
+                                let _ = ipc::call::<_, ()>(
+                                    "kill_instance",
+                                    KillArgs { instance_id: id },
+                                ).await;
+                            });
+                        })
+                    >
+                        "Stop"
+                    </Button>
+                </div>
+                <div
+                    class=log_box_class()
+                    node_ref=log_box_ref
+                    on:scroll=move |_| {
+                        if !selecting_text.get_untracked() {
+                            auto_scroll_enabled.set(log_is_near_bottom(log_box_ref));
+                        }
                     }
-                }
-                on:mousedown=move |_| {
-                    selecting_text.set(true);
-                }
-                on:mouseup=move |_| {
-                    scroll.finish_text_selection();
-                }
-            >
-                {move || log_lines.get().join("\n")}
+                    on:mousedown=move |_| {
+                        selecting_text.set(true);
+                    }
+                    on:mouseup=move |_| {
+                        scroll.finish_text_selection();
+                    }
+                >
+                    {move || log_lines.get().join("\n")}
+                </div>
             </div>
         </div>
     }

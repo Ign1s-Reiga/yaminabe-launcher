@@ -934,6 +934,9 @@ pub async fn launch_instance(
         Ok(c) => c,
         Err(e) => fail!(Error::ChildProcess(format!("spawning Java process: {e}"))),
     };
+    if let Some(pid) = child.id() {
+        state.running_children.lock().unwrap().insert(instance_id.clone(), pid);
+    }
 
     // Read bytes (not lines) so we can decode lossily. Java emits stderr in the
     // system codepage on Windows (e.g. CP932 on Japanese locales), and
@@ -979,6 +982,7 @@ pub async fn launch_instance(
     let t2 = tokio::spawn(drain(stderr, app_handle.clone(), instance_id.clone(), true));
 
     let status = child.wait().await?;
+    state.running_children.lock().unwrap().remove(&instance_id);
     t1.await.ok();
     t2.await.ok();
 
@@ -1006,5 +1010,45 @@ pub async fn launch_instance(
 
     done!(format!("Done (exit code {exit_code})"));
     info!("Instance {instance_id} exited: {status}");
+    Ok(())
+}
+
+/// Terminate the Java process tree for a running instance. We shell out to
+/// `taskkill /F /T /PID <pid>` rather than calling `tokio::Child::kill` because
+/// the `Child` is owned by `launch_instance` (which holds it across an `await`
+/// on `wait()`) and forwarding ownership would require restructuring the entire
+/// drain/wait pipeline. `/T` walks the descendant tree so child JVMs/launchers
+/// spawned by the game (e.g. crash reporters) get cleaned up too.
+#[tauri::command]
+pub async fn kill_instance(
+    instance_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), Error> {
+    let pid = state.running_children.lock().unwrap().get(&instance_id).copied();
+    let Some(pid) = pid else {
+        return Err(Error::NotExists(format!("running instance '{instance_id}'")));
+    };
+
+    #[cfg(windows)]
+    {
+        let status = tokio::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .creation_flags(0x08000000)
+            .status().await
+            .map_err(|e| Error::ChildProcess(format!("invoking taskkill for pid {pid}: {e}")))?;
+        if !status.success() {
+            return Err(Error::ChildProcess(format!("taskkill for pid {pid} exited with {status}")));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let status = tokio::process::Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status().await
+            .map_err(|e| Error::ChildProcess(format!("invoking kill for pid {pid}: {e}")))?;
+        if !status.success() {
+            return Err(Error::ChildProcess(format!("kill for pid {pid} exited with {status}")));
+        }
+    }
     Ok(())
 }

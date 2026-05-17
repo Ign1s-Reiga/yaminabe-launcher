@@ -3,6 +3,7 @@ mod install_task;
 mod mod_repo;
 mod http_utils;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -18,7 +19,7 @@ use crate::commands::minecraft::{
     fetch_minecraft_versions, get_minecraft_versions, get_modloader_versions, VersionManifest,
 };
 use crate::commands::instance::{create_instance, get_instances, save_instance_settings};
-use crate::commands::launch::launch_instance;
+use crate::commands::launch::{kill_instance, launch_instance};
 use crate::commands::java::{detect_java_installs, get_java_installs};
 use crate::commands::settings::{get_instance_subfolders, get_settings, open_instance_subfolder, pick_folder, save_settings};
 
@@ -49,6 +50,10 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub mc_versions: OnceLock<VersionManifest>,
     pub java_installs: Mutex<Vec<JavaInstall>>,
+    /// Maps `instance_id` to the OS PID of the currently spawned Java process.
+    /// Populated by `launch_instance` after spawn and cleared when the child
+    /// exits; read by `kill_instance` to issue a TerminateProcess.
+    pub running_children: Mutex<HashMap<String, u32>>,
 }
 
 static TEMP_DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -117,6 +122,7 @@ pub fn run() {
                 http_client: reqwest::Client::new(),
                 mc_versions: OnceLock::new(),
                 java_installs: Mutex::new(java_installs),
+                running_children: Mutex::new(HashMap::new()),
             });
 
             let handle = app.app_handle().clone();
@@ -136,6 +142,7 @@ pub fn run() {
             get_instance_subfolders,
             open_instance_subfolder,
             launch_instance,
+            kill_instance,
             search_curseforge_modpacks,
             get_modpack_files,
             install_curseforge_modpack,
