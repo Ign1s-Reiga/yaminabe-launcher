@@ -60,6 +60,12 @@ pub struct InstanceMeta {
     pub game_version: String,
     pub mod_loader: ModLoader,
     pub mod_loader_version: Option<String>,
+    /// The `versions/<id>` folder name that the install pipeline produced for
+    /// this instance. Populated at `create_instance` time from whatever the
+    /// loader's installer wrote (V1/V2 read it from `install_profile.json` /
+    /// `version.json`) so launch never needs to recompute it.
+    #[serde(default)]
+    pub version_id: String,
     pub category: String,
     pub ram_mb: u32,
     pub jvm_args: String,
@@ -92,6 +98,7 @@ impl Default for InstanceMeta {
             game_version: String::new(),
             mod_loader: ModLoader::Vanilla,
             mod_loader_version: None,
+            version_id: String::new(),
             category: String::new(),
             ram_mb: 4096,
             jvm_args: String::new(),

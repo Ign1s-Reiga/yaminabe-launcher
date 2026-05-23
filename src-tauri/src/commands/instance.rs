@@ -68,7 +68,10 @@ pub async fn create_instance(
     }
 
     step!(&format!("Downloading Minecraft {mc_version}"));
-    if let Err(e) = ensure_vanilla(&mc_version, &state).await { fail!(e); }
+    let vanilla_version_id = match ensure_vanilla(&mc_version, &state).await {
+        Ok(id) => id,
+        Err(e) => fail!(e),
+    };
 
     let java_component = {
         #[derive(serde::Deserialize, Default)]
@@ -95,29 +98,45 @@ pub async fn create_instance(
         .ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")));
 
     // TODO: Show version what is installing
-    match &mod_loader {
+    let loader_version_id = match &mod_loader {
         ModLoader::Fabric => {
             step!("Installing Fabric");
             let hint = match require_hint() { Ok(h) => h, Err(e) => fail!(e) };
-            if let Err(e) = ensure_fabric(&mc_version, hint, &state.http_client).await { fail!(e); }
+            match ensure_fabric(&mc_version, hint, &state.http_client).await {
+                Ok(id) => Some(id),
+                Err(e) => fail!(e),
+            }
         }
         ModLoader::Quilt => {
             step!("Installing Quilt");
             let hint = match require_hint() { Ok(h) => h, Err(e) => fail!(e) };
-            if let Err(e) = ensure_quilt(&mc_version, hint, &state.http_client).await { fail!(e); }
+            match ensure_quilt(&mc_version, hint, &state.http_client).await {
+                Ok(id) => Some(id),
+                Err(e) => fail!(e),
+            }
         }
         ModLoader::Forge => {
             step!("Installing Forge");
             let hint = match require_hint() { Ok(h) => h, Err(e) => fail!(e) };
-            if let Err(e) = ensure_forge(&mc_version, hint, &state.http_client).await { fail!(e); }
+            match ensure_forge(&mc_version, hint, &state.http_client).await {
+                Ok(id) => Some(id),
+                Err(e) => fail!(e),
+            }
         }
         ModLoader::NeoForge => {
             step!("Installing NeoForge");
             let hint = match require_hint() { Ok(h) => h, Err(e) => fail!(e) };
-            if let Err(e) = ensure_neoforge(&mc_version, hint, &state.http_client).await { fail!(e); }
+            match ensure_neoforge(&mc_version, hint, &state.http_client).await {
+                Ok(id) => Some(id),
+                Err(e) => fail!(e),
+            }
         }
-        ModLoader::Vanilla => {}
-    }
+        ModLoader::Vanilla => None,
+    };
+
+    // The loader's own version manifest takes precedence; Vanilla instances
+    // fall back to the bare MC id.
+    instance_meta.version_id = loader_version_id.unwrap_or(vanilla_version_id);
 
     step!("Finalizing");
     let json_str = match serde_json::to_string_pretty(&instance_meta) {

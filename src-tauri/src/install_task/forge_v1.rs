@@ -18,10 +18,11 @@ struct InstallProfile {
 #[serde(rename_all = "camelCase")]
 struct InstallInfo {
     file_path: String,
+    path: String,
 }
 
 #[derive(Deserialize, Serialize)]
-struct VersionInfo {
+pub struct VersionInfo {
     id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     time: Option<String>,
@@ -64,29 +65,68 @@ pub async fn install(installer_path: &Path, client: &reqwest::Client) -> Result<
         serde_json::from_str(&buf)?
     };
 
-    let version_id = profile.version_info.id.clone();
-    let version_dir = versions_dir().join(&version_id);
-    std::fs::create_dir_all(&version_dir)?;
-    std::fs::write(
-        version_dir.join(format!("{version_id}.json")),
-        serde_json::to_string(&profile.version_info)?,
-    )?;
+    let mut universal_jar_bytes = Vec::new();
+    zip.by_name(&profile.install.file_path)
+        .map_err(|e| Error::Invalid(format!("Embedded JAR '{}' not found: {e}", profile.install.file_path)))?
+        .read_to_end(&mut universal_jar_bytes)?;
 
-    // Primary (patched) jar lives alongside the version profile so every loader
-    // follows the same `versions/<id>/<id>.jar` convention. The manifest still
-    // carries a `net.minecraftforge:forge:<ver>` library entry pointing into
-    // libraries/, but that file is no longer materialized — launch.rs adds the
-    // primary jar to the classpath via the version-id path instead.
-    let primary_jar_path = version_dir.join(format!("{version_id}.jar"));
-    if !primary_jar_path.exists() {
-        let mut bytes = Vec::new();
-        zip.by_name(&profile.install.file_path)
-            .map_err(|e| Error::Invalid(format!("Embedded JAR '{}' not found: {e}", profile.install.file_path)))?
-            .read_to_end(&mut bytes)?;
-        std::fs::write(&primary_jar_path, &bytes)?;
+    // V1 nests the version manifest inside install_profile.json, so re-serialize
+    // it back out for on-disk storage.
+    let version_info_text = serde_json::to_string(&profile.version_info)?;
+
+    install_from_parsed(
+        &profile.version_info,
+        &version_info_text,
+        &profile.install.path,
+        &universal_jar_bytes,
+        client,
+    ).await
+}
+
+/// Install a pre-1.13-style Forge client from an already-parsed version
+/// manifest plus the universal jar bytes.
+///
+/// The universal jar is written under `libraries/` at the `universal_coord`
+/// maven path — it is the `net.minecraftforge:forge:<ver>` library, not a
+/// version jar. Pre-1.13 Forge has no patched client jar: LaunchWrapper's
+/// FMLTweaker applies the binpatches packed inside the universal jar at
+/// runtime, against the vanilla client jar inherited via `inheritsFrom`.
+///
+/// The raw `version_info_text` is written to disk verbatim instead of being
+/// re-serialized from `version_info`. This matters when the caller (e.g. the
+/// V2-with-empty-processors path) hands us a manifest whose libraries use a
+/// schema V1's `Library` struct does not understand — re-serializing through
+/// V1's struct would silently drop those fields and break downstream
+/// consumers that expect the original layout.
+///
+/// The library download loop tolerates entries with empty `url`: they are
+/// skipped here and assumed to be handled by a downstream pass (V2 callers
+/// rely on `forge_v2::pre_download_libraries` for the actual fetch).
+pub async fn install_from_parsed(
+    version_info: &VersionInfo,
+    version_info_text: &str,
+    universal_coord: &str,
+    universal_jar_bytes: &[u8],
+    client: &reqwest::Client,
+) -> Result<String, Error> {
+    let version_id = version_info.id.clone();
+
+    // Place the universal jar before the manifest: the caller gates re-install
+    // on the manifest's existence, so a present manifest must imply the jar is
+    // already on disk.
+    let universal_path = libraries_dir().join(maven_coord_to_path(universal_coord));
+    if !universal_path.exists() {
+        if let Some(parent) = universal_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&universal_path, universal_jar_bytes)?;
     }
 
-    for lib in &profile.version_info.libraries {
+    let version_dir = versions_dir().join(&version_id);
+    std::fs::create_dir_all(&version_dir)?;
+    std::fs::write(version_dir.join(format!("{version_id}.json")), version_info_text)?;
+
+    for lib in &version_info.libraries {
         if lib.url.is_empty() || lib.name.split(':').nth(3).is_some() {
             continue;
         }

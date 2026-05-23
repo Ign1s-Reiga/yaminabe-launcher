@@ -7,8 +7,6 @@ use yaminabe_launcher_shared::datatypes::{InstanceMeta, ModLoader};
 use yaminabe_launcher_shared::error::Error;
 use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, AppState};
 use crate::http_utils::sha1_hex;
-use crate::install_task::forge_version_id;
-
 use crate::commands::instance::find_instance_dir;
 use crate::commands::java::download_java_runtime;
 
@@ -165,33 +163,6 @@ enum ArgumentItem {
 }
 
 // ── Helper functions ──────────────────────────────────────────────────────────
-
-/// Compute the exact `versions/<id>` folder name for the given loader and
-/// `mod_loader_version` recorded in the instance meta. Returns the version-id
-/// string and the on-disk manifest path so the caller can verify it exists.
-/// Does NOT scan the directory or fall back to other installed versions — if
-/// the precise version isn't installed, the caller must surface a clear error
-/// rather than launching with whatever happens to be present.
-fn resolve_version_id(mc_version: &str, mod_loader: &ModLoader, mod_loader_version: Option<&str>) -> Result<String, Error> {
-    let require_version = || mod_loader_version
-        .ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")));
-    let id = match mod_loader {
-        ModLoader::Vanilla => mc_version.to_string(),
-        ModLoader::Fabric => format!("fabric-loader-{}-{mc_version}", require_version()?),
-        ModLoader::Quilt => format!("quilt-loader-{}-{mc_version}", require_version()?),
-        ModLoader::Forge => {
-            let v = require_version()?;
-            let build = v.strip_prefix("forge-").unwrap_or(v);
-            forge_version_id(mc_version, build)
-        }
-        ModLoader::NeoForge => {
-            let v = require_version()?;
-            let build = v.strip_prefix("neoforge-").unwrap_or(v);
-            format!("neoforge-{build}")
-        }
-    };
-    Ok(id)
-}
 
 fn load_manifest(versions_dir: &Path, version_id: &str) -> Result<ClientManifest, Error> {
     let path = versions_dir.join(version_id).join(format!("{version_id}.json"));
@@ -378,12 +349,11 @@ fn build_classpath(
     let mut seen: HashSet<String> = HashSet::new();
     let mut paths: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
-    // Per-version primary jar at `versions/<id>/<id>.jar`. This is the patched
-    // client jar for Forge/NeoForge and the vanilla client jar for Vanilla.
-    // Any manifest library entry pointing to the same artifact (e.g.
-    // `net.minecraftforge:forge:<ver>` for V1 Forge) intentionally resolves to
-    // a path under `libraries/` that no longer holds the file — we suppress
-    // the corresponding `missing` warning below.
+    // Per-version primary jar at `versions/<id>/<id>.jar`. Only Vanilla
+    // instances have one (the vanilla client jar). Forge/NeoForge keep their
+    // universal jar (V1, runtime-patched) or patched client jar (V2) under
+    // `libraries/` as ordinary library entries, so for those this path does
+    // not exist.
     let primary_jar = versions_dir.join(version_id).join(format!("{version_id}.jar"));
     if primary_jar.exists() {
         paths.push(primary_jar.to_string_lossy().into_owned());
@@ -396,7 +366,7 @@ fn build_classpath(
         if let Some(p) = library_path(lib, libraries_dir) {
             if p.exists() {
                 paths.push(p.to_string_lossy().into_owned());
-            } else if !is_primary_jar_lib(&lib.name) {
+            } else {
                 missing.push(format!("{} (expected at {})", lib.name, p.display()));
             }
         }
@@ -410,17 +380,6 @@ fn build_classpath(
         if vanilla_jar.exists() { paths.push(vanilla_jar.to_string_lossy().into_owned()); }
     }
     (paths.join(";"), missing)
-}
-
-/// Library entries whose artifact IS the primary (patched client) jar that
-/// now lives in `versions/<id>/<id>.jar`. The library's `path` still points
-/// into `libraries/` but no file is written there — keep the entry quiet.
-fn is_primary_jar_lib(maven_name: &str) -> bool {
-    let mut parts = maven_name.splitn(3, ':');
-    matches!(
-        (parts.next(), parts.next()),
-        (Some("net.minecraftforge"), Some("forge")) | (Some("net.neoforged"), Some("neoforge"))
-    )
 }
 
 struct LaunchVars<'a> {
@@ -438,6 +397,7 @@ struct LaunchVars<'a> {
     auth_uuid: &'a str,
     auth_access_token: &'a str,
     user_type: &'a str,
+    user_properties: &'a str,
     version_type: &'a str,
     clientid: &'a str,
     auth_xuid: &'a str,
@@ -460,6 +420,7 @@ fn substitute_vars(s: &str, v: &LaunchVars) -> String {
      .replace("${auth_uuid}", v.auth_uuid)
      .replace("${auth_access_token}", v.auth_access_token)
      .replace("${user_type}", v.user_type)
+     .replace("${user_properties}", v.user_properties)
      .replace("${version_type}", v.version_type)
      .replace("${clientid}", v.clientid)
      .replace("${auth_xuid}", v.auth_xuid)
@@ -669,7 +630,10 @@ pub async fn launch_instance(
     app_handle: tauri::AppHandle,
     instance_id: String,
     mc_version: String,
-    mod_loader: ModLoader,
+    // `mod_loader` is no longer needed by the backend (instance.json's
+    // version_id is the source of truth) but is preserved in the IPC signature
+    // for frontend compatibility. Prefix-underscore to silence the unused warning.
+    _mod_loader: ModLoader,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
     let instance_location = {
@@ -720,11 +684,14 @@ pub async fn launch_instance(
     }
 
     log!("Resolving version JSON...");
-    let mod_loader_version = instance_meta.as_ref()
-        .and_then(|m| m.mod_loader_version.clone());
-    let version_id = match resolve_version_id(&mc_version, &mod_loader, mod_loader_version.as_deref()) {
-        Ok(id) => id,
-        Err(e) => fail!(e),
+    // Source of truth: the version_id captured at install time and recorded
+    // in instance.json. Pre-refactor instances with no version_id field must
+    // be re-created — we don't attempt to guess the on-disk folder name.
+    let version_id = match instance_meta.as_ref().map(|m| m.version_id.clone()) {
+        Some(id) if !id.is_empty() => id,
+        _ => fail!(Error::Invalid(
+            "Instance is missing versionId. Please re-create the instance after the latest refactor.".to_string()
+        )),
     };
     let manifest_path = versions_dir().join(&version_id).join(format!("{version_id}.json"));
     if !manifest_path.exists() {
@@ -767,6 +734,11 @@ pub async fn launch_instance(
     } else {
         "java".to_string()
     };
+
+    log!("Downloading libraries...");
+    if let Err(e) = crate::install_task::ensure_libraries(&version_id, &state.http_client).await {
+        fail!(e);
+    }
 
     let asset_index = match manifest.asset_index.as_ref() {
         Some(idx) => idx,
@@ -857,6 +829,7 @@ pub async fn launch_instance(
         auth_uuid: "00000000-0000-0000-0000-000000000000",
         auth_access_token: "0",
         user_type: "offline",
+        user_properties: "{}",
         version_type: "release",
         clientid: "0",
         auth_xuid: "0",
