@@ -5,7 +5,10 @@ use yaminabe_launcher_shared::datatypes::{ModLoader, InstanceMeta};
 use yaminabe_launcher_shared::error::Error;
 use crate::{emit_progress, libraries_dir, versions_dir, AppState};
 use crate::commands::java::download_java_runtime;
-use crate::install_task::{ensure_fabric, ensure_forge, ensure_neoforge, ensure_quilt, ensure_vanilla};
+use crate::install_task::{
+    ensure_fabric, ensure_forge, ensure_neoforge, ensure_quilt, ensure_vanilla,
+    version_manifest_path,
+};
 
 pub fn find_instance_dir(install_dir: &Path, id: &str) -> Result<PathBuf, Error> {
     install_dir.read_dir()?
@@ -81,7 +84,7 @@ pub async fn create_instance(
             #[serde(rename = "javaVersion", default)]
             java_version: JavaVersion,
         }
-        let json_path = versions_dir().join(&mc_version).join(format!("{mc_version}.json"));
+        let json_path = version_manifest_path(&mc_version);
         std::fs::read_to_string(&json_path).ok()
             .and_then(|s| serde_json::from_str::<VersionJson>(&s).ok())
             .map(|v| v.java_version.component)

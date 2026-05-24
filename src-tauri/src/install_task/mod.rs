@@ -2,19 +2,27 @@ mod fabric_like;
 mod forge_v1;
 mod forge_v2;
 mod vanilla;
+pub mod installer_archive;
 
 use std::collections::HashSet;
-use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use log::info;
 use serde::Deserialize;
 use tauri::State;
-use zip::ZipArchive;
 use yaminabe_launcher_shared::datatypes::ModLoader;
 use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::version_manifest::ClientManifest;
 use crate::{libraries_dir, temp_dir, versions_dir, AppState};
-use crate::http_utils::{download_from_maven, download_resource, fetch_json, get_resource_name, sha1_hex};
+use crate::http_utils::{download_from_maven, download_resource, fetch_json, get_resource_name};
+
+// ── Path helpers (visible to submodules and other commands) ──────────────────
+
+/// The on-disk path of `versions/<version_id>/<version_id>.json` — the
+/// canonical Mojang version manifest for a given installed version. Used by
+/// every consumer that reads or writes a per-version JSON, which is many.
+pub fn version_manifest_path(version_id: &str) -> PathBuf {
+    versions_dir().join(version_id).join(format!("{version_id}.json"))
+}
 
 // ── Vanilla ───────────────────────────────────────────────────────────────────
 
@@ -172,7 +180,7 @@ pub async fn ensure_forge(
             // under `libraries/`). `install_from_parsed` writes that jar before
             // the manifest, so a present manifest implies the universal jar is
             // already on disk; gate on it to skip rework.
-            if !versions_dir().join(&version_id).join(format!("{version_id}.json")).exists() {
+            if !version_manifest_path(&version_id).exists() {
                 forge_v1::install(&installer_path, client).await?;
             } else {
                 info!("Forge {forge_build} already installed, skipping");
@@ -239,8 +247,7 @@ pub async fn ensure_neoforge(
 // ── Shared library pre-download (install + launch) ────────────────────────────
 
 fn load_lib_manifest(version_id: &str) -> Result<ClientManifest, Error> {
-    let path = versions_dir().join(version_id).join(format!("{version_id}.json"));
-    let text = std::fs::read_to_string(&path)?;
+    let text = std::fs::read_to_string(version_manifest_path(version_id))?;
     Ok(serde_json::from_str(&text)?)
 }
 
@@ -329,9 +336,8 @@ struct VersionInfoV1 {
     id: String,
 }
 
-fn detect_install_type(installer_path: &Path) -> Result<ForgeInstallType, Error> {
-    let mut zip = ZipArchive::new(std::fs::File::open(installer_path)?)
-        .map_err(|e| Error::Invalid(e.to_string()))?;
+fn detect_install_type(installer_path: &std::path::Path) -> Result<ForgeInstallType, Error> {
+    let mut zip = installer_archive::open(installer_path)?;
     if zip.by_name("install_profile.json").is_err() {
         return Err(Error::Invalid(format!(
             "Forge installer at {} has no install_profile.json — pre-1.6 jar-mod-era Forge is not currently supported",
@@ -345,28 +351,21 @@ fn detect_install_type(installer_path: &Path) -> Result<ForgeInstallType, Error>
     })
 }
 
-fn read_v1_version(installer_path: &Path) -> Result<String, Error> {
-    let mut zip = ZipArchive::new(std::fs::File::open(installer_path)?)
-        .map_err(|e| Error::Invalid(e.to_string()))?;
-    let mut entry = zip.by_name("install_profile.json")
-        .map_err(|e| Error::Invalid(e.to_string()))?;
-    let mut buf = String::new();
-    entry.read_to_string(&mut buf)?;
-    Ok(serde_json::from_str::<InstallProfileV1>(&buf)?.version_info.id)
+fn read_v1_version(installer_path: &std::path::Path) -> Result<String, Error> {
+    let text = installer_archive::read_entry_str(installer_path, "install_profile.json")?;
+    Ok(serde_json::from_str::<InstallProfileV1>(&text)?.version_info.id)
 }
 
-fn read_v2_version(installer_path: &Path) -> Result<String, Error> {
-    let mut zip = ZipArchive::new(std::fs::File::open(installer_path)?)
-        .map_err(|e| Error::Invalid(e.to_string()))?;
-    let mut entry = zip.by_name("version.json")
-        .map_err(|e| Error::Invalid(format!("version.json missing in V2 installer: {e}")))?;
-    let mut buf = String::new();
-    entry.read_to_string(&mut buf)?;
-    Ok(serde_json::from_str::<VersionInfoV1>(&buf)?.id)
+fn read_v2_version(installer_path: &std::path::Path) -> Result<String, Error> {
+    let text = installer_archive::read_entry_str(installer_path, "version.json")?;
+    Ok(serde_json::from_str::<VersionInfoV1>(&text)?.id)
 }
 
-/// Convert a Maven coordinate (`group:artifact:version[:classifier][@ext]`) into a relative path.
-fn maven_coord_to_path(coord: &str) -> PathBuf {
+/// Convert a Maven coordinate (`group:artifact:version[:classifier][@ext]`)
+/// into the relative path used under `libraries/`. Lenient: missing parts
+/// become empty path segments rather than an error, since most callers want
+/// "build a best-effort path, then check if it exists on disk".
+pub fn maven_coord_to_path(coord: &str) -> PathBuf {
     let (coord, ext) = coord.rsplit_once('@').unwrap_or((coord, "jar"));
     let mut parts = coord.splitn(4, ':');
     let group = parts.next().unwrap_or_default();

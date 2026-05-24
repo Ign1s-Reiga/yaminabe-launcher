@@ -1,12 +1,10 @@
-use std::io::Read;
 use std::path::Path;
 use serde::Deserialize;
-use zip::ZipArchive;
 use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::version_manifest::ClientManifest;
-use crate::{libraries_dir, versions_dir};
+use crate::libraries_dir;
 use crate::http_utils::download_from_maven;
-use super::maven_coord_to_path;
+use super::{installer_archive, maven_coord_to_path, version_manifest_path};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,21 +21,11 @@ struct InstallInfo {
 }
 
 pub async fn install(installer_path: &Path, client: &reqwest::Client) -> Result<String, Error> {
-    let mut zip = ZipArchive::new(std::fs::File::open(installer_path)?)
-        .map_err(|e| Error::Invalid(e.to_string()))?;
-
     let profile: InstallProfile = {
-        let mut buf = String::new();
-        zip.by_name("install_profile.json")
-            .map_err(|e| Error::Invalid(e.to_string()))?
-            .read_to_string(&mut buf)?;
-        serde_json::from_str(&buf)?
+        let text = installer_archive::read_entry_str(installer_path, "install_profile.json")?;
+        serde_json::from_str(&text)?
     };
-
-    let mut universal_jar_bytes = Vec::new();
-    zip.by_name(&profile.install.file_path)
-        .map_err(|e| Error::Invalid(format!("Embedded JAR '{}' not found: {e}", profile.install.file_path)))?
-        .read_to_end(&mut universal_jar_bytes)?;
+    let universal_jar_bytes = installer_archive::read_entry_bytes(installer_path, &profile.install.file_path)?;
 
     // V1 nests the version manifest inside install_profile.json, so re-serialize
     // it back out for on-disk storage.
@@ -92,9 +80,11 @@ pub async fn install_from_parsed(
         std::fs::write(&universal_path, universal_jar_bytes)?;
     }
 
-    let version_dir = versions_dir().join(&version_id);
-    std::fs::create_dir_all(&version_dir)?;
-    std::fs::write(version_dir.join(format!("{version_id}.json")), version_info_text)?;
+    let manifest_path = version_manifest_path(&version_id);
+    if let Some(version_dir) = manifest_path.parent() {
+        std::fs::create_dir_all(version_dir)?;
+    }
+    std::fs::write(&manifest_path, version_info_text)?;
 
     for lib in &version_info.libraries {
         let url = lib.url.as_deref().unwrap_or_default();

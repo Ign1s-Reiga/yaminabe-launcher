@@ -10,9 +10,10 @@ use yaminabe_launcher_shared::version_manifest::{
     ArgRule, ArgValue, ArgumentItem, AssetIndex, DefaultJvmItem, Library, ClientManifest,
 };
 use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, AppState};
-use crate::http_utils::sha1_hex;
+use crate::http_utils::{fetch_and_verify, sha1_hex};
 use crate::commands::instance::find_instance_dir;
 use crate::commands::java::download_java_runtime;
+use crate::install_task::{maven_coord_to_path, version_manifest_path};
 
 // ── Asset index types (the file referenced by ClientManifest::asset_index) ──
 
@@ -28,9 +29,8 @@ struct AssetObject {
 
 // ── Helper functions ──────────────────────────────────────────────────────────
 
-fn load_manifest(versions_dir: &Path, version_id: &str) -> Result<ClientManifest, Error> {
-    let path = versions_dir.join(version_id).join(format!("{version_id}.json"));
-    let text = std::fs::read_to_string(&path)?;
+fn load_manifest(version_id: &str) -> Result<ClientManifest, Error> {
+    let text = std::fs::read_to_string(version_manifest_path(version_id))?;
     Ok(serde_json::from_str(&text)?)
 }
 
@@ -42,15 +42,12 @@ fn load_manifest(versions_dir: &Path, version_id: &str) -> Result<ClientManifest
 /// appended (deduplicated by name for libraries). The `arguments` object is a
 /// composite whose inner arrays (`game`, `jvm`, `default_user_jvm`) are merged
 /// parent-first so child entries can still override by appearing later.
-fn merge_manifest(
-    versions_dir: &Path,
-    version_id: &str,
-) -> Result<ClientManifest, Error> {
-    let mut manifest = load_manifest(versions_dir, version_id)?;
+fn merge_manifest(version_id: &str) -> Result<ClientManifest, Error> {
+    let mut manifest = load_manifest(version_id)?;
     let Some(parent_id) = manifest.inherits_from.take() else {
         return Ok(manifest);
     };
-    let parent = load_manifest(versions_dir, &parent_id)?;
+    let parent = load_manifest(&parent_id)?;
 
     // Single-value fields: child wins; fall back to parent only when child is absent.
     manifest.asset_index = manifest.asset_index.or(parent.asset_index);
@@ -87,25 +84,6 @@ fn merge_manifest(
     Ok(manifest)
 }
 
-fn maven_to_path(name: &str) -> Option<String> {
-    let (group, artifact, version, classifier) = maven_parts(name)?;
-    let group = group.replace('.', "/");
-    let suffix = match classifier {
-        Some(cls) => format!("{artifact}-{version}-{cls}.jar"),
-        None => format!("{artifact}-{version}.jar"),
-    };
-    Some(format!("{group}/{artifact}/{version}/{suffix}"))
-}
-
-fn maven_parts(name: &str) -> Option<(&str, &str, &str, Option<&str>)> {
-    let mut parts = name.splitn(4, ':');
-    let group = parts.next()?;
-    let artifact = parts.next()?;
-    let version = parts.next()?;
-    let classifier = parts.next();
-    Some((group, artifact, version, classifier))
-}
-
 fn extract_natives(
     libraries: &[Library],
     libraries_dir: &Path,
@@ -117,7 +95,9 @@ fn extract_natives(
         if !eval_rules(&lib.rules) { continue; }
         let key = lib.natives.get("windows").map(|s| s.replace("${arch}", "64"));
         let Some(key) = key else { continue; };
-        let Some((group, artifact_name, version, _)) = maven_parts(&lib.name) else { continue; };
+        // Native dir is just the group/artifact/version segment of the maven
+        // coord — same layout as `maven_coord_to_path` without the filename.
+        let Some(native_dir_rel) = maven_coord_to_path(&lib.name).parent().map(Path::to_path_buf) else { continue; };
         let Some(classifiers) = lib.downloads.as_ref().and_then(|d| d.classifiers.as_ref()) else { continue; };
         let Some(artifact) = classifiers.get(&key) else { continue; };
         let Some(path) = &artifact.path else { continue; };
@@ -125,10 +105,7 @@ fn extract_natives(
         if !jar_path.exists() { continue; }
         let Ok(file)    = std::fs::File::open(&jar_path) else { continue; };
         let Ok(mut zip) = zip::ZipArchive::new(file) else { continue; };
-        let native_dir = natives_root
-            .join(group.replace('.', "/"))
-            .join(artifact_name)
-            .join(version);
+        let native_dir = natives_root.join(&native_dir_rel);
         std::fs::create_dir_all(&native_dir)?;
         for i in 0..zip.len() {
             let Ok(mut entry) = zip.by_index(i) else { continue; };
@@ -145,14 +122,15 @@ fn extract_natives(
     Ok(native_dirs)
 }
 
-/// Strip the version segment from a maven coordinate so duplicates with
-/// different versions collapse. Classifier (if present) is preserved so e.g.
-/// `forge:…:universal` and `forge:…:client` remain distinct entries.
-fn library_path(lib: &Library, libraries_dir: &Path) -> Option<PathBuf> {
+/// Resolve a library's on-disk path. Prefers the manifest's explicit
+/// `downloads.artifact.path` when present, falling back to the derived
+/// maven-coordinate path. The returned path may not exist on disk — callers
+/// check `exists()` before using it.
+fn library_path(lib: &Library, libraries_dir: &Path) -> PathBuf {
     if let Some(path) = lib.downloads.as_ref().and_then(|d| d.artifact.as_ref()).and_then(|a| a.path.as_deref()) {
-        Some(libraries_dir.join(path))
+        libraries_dir.join(path)
     } else {
-        maven_to_path(&lib.name).map(|rel| libraries_dir.join(rel))
+        libraries_dir.join(maven_coord_to_path(&lib.name))
     }
 }
 
@@ -174,7 +152,7 @@ fn find_main_class_jar(
         if !lib.natives.is_empty() { continue; }
         let key = version_agnostic_name(&lib.name);
         if !seen.insert(key) { continue; }
-        let Some(path) = library_path(lib, libraries_dir) else { continue; };
+        let path = library_path(lib, libraries_dir);
         if path.exists() && jar_contains_class(&path, main_class) {
             return Some(path);
         }
@@ -227,12 +205,11 @@ fn build_classpath(
         if !lib.natives.is_empty() { continue; }
         let key = version_agnostic_name(&lib.name);
         if !seen.insert(key) { continue; }
-        if let Some(p) = library_path(lib, libraries_dir) {
-            if p.exists() {
-                paths.push(p.to_string_lossy().into_owned());
-            } else {
-                missing.push(format!("{} (expected at {})", lib.name, p.display()));
-            }
+        let p = library_path(lib, libraries_dir);
+        if p.exists() {
+            paths.push(p.to_string_lossy().into_owned());
+        } else {
+            missing.push(format!("{} (expected at {})", lib.name, p.display()));
         }
     }
     // Vanilla client jar is also required for non-Vanilla loaders that don't
@@ -354,29 +331,6 @@ fn process_args(items: &[ArgumentItem], vars: &LaunchVars) -> Vec<String> {
         }
     }
     out
-}
-
-/// Fetch `url`, verify its SHA1 matches `expected_sha1`, and return the bytes.
-async fn fetch_and_verify(
-    client: &reqwest::Client,
-    url: &str,
-    expected_sha1: &str,
-    resource: &str,
-) -> Result<Vec<u8>, Error> {
-    let resp = client.get(url).send().await?;
-    if !resp.status().is_success() {
-        return Err(Error::HttpRequestRejected(resp.status().as_u16(), url.to_string()));
-    }
-    let bytes = resp.bytes().await.map_err(Error::InvalidResponse)?.to_vec();
-    let hex = sha1_hex(&bytes);
-    if hex != expected_sha1 {
-        return Err(Error::ChecksumMismatch {
-            resource: resource.to_string(),
-            sha1: expected_sha1.to_string(),
-            hex,
-        });
-    }
-    Ok(bytes)
 }
 
 async fn download_assets(
@@ -557,16 +511,16 @@ pub async fn launch_instance(
             "Instance is missing versionId. Please re-create the instance after the latest refactor.".to_string()
         )),
     };
-    let manifest_path = versions_dir().join(&version_id).join(format!("{version_id}.json"));
+    let manifest_path = version_manifest_path(&version_id);
     if !manifest_path.exists() {
         fail!(Error::Invalid("The required versions for launch could not be found.".to_string()));
     }
-    let child_manifest = match load_manifest(versions_dir(), &version_id) {
+    let child_manifest = match load_manifest(&version_id) {
         Ok(m) => m,
         Err(e) => fail!(e),
     };
     let has_parent_manifest = child_manifest.inherits_from.is_some();
-    let manifest = match merge_manifest(versions_dir(), &version_id) {
+    let manifest = match merge_manifest(&version_id) {
         Ok(m) => m,
         Err(e) => fail!(e),
     };

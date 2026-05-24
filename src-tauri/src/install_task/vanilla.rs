@@ -1,8 +1,9 @@
 use log::info;
 use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::version_manifest::{ArgRule, ClientManifest};
-use crate::{assets_dir, libraries_dir, versions_dir};
+use crate::{assets_dir, libraries_dir};
 use crate::http_utils::download_resource;
+use super::version_manifest_path;
 
 /// Evaluate Mojang library `rules` for the current OS. Only the `os.name`
 /// field is consulted here (vanilla never ships archi-/version-conditional
@@ -18,7 +19,7 @@ fn os_allowed(rules: &[ArgRule]) -> bool {
 }
 
 pub async fn pre_download_libraries(version_id: &str, client: &reqwest::Client) -> Result<(), Error> {
-    let version_json_path = versions_dir().join(version_id).join(format!("{version_id}.json"));
+    let version_json_path = version_manifest_path(version_id);
     let text = std::fs::read_to_string(&version_json_path)?;
     let version = serde_json::from_str::<ClientManifest>(&text)?;
 
@@ -41,7 +42,7 @@ pub async fn pre_download_libraries(version_id: &str, client: &reqwest::Client) 
 }
 
 pub async fn pre_download_log_config(version_id: &str, client: &reqwest::Client) -> Result<(), Error> {
-    let version_json_path = versions_dir().join(version_id).join(format!("{version_id}.json"));
+    let version_json_path = version_manifest_path(version_id);
     let text = std::fs::read_to_string(&version_json_path)?;
     let parsed = serde_json::from_str::<ClientManifest>(&text)?;
     let Some(file) = parsed.logging.and_then(|l| l.client).map(|c| c.file) else {

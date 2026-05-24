@@ -8,8 +8,8 @@ use yaminabe_launcher_shared::datatypes::ModLoader;
 use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::version_manifest::{Library, ClientManifest};
 use crate::{bin_dir, libraries_dir, temp_dir, versions_dir};
-use crate::http_utils::{download_resource, sha1_hex};
-use super::maven_coord_to_path;
+use crate::http_utils::{download_resource, sha1_hex, verify_sha1};
+use super::{installer_archive, maven_coord_to_path, version_manifest_path};
 
 #[derive(Deserialize)]
 struct InstallProfileV2 {
@@ -46,7 +46,7 @@ struct ProcessorSpec {
 /// `forge-…:client` jar, which is produced locally by the binary patcher) and
 /// entries already present on disk.
 pub async fn pre_download_libraries(version_id: &str, client: &reqwest::Client) -> Result<(), Error> {
-    let version_json_path = versions_dir().join(version_id).join(format!("{version_id}.json"));
+    let version_json_path = version_manifest_path(version_id);
     let text = std::fs::read_to_string(&version_json_path)?;
     let version = serde_json::from_str::<ClientManifest>(&text)?;
 
@@ -94,8 +94,10 @@ pub async fn install(
     let installer_path = installer_path.to_path_buf();
 
     let (profile, version_json_text, version_id) = {
-        let mut zip = ZipArchive::new(std::fs::File::open(&installer_path)?)
-            .map_err(|e| Error::Invalid(e.to_string()))?;
+        // One open of the installer reads both entries the install needs up
+        // front (profile + version manifest), rather than opening the file
+        // twice through the installer_archive helpers.
+        let mut zip = installer_archive::open(&installer_path)?;
 
         let mut profile_buf = String::new();
         zip.by_name("install_profile.json")
@@ -129,21 +131,9 @@ pub async fn install(
             .ok_or_else(|| Error::Invalid(format!("Universal library {} artifact has no path", profile.path)))?;
 
         let embedded = format!("maven/{artifact_path}");
-        let mut zip = ZipArchive::new(std::fs::File::open(&installer_path)?)
-            .map_err(|e| Error::Invalid(e.to_string()))?;
-        let mut primary_jar_bytes = Vec::new();
-        zip.by_name(&embedded)
-            .map_err(|e| Error::Invalid(format!("Embedded jar '{embedded}' not found: {e}")))?
-            .read_to_end(&mut primary_jar_bytes)?;
+        let primary_jar_bytes = installer_archive::read_entry_bytes(&installer_path, &embedded)?;
         if !artifact.sha1.is_empty() {
-            let actual = sha1_hex(&primary_jar_bytes);
-            if actual != artifact.sha1 {
-                return Err(Error::ChecksumMismatch {
-                    resource: format!("embedded {embedded}"),
-                    sha1: artifact.sha1.clone(),
-                    hex: actual,
-                });
-            }
+            verify_sha1(&primary_jar_bytes, &artifact.sha1, &format!("embedded {embedded}"))?;
         }
 
         let version_info: ClientManifest = serde_json::from_str(&version_json_text)?;
@@ -154,7 +144,7 @@ pub async fn install(
 
     let version_dir = versions_dir().join(&version_id);
     std::fs::create_dir_all(&version_dir)?;
-    std::fs::write(version_dir.join(format!("{version_id}.json")), &version_json_text)?;
+    std::fs::write(version_manifest_path(&version_id), &version_json_text)?;
 
     // The installer jar embeds a `maven/<path>` tree of libraries that are
     // produced by Forge itself (e.g. the patched `forge-<ver>.jar` for 1.12.2)
@@ -173,22 +163,14 @@ pub async fn install(
         }
 
         let extracted = {
-            let mut zip = ZipArchive::new(std::fs::File::open(&installer_path)?)
-                .map_err(|e| Error::Invalid(e.to_string()))?;
+            let mut zip = installer_archive::open(&installer_path)?;
             let embedded = format!("maven/{artifact_path}");
             match zip.by_name(&embedded) {
                 Ok(mut entry) => {
                     let mut buf = Vec::new();
                     entry.read_to_end(&mut buf)?;
                     if !artifact.sha1.is_empty() {
-                        let actual = sha1_hex(&buf);
-                        if actual != artifact.sha1 {
-                            return Err(Error::ChecksumMismatch {
-                                resource: format!("embedded {embedded}"),
-                                sha1: artifact.sha1.clone(),
-                                hex: actual,
-                            });
-                        }
+                        verify_sha1(&buf, &artifact.sha1, &format!("embedded {embedded}"))?;
                     }
                     std::fs::write(&dest, &buf)?;
                     true
@@ -201,14 +183,9 @@ pub async fn install(
             if artifact.url.is_empty() { continue; }
             download_resource(client, &artifact.url, dest.clone()).await?;
             if !artifact.sha1.is_empty() {
-                let actual = sha1_hex(&std::fs::read(&dest)?);
-                if actual != artifact.sha1 {
+                if let Err(e) = verify_sha1(&std::fs::read(&dest)?, &artifact.sha1, &artifact.url) {
                     std::fs::remove_file(&dest).ok();
-                    return Err(Error::ChecksumMismatch {
-                        resource: artifact.url.clone(),
-                        sha1: artifact.sha1.clone(),
-                        hex: actual,
-                    });
+                    return Err(e);
                 }
             }
         }
@@ -218,8 +195,7 @@ pub async fn install(
     std::fs::create_dir_all(&extract_dir)?;
     let mut data: HashMap<String, String> = HashMap::new();
     {
-        let mut zip = ZipArchive::new(std::fs::File::open(&installer_path)?)
-            .map_err(|e| Error::Invalid(e.to_string()))?;
+        let mut zip = installer_archive::open(&installer_path)?;
         for (key, val) in &profile.data {
             data.insert(key.clone(), resolve_data_entry(&val.client, &mut zip, &extract_dir)?);
         }
@@ -287,14 +263,9 @@ pub async fn install(
             if !path.exists() {
                 return Err(Error::Invalid(format!("Processor output missing: {}", path.display())));
             }
-            let actual = sha1_hex(&std::fs::read(path)?);
-            if actual != *expected {
+            if let Err(e) = verify_sha1(&std::fs::read(path)?, expected, path.to_string_lossy().as_ref()) {
                 std::fs::remove_file(path).ok();
-                return Err(Error::ChecksumMismatch {
-                    resource: path.to_string_lossy().into_owned(),
-                    sha1: expected.clone(),
-                    hex: actual,
-                });
+                return Err(e);
             }
         }
     }
