@@ -1,10 +1,3 @@
-//! Numeric pager with prev / next arrows and an elided middle.
-//!
-//! The visible page list always shows the first page, the last page, the
-//! current page, and the current page's immediate neighbours. Gaps between
-//! kept pages render as a non-clickable ellipsis. A single-page result set
-//! renders nothing (visibility hidden) so the page reserves the space.
-
 use bamboo_css_macro::css;
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};

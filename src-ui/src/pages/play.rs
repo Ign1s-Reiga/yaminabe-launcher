@@ -96,11 +96,8 @@ pub fn PlayPage() -> impl IntoView {
         error.set(None);
 
         leptos::task::spawn_local(async move {
-            // Per-line failures arrive through the `instance-log` stream as
-            // `done: true` with `error: Some(_)`, which `log_lines` already
-            // surfaces. But an IPC-layer rejection (channel closed, args
-            // malformed) never produces a log event — feed it into the same
-            // viewer so the user sees *some* explanation.
+            // Per-line failures arrive via the `instance-log` event stream;
+            // IPC-layer rejections don't, so push them into the same viewer.
             if let Err(e) = ipc::call::<_, ()>(
                 "launch_instance",
                 LaunchArgs {

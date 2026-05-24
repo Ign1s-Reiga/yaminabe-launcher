@@ -154,11 +154,8 @@ pub async fn ensure_forge(
     let forge_build = loader_version.strip_prefix("forge-").unwrap_or(loader_version);
     let forge_version = forge_maven_version(mc_version, forge_build);
 
-    // Pre-1.6 Forge (jar-mod era, no install_profile.json) is not currently
-    // supported — see `project-noprofile-fml-bootstrap-blocker` for what a
-    // re-implementation would need. The installer-jar download below will
-    // 404 for those MC versions, which surfaces the unsupported case as a
-    // clear network error rather than a half-broken install.
+    // Pre-1.6 (jar-mod era) is unsupported; the installer download 404s for
+    // those MC versions, surfacing as a clean network error.
     download_from_maven(
         client,
         "https://maven.minecraftforge.net/",
@@ -176,10 +173,8 @@ pub async fn ensure_forge(
     let version_id = match install_type {
         ForgeInstallType::V1 => {
             let version_id = read_v1_version(&installer_path)?;
-            // Pre-1.13 Forge produces no version jar (the universal jar lives
-            // under `libraries/`). `install_from_parsed` writes that jar before
-            // the manifest, so a present manifest implies the universal jar is
-            // already on disk; gate on it to skip rework.
+            // `install_from_parsed` writes the universal jar before the
+            // manifest, so a present manifest implies the jar is on disk too.
             if !version_manifest_path(&version_id).exists() {
                 forge_v1::install(&installer_path, client).await?;
             } else {
@@ -230,9 +225,8 @@ pub async fn ensure_neoforge(
 
     let version_id = read_v2_version(&installer_path)?;
 
-    // The version dir's existence only proves install was started, not that
-    // client.json libraries were all downloaded. Skip the installer phase
-    // when already present but always run pre_download_libraries.
+    // Version-dir presence only proves install started; always run
+    // pre_download_libraries to backfill anything the installer left out.
     if versions_dir().join(&version_id).exists() {
         info!("NeoForge {nf_version} already installed, skipping installer");
     } else {
@@ -276,10 +270,9 @@ pub async fn ensure_libraries(version_id: &str, client: &reqwest::Client) -> Res
         for lib in &manifest.libraries {
             if !seen.insert(lib.name.clone()) { continue; }
 
-            // Old-style natives library (pre-1.13): the DLLs/SOs live inside a
-            // classifier jar referenced by `natives.<os>` → `downloads.classifiers`.
-            // Without this jar on disk, `extract_natives` silently produces an
-            // empty `java.library.path` and LWJGL/JNI binding fails at runtime.
+            // Pre-1.13 natives: the DLLs/SOs live in a classifier jar that
+            // `extract_natives` later unpacks; missing here = empty
+            // java.library.path = LWJGL/JNI failure at runtime.
             if let Some(key) = lib.natives.get("windows").map(|s| s.replace("${arch}", "64")) {
                 let Some(classifiers) = lib.downloads.as_ref().and_then(|d| d.classifiers.as_ref()) else {
                     continue;

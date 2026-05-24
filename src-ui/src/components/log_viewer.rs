@@ -1,17 +1,3 @@
-//! Dark-theme, sticky-scroll log viewer used by `PlayPage`.
-//!
-//! Scrolling rules:
-//! - Default behaviour is "tail" — every new line scrolls the view to the
-//!   bottom on a 50 ms throttle.
-//! - The user can scroll up to read history; tail mode disengages until they
-//!   scroll back to (or near) the bottom.
-//! - Heavy log bursts can race the throttle (DOM `scroll` event fires *after*
-//!   more content has been appended), so a downward-or-stationary scroll
-//!   event is never treated as "user wants to leave tail mode" — only an
-//!   upward scroll is.
-//! - Text selection pauses auto-scroll for the duration of the drag and a
-//!   window-level `mouseup` listener resumes it.
-
 use bamboo_css_macro::css;
 use leptos::__reexports::send_wrapper::SendWrapper;
 use leptos::prelude::*;

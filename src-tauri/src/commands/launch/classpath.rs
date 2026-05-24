@@ -1,11 +1,3 @@
-//! Library resolution: natives extraction, classpath construction, and
-//! finding the jar that holds the manifest's `mainClass`.
-//!
-//! All three walk the merged manifest's library list under the same rule-eval
-//! and natives-skip filters; the helpers are factored to keep the
-//! per-library decision (`is this on classpath?`, `does this jar hold X?`)
-//! readable.
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use yaminabe_launcher_shared::error::Error;
@@ -111,25 +103,14 @@ pub(super) fn build_classpath(
     mc_version: &str,
     version_id: &str,
 ) -> (String, Vec<String>) {
-    // Two filters before each library becomes a classpath entry:
-    //   1. Skip old-style natives libs (non-empty `natives` map). Their
-    //      classifier jars are unpacked by `extract_natives` and don't belong
-    //      on classpath.
-    //   2. Dedupe by `group:artifact[:classifier]`. Merged manifests (esp.
-    //      newer MC + loader combos) may carry multiple versions of the same
-    //      artifact; keep the first occurrence. In our merge order (child
-    //      first) that's the version the loader explicitly asked for.
-    // Returns (classpath, missing) — missing lists manifest libraries whose
-    // resolved on-disk path didn't exist, so the caller can surface them
-    // instead of failing later with an opaque ClassNotFoundException.
+    // Skip natives libs (extract_natives handles those) and dedupe by
+    // `group:artifact[:classifier]` so the loader's preferred version (first
+    // in the merge order) wins. `missing` surfaces absent libs to the caller.
     let mut seen: HashSet<String> = HashSet::new();
     let mut paths: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
-    // Per-version primary jar at `versions/<id>/<id>.jar`. Only Vanilla
-    // instances have one (the vanilla client jar). Forge/NeoForge keep their
-    // universal jar (V1, runtime-patched) or patched client jar (V2) under
-    // `libraries/` as ordinary library entries, so for those this path does
-    // not exist.
+    // Only Vanilla instances have a per-version primary jar; Forge/NeoForge
+    // ship theirs under `libraries/` as an ordinary entry.
     let primary_jar = versions_dir.join(version_id).join(format!("{version_id}.jar"));
     if primary_jar.exists() {
         paths.push(primary_jar.to_string_lossy().into_owned());
@@ -146,10 +127,8 @@ pub(super) fn build_classpath(
             missing.push(format!("{} (expected at {})", lib.name, p.display()));
         }
     }
-    // Vanilla client jar is also required for non-Vanilla loaders that don't
-    // bundle the unmodified vanilla classes into their patched jar (Fabric,
-    // Quilt, and pre-1.13 Forge). For Vanilla itself this is the primary jar
-    // already appended above; skip the duplicate.
+    // Non-Vanilla loaders (Fabric, Quilt, pre-1.13 Forge) need the vanilla
+    // client jar on classpath since their patched jars don't bundle it.
     if version_id != mc_version {
         let vanilla_jar = versions_dir.join(mc_version).join(format!("{mc_version}.jar"));
         if vanilla_jar.exists() { paths.push(vanilla_jar.to_string_lossy().into_owned()); }

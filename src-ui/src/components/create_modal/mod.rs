@@ -1,16 +1,3 @@
-//! Three-step "create instance" wizard.
-//!
-//! - Step 1 (`step_method`): pick how the instance is set up
-//!   (manual today; modpack import planned).
-//! - Step 2 (`step_basics`): name, Minecraft version, optional category.
-//! - Step 3 (`step_loader`): mod loader + loader version, with eager
-//!   per-loader prefetching of version lists.
-//!
-//! Cross-step form state lives in `WizardState`, a `Copy` bundle of
-//! `RwSignal`s passed to each step. Loader-version caches and the
-//! NoProfile-era detector live on the shell so the prefetch effect can run
-//! whenever step 3 becomes active.
-
 mod step_basics;
 mod step_loader;
 mod step_method;
@@ -83,14 +70,9 @@ pub fn CreateInstanceModal(
         call_get_minecraft_versions().await.unwrap_or_default()
     });
 
-    // ── eager per-loader prefetch on step-3 entry ─────────────────────────────
-    // Every entry into step 3 kicks off four parallel IPC fetches (one per
-    // non-vanilla loader), cached in `loader_versions`. Whichever lands first
-    // is immediately usable by the selector; `loader_pending` tracks in-flight
-    // kinds so the version dropdown can show "Loading…" until that loader's
-    // list arrives. Re-fetching on every entry is intentional (confirmed
-    // acceptable) — keeps the cache aligned with the current `selected_mcver`
-    // without a separate invalidation path.
+    // Every step-3 entry kicks off one fetch per loader; `loader_pending`
+    // tracks in-flight kinds so the selector can show "Loading…". Re-fetching
+    // is intentional — it keeps the cache aligned with `selected_mcver`.
     let loader_versions: RwSignal<HashMap<String, Vec<LoaderVersion>>> = RwSignal::new(HashMap::new());
     let loader_pending: RwSignal<HashSet<String>> = RwSignal::new(HashSet::new());
 
@@ -113,10 +95,8 @@ pub fn CreateInstanceModal(
         }
     });
 
-    // ── derived: NoProfile-era Forge (unsupported) ────────────────────────────
-    // True when the user has picked Forge with MC 1.0–1.5.x — the jar-mod era
-    // that needs a per-Forge-version FML bootstrap lib table the launcher
-    // doesn't yet ship. Gates both the warning banner and the Create button.
+    // Forge + MC 1.0–1.5.x: the jar-mod era we don't yet support (see the
+    // `NoProfile FML bootstrap blocker` memory). Gates the warning + Create.
     let is_noprofile_forge: Memo<bool> = Memo::new(move |_| {
         state.selected_modloader.get() == "forge" && {
             let parts: Vec<u32> = state.selected_mcver.get()
@@ -153,9 +133,8 @@ pub fn CreateInstanceModal(
         }
     });
 
-    // Keep `selected_modloader_version` valid as the loader list changes.
-    // Skips on `None` (fetch still pending) — when the cache populates the
-    // effect re-runs against the fresh list.
+    // Keep `selected_modloader_version` valid as the loader list changes;
+    // skips while the fetch is pending and re-runs once the cache populates.
     Effect::new(move |_| {
         let kind = state.selected_modloader.get();
         if kind == "vanilla" {
@@ -183,10 +162,8 @@ pub fn CreateInstanceModal(
         state.selected_modloader_version.set(String::new());
     };
 
-    // Triggered by step 3's Create button. Closes the modal optimistically,
-    // notifies `on_creating` so the parent can render a pending tile, fires
-    // the IPC, and finally notifies `on_created` with the name once the
-    // backend reports success.
+    // Step 3 Create handler: close modal, notify parent of pending tile, run
+    // the IPC, notify parent again on success.
     let on_create = move || {
         let mod_loader = ModLoader::from_str(&state.selected_modloader.get_untracked())
             .unwrap_or(ModLoader::Vanilla);

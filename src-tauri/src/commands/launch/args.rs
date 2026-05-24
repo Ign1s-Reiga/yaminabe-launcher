@@ -1,14 +1,3 @@
-//! Manifest argument-list processing.
-//!
-//! Mojang's modern manifests carry `arguments.{jvm,game,default-user-jvm}` as
-//! mixed plain-string + conditional entries; each conditional has `rules` that
-//! must be evaluated against the current OS and feature flags before the
-//! entry is included. Variables like `${classpath}` are substituted via
-//! `LaunchVars`.
-//!
-//! `eval_rules` is shared with `classpath`, where the same `rules` syntax
-//! gates library inclusion.
-
 use std::collections::HashSet;
 use yaminabe_launcher_shared::version_manifest::{ArgRule, ArgValue, ArgumentItem, DefaultJvmItem};
 

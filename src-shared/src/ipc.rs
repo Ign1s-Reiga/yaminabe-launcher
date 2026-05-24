@@ -1,9 +1,3 @@
-//! Tauri event payloads shared by backend emitter and frontend listener.
-//!
-//! These types cross the wasm boundary as JSON. Both crates must agree on
-//! field names and types — keeping the single definition here makes any
-//! schema drift a compile-time problem.
-
 use serde::{Deserialize, Serialize};
 
 /// One log line emitted by an instance launch.

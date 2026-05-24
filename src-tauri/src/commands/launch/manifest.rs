@@ -1,9 +1,3 @@
-//! Loading and `inheritsFrom` merging of the per-version `ClientManifest`.
-//!
-//! Forge / NeoForge / Fabric / Quilt manifests declare `inheritsFrom`,
-//! pointing at a vanilla parent manifest. Launch needs the union; the rules
-//! for combining the two are documented on `merge_manifest`.
-
 use std::collections::HashSet;
 use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::version_manifest::ClientManifest;

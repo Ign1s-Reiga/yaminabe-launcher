@@ -116,11 +116,9 @@ pub async fn install(
         (profile, version_buf, version_id)
     };
 
-    // Empty `data` + empty `processors` means the installer ships a pre-built
-    // universal jar (e.g. 1.12.2-2864) and runtime FMLTweaker handles the
-    // binpatching in-memory — there is nothing for the V2 processor pipeline
-    // to do. The remaining work (write manifest, place primary jar) is
-    // identical to the V1 path, so delegate.
+    // Empty `data` + `processors` (e.g. 1.12.2-2864): runtime FMLTweaker
+    // binpatches in-memory, so delegate to the V1 path which knows how to
+    // place the universal jar and write the manifest.
     if profile.data.is_empty() && profile.processors.is_empty() {
         let universal = profile.libraries.iter()
             .find(|lib| lib.name == profile.path)
@@ -146,11 +144,9 @@ pub async fn install(
     std::fs::create_dir_all(&version_dir)?;
     std::fs::write(version_manifest_path(&version_id), &version_json_text)?;
 
-    // The installer jar embeds a `maven/<path>` tree of libraries that are
-    // produced by Forge itself (e.g. the patched `forge-<ver>.jar` for 1.12.2)
-    // and are not actually downloadable from the URL in `install_profile.json`.
-    // Match the official installer's order: extract from `maven/...` first,
-    // fall back to URL download, only then give up if both are absent.
+    // Some `install_profile.json` libs (notably the patched forge jar) only
+    // exist embedded under `maven/<path>` in the installer; try that first,
+    // fall back to URL download, give up if both miss.
     for lib in &profile.libraries {
         let Some(artifact) = lib.downloads.as_ref().and_then(|d| d.artifact.as_ref()) else {
             continue;

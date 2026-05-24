@@ -1,5 +1,3 @@
-//! Step 2 of the create-instance wizard: name + Minecraft version + category.
-
 use crate::components::create_modal::{step_subtitle_class, WizardState};
 use crate::components::ui::*;
 use bamboo_css_macro::css;

@@ -1,10 +1,3 @@
-//! CurseForge modpack search page.
-//!
-//! Query → results → install flow. The card row and pager live in
-//! `components::result_card` and `components::pagination`, leaving this
-//! file with only the page-level state (search query, in-flight fetch,
-//! install modal) and the bar/scroll frame around them.
-
 use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
@@ -152,10 +145,8 @@ pub fn SearchPage() -> impl IntoView {
         install.set(None);
 
         leptos::task::spawn_local(async move {
-            // Install progress surfaces through the `instance-install-progress`
-            // event stream, which the install sidebar already renders — but a
-            // synchronous IPC failure (bad args, channel closed) would never
-            // produce an event, so log it explicitly.
+            // Install progress flows through the install sidebar's event
+            // stream; synchronous IPC failures don't, so log them here.
             if let Err(e) = call_install(args).await {
                 log::error!("install_curseforge_modpack failed: {e}");
             }

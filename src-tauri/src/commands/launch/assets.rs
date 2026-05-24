@@ -1,10 +1,3 @@
-//! Asset index parsing and on-disk synchronisation.
-//!
-//! The version manifest's `assetIndex` points at a separate JSON file listing
-//! every textures/sounds object by content-hash. `download_assets` ensures
-//! the index itself is on disk, then walks every object and downloads any
-//! that's missing or stale.
-
 use std::collections::HashMap;
 use std::path::Path;
 use serde::Deserialize;

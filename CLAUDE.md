@@ -5,8 +5,9 @@ Follow these rules to minimize unnecessary context usage and avoid scanning the 
 
 ## Architecture Overview
 
-**Yaminabe Launcher** is a Tauri 2.x desktop app for managing game modpacks. It uses a dual-crate workspace:
+**Yaminabe Launcher** is a Tauri 2.x desktop app for managing game modpacks. It uses a three-crate workspace:
 
+- **`src-shared/`** — Wire types shared by both ends of the IPC boundary (no Tauri, no Leptos)
 - **`src-tauri/`** — Rust backend, Tauri window management, IPC commands (`#[tauri::command]`)
 - **`src-ui/`** — Frontend compiled to WebAssembly via Trunk; uses the **Leptos 0.8** reactive framework in CSR mode
 
@@ -23,32 +24,84 @@ Follow these rules to minimize unnecessary context usage and avoid scanning the 
 ### Project Structure
 
 ```
-src-ui/src/
-├── app.rs                   # Root App component; owns navigation signal (current_nav)
-├── ipc.rs                   # Manage IPC functions
-├── curseforge.rs            # IPC funcitons utilities for CurseForge API
-├── pages/
-│   ├── home.rs              # Home Page (`/`)
-│   ├── instance_detail.rs   #
-│   ├── library.rs           # Library Page (`/library`)
-│   ├── play.rs              # Play Page (`/library/:id/play`)
-│   ├── search.rs            # Search Page (`/search`)
-│   └── settings.rs          # Settings Page (`/settings`)
-├── components.rs            # Component module declarations
-└── components/
-    ├── ui.rs                # Reusable UI primitives
-    ├── ui/                  # Atomic UI components (Button, Modal, Input, TabBar)
-    ├── create_modal.rs      # Modal used to create new instances
-    ├── install_sidebar.rs   # Sidebar that shows install progress
-    └── instance_card.rs
+src-shared/src/
+├── lib.rs
+├── error.rs                 # `Error` enum + thiserror impls + Serialize for the wire
+├── datatypes.rs             # InstanceMeta, AppSettings, ModLoader, ModpackInfo, …
+├── ipc.rs                   # Tauri event payloads (LogLine, InstallProgress)
+└── version_manifest.rs      # Unified Mojang version JSON: covers vanilla /
+                             # Forge / NeoForge / Fabric / Quilt manifests in one
+                             # `ClientManifest`. Era-specific fields are Option-
+                             # /default-tolerant; skip_serializing_if keeps re-
+                             # serialised output close to the original shape so
+                             # the V1 install path can round-trip the manifest.
 
 src-tauri/src/
-├── lib.rs            # Initialize Tauri backend & Register Tauri IPC functions
-└── commands/
-    ├── curseforge.rs # Commands for CurseForge API
-    ├── instance.rs   # Commands for Instance management
-    ├── launch.rs     # Commands for Launch Instance
-    └── settings.rs   # Commands for Settings management
+├── lib.rs                   # Tauri init, AppState, IPC handler registration
+├── main.rs
+├── http_utils.rs            # Shared HTTP+sha1: download_resource,
+│                            # fetch_and_verify, verify_sha1, download_from_maven
+├── commands/                # `#[tauri::command]` handlers
+│   ├── mod.rs
+│   ├── instance.rs          # create_instance, get_instances, save_instance_settings
+│   ├── java.rs              # Local Java detection + Mojang JRE download
+│   ├── minecraft.rs         # Mojang version-manifest-v2 fetch + cache
+│   ├── modfile.rs           # Bridge to mod_repo: search, files, install, download
+│   ├── settings.rs          # get/save AppSettings, pick_folder, subfolder helpers
+│   └── launch/              # launch_instance + kill_instance
+│       ├── mod.rs           # Tauri command body + lifecycle + stdio drain
+│       ├── manifest.rs      # load_manifest + merge_manifest (inheritsFrom)
+│       ├── classpath.rs     # extract_natives, build_classpath, find_main_class_jar
+│       ├── args.rs          # LaunchVars, substitute_vars, eval_rules, process_args
+│       └── assets.rs        # Asset index sync against resources.download.minecraft.net
+├── install_task/            # Per-loader install pipelines (vanilla + loader prep)
+│   ├── mod.rs               # ensure_{vanilla,fabric,quilt,forge,neoforge} + ensure_libraries
+│   ├── vanilla.rs           # Pre-download vanilla libraries + log4j config
+│   ├── fabric_like.rs       # Fabric / Quilt installer + lib prefetch
+│   ├── forge_v1.rs          # Pre-1.13 Forge: runtime binpatching (universal jar under libraries/)
+│   ├── forge_v2.rs          # 1.13+ Forge / NeoForge: native PostProcessors pipeline
+│   └── installer_archive.rs # Zip-read helpers for installer jars (one-shot reads
+│                            # use `read_entry_*`; multi-entry loops call `open` directly)
+└── mod_repo/                # External mod-repository clients
+    ├── mod.rs
+    ├── curseforge.rs        # CurseForge API: modpack search/files, modpack install,
+    │                        # mod parallel download
+    └── modrinth.rs          # Modrinth API: mod download by version id
+
+src-ui/src/
+├── main.rs                  # mount_to_body
+├── app.rs                   # Router, install-sidebar wiring, navbar
+├── ipc.rs                   # `call` / `call_noargs` / `on_event` wrappers around Tauri
+├── curseforge.rs            # Frontend wrappers around CurseForge backend commands
+├── pages.rs / pages/
+│   ├── home.rs              # `/`
+│   ├── library.rs           # `/library` — instance grid + category tabs
+│   ├── instance_detail.rs   # `/library/:id` — Description / Mods / Settings tabs
+│   ├── play.rs              # `/library/:id/play` — runs the launcher, shows logs
+│   ├── search.rs            # `/search` — CurseForge modpack search
+│   └── settings.rs          # `/settings`
+├── components.rs / components/
+│   ├── ui.rs / ui/          # Atomic UI primitives (Button, Modal, Input, TabBar,
+│   │                        # Segmented, Skeletons)
+│   ├── create_modal/        # 3-step "create instance" wizard
+│   │   ├── mod.rs           # Shell + `WizardState` (Copy bundle of RwSignals) +
+│   │   │                    # step routing + per-loader version prefetch
+│   │   ├── step_method.rs   # Step 1 — pick creation method
+│   │   ├── step_basics.rs   # Step 2 — name + MC version + category
+│   │   └── step_loader.rs   # Step 3 — mod loader + loader version
+│   ├── install_modpack_modal.rs
+│   ├── install_sidebar.rs   # Slide-in panel showing per-instance install progress
+│   ├── instance_card.rs
+│   ├── log_viewer.rs        # Dark sticky-tail log box used by `play.rs`. Tail mode
+│   │                        # only disengages on *upward* scrolls (downward events
+│   │                        # during log bursts are racey); text selection pauses
+│   │                        # auto-scroll until a window-level mouseup fires.
+│   ├── open_in_file_manager.rs
+│   ├── pagination.rs        # Numeric pager with first/last/current ± 1 visible,
+│   │                        # ellipsis gaps elsewhere
+│   ├── result_card.rs       # CurseForge modpack search-result card
+│   └── settings.rs          # SettingsSection / SettingsProp / SaveState scaffolding
+└── styles.css               # Global CSS variables + font stacks
 ```
 
 ### CSS Styling Approach

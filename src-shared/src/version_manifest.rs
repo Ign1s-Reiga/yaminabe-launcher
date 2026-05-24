@@ -1,15 +1,3 @@
-//! Mojang-style Minecraft version JSON.
-//!
-//! A single union model that covers every era of the same on-disk file
-//! (`versions/<id>/<id>.json`) plus the install_profile / version manifest
-//! variants emitted by Forge / NeoForge / Fabric / Quilt installers.
-//!
-//! Era-specific fields are `Option` or `default`-tolerant so a single
-//! deserialize call works for any of them. `skip_serializing_if` keeps
-//! re-serialized output close to the era-specific original shape — the V1
-//! Forge install path writes the parsed manifest back to disk and downstream
-//! readers (mostly `launch::manifest`) read it with this same type.
-
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 

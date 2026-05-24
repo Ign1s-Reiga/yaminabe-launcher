@@ -1,9 +1,3 @@
-//! Step 1 of the create-instance wizard: pick how the instance is created.
-//!
-//! Today only the "Create Manually" path advances the wizard; the local
-//! import card is rendered for visual completeness but doesn't yet route
-//! anywhere — the wizard shell ignores any selection other than `Some(1)`.
-
 use crate::components::ui::*;
 use bamboo_css_macro::{css, cx};
 use leptos::prelude::*;

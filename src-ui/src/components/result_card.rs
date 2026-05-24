@@ -1,5 +1,3 @@
-//! A single CurseForge search-result card.
-
 use crate::components::ui::{Button, ButtonVariant};
 use crate::curseforge::fmt_downloads;
 use bamboo_css_macro::css;

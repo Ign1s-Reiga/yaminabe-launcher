@@ -1,11 +1,3 @@
-//! Step 3 of the create-instance wizard: mod loader + loader version.
-//!
-//! The loader-version dropdown reads from a shared per-loader cache the
-//! shell prefills on step-3 entry. When the user picks Forge against a
-//! pre-1.6 MC version, `is_noprofile_forge` lights up and disables Create —
-//! that era of Forge needs an FML bootstrap-lib table the launcher doesn't
-//! yet ship (see the `NoProfile FML bootstrap blocker` memory).
-
 use crate::components::create_modal::{step_subtitle_class, WizardState};
 use crate::components::ui::*;
 use bamboo_css_macro::css;

@@ -1,15 +1,3 @@
-//! `launch_instance` / `kill_instance` Tauri commands.
-//!
-//! `launch_instance` orchestrates the full pre-launch pipeline (manifest
-//! load + merge, library/asset/natives sync, runtime resolution, classpath +
-//! arg construction, JVM spawn, stdio drain). The supporting machinery is
-//! split into submodules so each concern is read on its own:
-//!
-//! - `manifest` — version JSON load + `inheritsFrom` merging
-//! - `classpath` — natives extraction, classpath build, main-class search
-//! - `args` — JVM/game argument processing, variable substitution, rule eval
-//! - `assets` — asset index sync against `resources.download.minecraft.net`
-
 mod args;
 mod assets;
 mod classpath;
@@ -115,16 +103,9 @@ pub async fn launch_instance(
         Err(e) => fail!(e),
     };
 
-    // jrePath in instance.json overrides everything; otherwise use the JRE
-    // recommended by client.json (javaVersion.component → runtimes/<component>).
-    // If the Recommended runtime is missing on disk, fetch it on demand —
-    // launching with the wrong major version is a silent ClassCastException
-    // (LaunchWrapper needs Java 8) so falling back to system `java` is unsafe.
-    //
-    // We pick `java.exe` (not `javaw.exe`): javaw is a windowless launcher that
-    // suppresses stdout/stderr — including JVM startup errors — which makes
-    // crashes unobservable. With `CREATE_NO_WINDOW` set on spawn we still avoid
-    // the console pop-up.
+    // jrePath in instance.json wins; otherwise fetch the JRE the manifest
+    // recommends. We pick `java.exe` (not `javaw.exe`) so JVM startup errors
+    // surface on the captured stdio; CREATE_NO_WINDOW keeps the console hidden.
     let java = if let Some(custom) = instance_jre_path {
         custom
     } else if let Some(component) = manifest.java_version.as_ref().map(|jv| jv.component.clone()) {
@@ -265,15 +246,9 @@ pub async fn launch_instance(
         jvm_section.extend(process_args(&args.jvm, &vars));
         launch_args.extend(jvm_section);
 
-        // All loaders (including Forge/NeoForge) launch via the manifest's
-        // mainClass with a populated classpath. For Forge that main class is
-        // the bootstrap launcher (e.g. cpw.mods.bootstraplauncher.BootstrapLauncher),
-        // which relies on `${classpath}` substitutions and module-path JVM args
-        // declared in the manifest's `arguments.jvm`. Using `-jar` here would
-        // make the JVM ignore `-cp` / `${classpath}` entirely and break the
-        // launch — the patched forge client jar is just one classpath entry
-        // among many, not a self-contained launcher.
-        // `entry_jar` was resolved earlier purely as an existence sanity check.
+        // Always launch via mainClass + populated classpath, never `-jar`:
+        // Forge's bootstrap launcher needs `${classpath}` and module-path JVM
+        // args from the manifest, which `-jar` would ignore.
         launch_args.push(manifest.main_class.clone());
         launch_args.extend(process_args(&args.game, &vars));
     } else {
@@ -321,10 +296,9 @@ pub async fn launch_instance(
         app_handle.emit("instance-process-started", &instance_id).ok();
     }
 
-    // Read bytes (not lines) so we can decode lossily. Java emits stderr in the
-    // system codepage on Windows (e.g. CP932 on Japanese locales), and
-    // `BufReader::lines()` aborts the stream as soon as it sees a non-UTF-8
-    // byte — which is exactly when we most want the output (early JVM errors).
+    // Read bytes (not lines) and decode lossily — Java stderr is system-
+    // codepage on Windows (e.g. CP932), and `BufReader::lines()` aborts on
+    // non-UTF-8, dropping exactly the early-JVM-error output we need most.
     async fn drain(
         mut reader: impl tokio::io::AsyncRead + Unpin,
         app: tauri::AppHandle,

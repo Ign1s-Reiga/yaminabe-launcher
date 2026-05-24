@@ -54,10 +54,8 @@ pub async fn pre_download_libraries(version_id: &str, client: &reqwest::Client) 
     let version = serde_json::from_str::<ClientManifest>(&text)?;
 
     for lib in &version.libraries {
-        // Fabric/Quilt manifests carry `url` as the maven repo base for the
-        // bare `name` coordinate. Without a base we have nowhere to fetch
-        // from, so skip — the launch-time `ensure_libraries` pass falls back
-        // to the default Mojang maven for entries with no `url`.
+        // Fabric/Quilt `url` is the maven repo base for the bare `name`;
+        // skip if missing — launch-time `ensure_libraries` covers those.
         let Some(repo_url) = lib.url.as_deref().filter(|u| !u.is_empty()) else { continue; };
         let dest = libraries_dir().join(super::maven_coord_to_path(&lib.name));
         if dest.exists() { continue; }

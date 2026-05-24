@@ -1,15 +1,3 @@
-//! Helpers for reading single entries out of a Forge/NeoForge installer jar.
-//!
-//! Every callsite that wants one file out of an installer used to open the
-//! file, wrap it in a `ZipArchive`, look up `by_name`, and read the contents
-//! — repeated four ways across `mod.rs`, `forge_v1.rs`, and `forge_v2.rs`.
-//! The helpers below collapse that into one call; the `Error::Invalid`
-//! mapping is uniform.
-//!
-//! Each call opens the installer fresh. For paths that need many entries
-//! from the same archive (notably `forge_v2::install`), open the
-//! `ZipArchive` directly so the file isn't read off disk N times.
-
 use std::io::Read;
 use std::path::Path;
 use zip::ZipArchive;
