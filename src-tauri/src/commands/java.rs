@@ -4,8 +4,9 @@ use serde::Deserialize;
 use tauri::State;
 
 use yaminabe_launcher_shared::datatypes::JavaInstall;
+use yaminabe_launcher_shared::error::Error;
 use crate::{runtimes_dir, AppState};
-
+use crate::http_utils::{download_resource, fetch_json};
 // ── Local detection ───────────────────────────────────────────────────────────
 
 fn get_java_version(jdk_dir: &Path) -> String {
@@ -105,61 +106,53 @@ struct RuntimeDownload {
 pub async fn download_java_runtime(
     component: &str,
     client: &reqwest::Client,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, Error> {
     let runtime_dir = runtimes_dir().join(component);
     let javaw_path  = runtime_dir.join("bin").join("javaw.exe");
     if javaw_path.exists() {
         return Ok(javaw_path);
     }
 
-    let all: HashMap<String, HashMap<String, Vec<JavaRuntimeEntry>>> = client
-        .get("https://piston-meta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json")
-        .send().await
-        .map_err(|e| format!("Failed to fetch Mojang JRE list: {e}"))?
-        .json().await
-        .map_err(|e| format!("Failed to parse Mojang JRE list: {e}"))?;
+    let all = fetch_json::<HashMap<String, HashMap<String, Vec<JavaRuntimeEntry>>>>(
+        client,
+        "https://piston-meta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json",
+        &[],
+        None
+    ).await?;
 
     let manifest_url = all
         .get("windows-x64")
         .and_then(|p| p.get(component))
         .and_then(|v| v.first())
         .map(|e| e.manifest.url.clone())
-        .ok_or_else(|| format!("No Mojang JRE for component '{component}' on windows-x64"))?;
+        .ok_or_else(|| Error::Invalid(format!("No Mojang JRE for component '{component}' on windows-x64")))?;
 
-    let manifest: RuntimeManifest = client
-        .get(&manifest_url)
-        .send().await
-        .map_err(|e| format!("Failed to fetch JRE manifest: {e}"))?
-        .json().await
-        .map_err(|e| format!("Failed to parse JRE manifest: {e}"))?;
+    let manifest = fetch_json::<RuntimeManifest>(
+        client,
+        &manifest_url,
+        &[],
+        None
+    ).await?;
 
-    std::fs::create_dir_all(&runtime_dir)
-        .map_err(|e| format!("Failed to create runtime dir: {e}"))?;
+    std::fs::create_dir_all(&runtime_dir)?;
 
     for (rel_path, file) in &manifest.files {
         let dest = runtime_dir.join(rel_path);
         if file.file_type == "directory" {
-            std::fs::create_dir_all(&dest)
-                .map_err(|e| format!("Failed to create dir '{rel_path}': {e}"))?;
+            std::fs::create_dir_all(&dest)?;
             continue;
         }
-        if file.file_type != "file" { continue; }
-        let Some(dl) = &file.downloads else { continue };
-        if dest.exists() { continue; }
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create parent for '{rel_path}': {e}"))?;
+        if file.file_type == "file" && let Some(dl) = &file.downloads {
+            if dest.exists() { continue; }
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            download_resource(client, dl.raw.url.as_str(), dest).await?;
         }
-        let bytes = client.get(&dl.raw.url).send().await
-            .map_err(|e| format!("Failed to download '{rel_path}': {e}"))?
-            .bytes().await
-            .map_err(|e| format!("Failed to read '{rel_path}': {e}"))?;
-        std::fs::write(&dest, &bytes)
-            .map_err(|e| format!("Failed to write '{rel_path}': {e}"))?;
     }
 
     if !javaw_path.exists() {
-        return Err(format!("javaw.exe not found after downloading runtime '{component}'"));
+        return Err(Error::NotExists(javaw_path.to_string_lossy().to_string()));
     }
 
     Ok(javaw_path)

@@ -1,21 +1,10 @@
 use log::info;
-use serde::Deserialize;
 use yaminabe_launcher_shared::datatypes::ModLoader;
 use yaminabe_launcher_shared::error::Error;
-use crate::{bin_dir, libraries_dir, temp_dir, versions_dir};
-use crate::http_utils::{download_from_maven, get_resource_name};
-
-#[derive(Deserialize)]
-struct VersionJson {
-    libraries: Vec<VersionLibrary>,
-}
-
-#[derive(Deserialize)]
-struct VersionLibrary {
-    name: String,
-    #[serde(rename = "url")]
-    repo_url: String,
-}
+use yaminabe_launcher_shared::version_manifest::ClientManifest;
+use crate::{bin_dir, libraries_dir, temp_dir};
+use crate::http_utils::{download_from_maven, get_resource_name, verify_sha1};
+use super::version_manifest_path;
 
 pub async fn run_installer(
     loader: &ModLoader,
@@ -33,14 +22,9 @@ pub async fn run_installer(
     let temp_path = temp_dir().join(file_name);
 
     let bytes = std::fs::read(&temp_path)?;
-    let hex = super::sha1_hex(&bytes);
-    if hex != expected_sha1.trim() {
+    if let Err(e) = verify_sha1(&bytes, expected_sha1.trim(), installer_url) {
         std::fs::remove_file(&temp_path).ok();
-        return Err(Error::ChecksumMismatch {
-            resource: installer_url.to_string(),
-            sha1: expected_sha1,
-            hex,
-        });
+        return Err(e);
     }
 
     let status = tokio::process::Command::new("java")
@@ -65,14 +49,17 @@ pub async fn run_installer(
 }
 
 pub async fn pre_download_libraries(version_id: &str, client: &reqwest::Client) -> Result<(), Error> {
-    let version_json_path = versions_dir().join(version_id).join(format!("{version_id}.json"));
+    let version_json_path = version_manifest_path(version_id);
     let text = std::fs::read_to_string(&version_json_path)?;
-    let version = serde_json::from_str::<VersionJson>(&text)?;
+    let version = serde_json::from_str::<ClientManifest>(&text)?;
 
     for lib in &version.libraries {
+        // Fabric/Quilt `url` is the maven repo base for the bare `name`;
+        // skip if missing — launch-time `ensure_libraries` covers those.
+        let Some(repo_url) = lib.url.as_deref().filter(|u| !u.is_empty()) else { continue; };
         let dest = libraries_dir().join(super::maven_coord_to_path(&lib.name));
         if dest.exists() { continue; }
-        download_from_maven(client, &lib.repo_url, lib.name.clone(), None, "jar", libraries_dir().clone()).await?;
+        download_from_maven(client, repo_url, lib.name.clone(), None, "jar", libraries_dir().clone()).await?;
     }
 
     info!("Pre-downloaded libraries for {version_id}");

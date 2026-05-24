@@ -22,7 +22,9 @@ pub async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
                 FilePath::Path(p) => p.to_str().map(|s| s.to_string()),
                 _ => None,
             });
-            let _ = tx.send(result);
+            // Send failure means the receiver was dropped before we got here
+            // (window closed during pick); nothing actionable to log.
+            tx.send(result).ok();
         });
     rx.await.ok().flatten()
 }

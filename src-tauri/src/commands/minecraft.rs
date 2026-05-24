@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use yaminabe_launcher_shared::datatypes::{GameVersion, LoaderVersion, ReleaseType};
 use yaminabe_launcher_shared::error::Error;
-use crate::AppState;
+use crate::{versions_dir, AppState};
 use crate::http_utils::fetch_json;
 
 const VERSION_MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
@@ -33,11 +33,10 @@ pub struct VersionMetadata {
 }
 
 pub async fn fetch_minecraft_versions(
-    versions_dir: &Path,
     client: &reqwest::Client,
 ) -> Result<VersionManifest, Error> {
-    let cache_path = versions_dir.join("version_manifest.json");
-    let lm_path = versions_dir.join("version_manifest.json.lastmodified");
+    let cache_path = versions_dir().join("version_manifest.json");
+    let lm_path = versions_dir().join("version_manifest.json.lastmodified");
 
     let mut req = client.get(VERSION_MANIFEST_URL);
 

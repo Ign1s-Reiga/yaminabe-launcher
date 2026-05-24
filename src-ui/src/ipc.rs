@@ -58,7 +58,9 @@ where
         }
     });
     leptos::task::spawn_local(async move {
-        let _ = listen(event, cb.as_ref().unchecked_ref()).await;
+        if let Err(e) = listen(event, cb.as_ref().unchecked_ref()).await {
+            log::error!("Tauri listen({event}) failed: {e:?}");
+        }
         cb.forget();
     });
 }

@@ -34,6 +34,9 @@ pub enum Error {
     /// Child process has exit with non-zero exit code.
     #[error("Child process failed: {0}")]
     ChildProcess(String),
+    /// Unsupported operation.
+    #[error("Unsupported: {0}")]
+    Unsupported(String),
 }
 
 impl Serialize for Error {

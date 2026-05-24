@@ -1,0 +1,36 @@
+use std::io::Read;
+use std::path::Path;
+use zip::ZipArchive;
+use yaminabe_launcher_shared::error::Error;
+
+/// Open an installer jar and return its `ZipArchive`. Surfaces both IO and
+/// zip-format failures as typed errors with the installer path included.
+pub fn open(installer_path: &Path) -> Result<ZipArchive<std::fs::File>, Error> {
+    let file = std::fs::File::open(installer_path)?;
+    ZipArchive::new(file).map_err(|e| Error::Invalid(format!(
+        "could not read installer {} as a zip: {e}",
+        installer_path.display()
+    )))
+}
+
+/// Read a single entry's bytes from an installer jar. Errors include the
+/// installer path and the missing entry name for diagnosability.
+pub fn read_entry_bytes(installer_path: &Path, entry_name: &str) -> Result<Vec<u8>, Error> {
+    let mut zip = open(installer_path)?;
+    let mut entry = zip.by_name(entry_name).map_err(|e| Error::Invalid(format!(
+        "installer {} has no entry '{entry_name}': {e}",
+        installer_path.display()
+    )))?;
+    let mut buf = Vec::new();
+    entry.read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+/// Read a single entry's contents from an installer jar as a UTF-8 string.
+pub fn read_entry_str(installer_path: &Path, entry_name: &str) -> Result<String, Error> {
+    let bytes = read_entry_bytes(installer_path, entry_name)?;
+    String::from_utf8(bytes).map_err(|e| Error::Invalid(format!(
+        "installer {} entry '{entry_name}' is not valid UTF-8: {e}",
+        installer_path.display()
+    )))
+}

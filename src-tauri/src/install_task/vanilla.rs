@@ -1,46 +1,14 @@
 use log::info;
-use serde::Deserialize;
 use yaminabe_launcher_shared::error::Error;
-use crate::{assets_dir, libraries_dir, versions_dir};
+use yaminabe_launcher_shared::version_manifest::{ArgRule, ClientManifest};
+use crate::{assets_dir, libraries_dir};
 use crate::http_utils::download_resource;
+use super::version_manifest_path;
 
-#[derive(Deserialize)]
-struct VersionJson {
-    libraries: Vec<VersionLibrary>,
-}
-
-#[derive(Deserialize)]
-struct VersionLibrary {
-    #[serde(default)]
-    downloads: Option<VersionLibraryDownloads>,
-    #[serde(default)]
-    rules: Vec<LibRule>,
-}
-
-#[derive(Deserialize)]
-struct VersionLibraryDownloads {
-    artifact: Option<VersionLibraryArtifact>,
-}
-
-#[derive(Deserialize)]
-struct VersionLibraryArtifact {
-    path: String,
-    url: String,
-}
-
-#[derive(Deserialize)]
-struct LibRule {
-    action: String,
-    #[serde(default)]
-    os: LibRuleOs,
-}
-
-#[derive(Deserialize, Default)]
-struct LibRuleOs {
-    name: Option<String>,
-}
-
-fn os_allowed(rules: &[LibRule]) -> bool {
+/// Evaluate Mojang library `rules` for the current OS. Only the `os.name`
+/// field is consulted here (vanilla never ships archi-/version-conditional
+/// library rules); features and `versionRange` are ignored.
+fn os_allowed(rules: &[ArgRule]) -> bool {
     if rules.is_empty() { return true; }
     let mut result = false;
     for rule in rules {
@@ -50,39 +18,18 @@ fn os_allowed(rules: &[LibRule]) -> bool {
     result
 }
 
-#[derive(Deserialize)]
-struct LogConfigJson {
-    #[serde(default)]
-    logging: Option<LoggingSection>,
-}
-
-#[derive(Deserialize)]
-struct LoggingSection {
-    client: Option<LoggingClient>,
-}
-
-#[derive(Deserialize)]
-struct LoggingClient {
-    file: LoggingFile,
-}
-
-#[derive(Deserialize)]
-struct LoggingFile {
-    id: String,
-    url: String,
-}
-
 pub async fn pre_download_libraries(version_id: &str, client: &reqwest::Client) -> Result<(), Error> {
-    let version_json_path = versions_dir().join(version_id).join(format!("{version_id}.json"));
+    let version_json_path = version_manifest_path(version_id);
     let text = std::fs::read_to_string(&version_json_path)?;
-    let version = serde_json::from_str::<VersionJson>(&text)?;
+    let version = serde_json::from_str::<ClientManifest>(&text)?;
 
     for lib in &version.libraries {
         if !os_allowed(&lib.rules) { continue; }
         let Some(artifact) = lib.downloads.as_ref().and_then(|d| d.artifact.as_ref()) else {
             continue;
         };
-        let dest = libraries_dir().join(&artifact.path);
+        let Some(path) = artifact.path.as_deref() else { continue; };
+        let dest = libraries_dir().join(path);
         if dest.exists() { continue; }
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
@@ -95,9 +42,9 @@ pub async fn pre_download_libraries(version_id: &str, client: &reqwest::Client) 
 }
 
 pub async fn pre_download_log_config(version_id: &str, client: &reqwest::Client) -> Result<(), Error> {
-    let version_json_path = versions_dir().join(version_id).join(format!("{version_id}.json"));
+    let version_json_path = version_manifest_path(version_id);
     let text = std::fs::read_to_string(&version_json_path)?;
-    let parsed = serde_json::from_str::<LogConfigJson>(&text)?;
+    let parsed = serde_json::from_str::<ClientManifest>(&text)?;
     let Some(file) = parsed.logging.and_then(|l| l.client).map(|c| c.file) else {
         return Ok(());
     };

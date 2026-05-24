@@ -1,12 +1,14 @@
 pub mod button;
 pub mod input;
 pub mod modal;
+pub mod segmented;
 pub mod skeletons;
 pub mod tabbar;
 
 pub use button::*;
 pub use input::*;
 pub use modal::*;
+pub use segmented::*;
 pub use skeletons::*;
 pub use tabbar::*;
 

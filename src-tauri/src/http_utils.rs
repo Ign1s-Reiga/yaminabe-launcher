@@ -55,6 +55,40 @@ pub fn sha1_hex(bytes: &[u8]) -> String {
     Sha1::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Compare `bytes`'s SHA-1 to `expected_sha1` (lowercase hex, leading/trailing
+/// whitespace tolerated) and return `Error::ChecksumMismatch` on a difference.
+/// `resource` is the human-readable name surfaced in the error.
+pub fn verify_sha1(bytes: &[u8], expected_sha1: &str, resource: &str) -> Result<(), Error> {
+    let expected = expected_sha1.trim();
+    let actual = sha1_hex(bytes);
+    if actual != expected {
+        return Err(Error::ChecksumMismatch {
+            resource: resource.to_string(),
+            sha1: expected.to_string(),
+            hex: actual,
+        });
+    }
+    Ok(())
+}
+
+/// GET `url`, verify the response body's SHA-1 matches `expected_sha1`, and
+/// return the body bytes. The non-success-status branch becomes
+/// `HttpRequestRejected`; the checksum branch becomes `ChecksumMismatch`.
+pub async fn fetch_and_verify(
+    client: &Client,
+    url: &str,
+    expected_sha1: &str,
+    resource: &str,
+) -> Result<Vec<u8>, Error> {
+    let resp = client.get(url).send().await?;
+    if !resp.status().is_success() {
+        return Err(Error::HttpRequestRejected(resp.status().as_u16(), url.to_string()));
+    }
+    let bytes = resp.bytes().await.map_err(Error::InvalidResponse)?.to_vec();
+    verify_sha1(&bytes, expected_sha1, resource)?;
+    Ok(bytes)
+}
+
 pub async fn download_from_maven(
     client: &Client,
     repo_url: &str,
@@ -77,16 +111,7 @@ pub async fn download_from_maven(
     let sha1 = client.get(format!("{url}.sha1")).send().await?
         .text().await.map_err(Error::InvalidResponse)?;
 
-    let resp = client.get(&url).send().await?;
-    if !resp.status().is_success() {
-        return Err(Error::HttpRequestRejected(resp.status().as_u16(), url.to_string()));
-    }
-    let bytes = resp.bytes().await.map_err(Error::InvalidResponse)?;
-
-    let hex = sha1_hex(&bytes);
-    if hex != sha1.trim() {
-        return Err(Error::ChecksumMismatch { resource: dep, sha1, hex });
-    }
+    let bytes = fetch_and_verify(client, &url, sha1.trim(), &dep).await?;
 
     if let Some(parent) = file_path.parent() {
         std::fs::create_dir_all(parent)?;

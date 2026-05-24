@@ -1,40 +1,35 @@
 mod fabric_like;
-mod forge_noprofile;
 mod forge_v1;
 mod forge_v2;
 mod vanilla;
+pub mod installer_archive;
 
-use std::collections::HashMap;
-use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
+use std::path::PathBuf;
 use log::info;
 use serde::Deserialize;
 use tauri::State;
-use zip::ZipArchive;
 use yaminabe_launcher_shared::datatypes::ModLoader;
 use yaminabe_launcher_shared::error::Error;
-use crate::{temp_dir, versions_dir, AppState};
-use crate::http_utils::{download_from_maven, download_resource, fetch_json, get_resource_name, sha1_hex};
+use yaminabe_launcher_shared::version_manifest::ClientManifest;
+use crate::{libraries_dir, temp_dir, versions_dir, AppState};
+use crate::http_utils::{download_from_maven, download_resource, fetch_json, get_resource_name};
+
+// ── Path helpers (visible to submodules and other commands) ──────────────────
+
+/// The on-disk path of `versions/<version_id>/<version_id>.json` — the
+/// canonical Mojang version manifest for a given installed version. Used by
+/// every consumer that reads or writes a per-version JSON, which is many.
+pub fn version_manifest_path(version_id: &str) -> PathBuf {
+    versions_dir().join(version_id).join(format!("{version_id}.json"))
+}
 
 // ── Vanilla ───────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DownloadJarMetadata {
-    sha1: String,
-    size: u32,
-    url: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct VersionManifestJson {
-    downloads: HashMap<String, DownloadJarMetadata>,
-}
 
 pub async fn ensure_vanilla(
     mc_version: &str,
     state: &State<'_, AppState>,
-) -> Result<(), Error> {
+) -> Result<String, Error> {
     let version_dir = versions_dir().join(mc_version);
     std::fs::create_dir_all(&version_dir)?;
 
@@ -43,19 +38,24 @@ pub async fn ensure_vanilla(
 
     if !client_manifest_path.exists() {
         let version_metadata = state.mc_versions.get()
-            .ok_or_else(|| Error::Invalid("version manifest".to_string()))?
+            .ok_or_else(|| Error::Invalid("version manifest cache not yet populated".to_string()))?
             .versions
             .iter().find(|v| v.id == mc_version)
-            .unwrap();
+            .ok_or_else(|| Error::Invalid(format!(
+                "Minecraft version '{mc_version}' not present in the Mojang version manifest"
+            )))?;
 
         download_resource(&state.http_client, &version_metadata.manifest_url, client_manifest_path.clone()).await?
     }
 
     let text = std::fs::read_to_string(&client_manifest_path)?;
-    let manifest = serde_json::from_str::<VersionManifestJson>(&text)?;
+    let manifest = serde_json::from_str::<ClientManifest>(&text)?;
 
     if !client_path.exists() {
-        let client_metadata = manifest.downloads.get("client").unwrap();
+        let client_metadata = manifest.downloads.get("client")
+            .ok_or_else(|| Error::Invalid(format!(
+                "version manifest for '{mc_version}' has no client download entry"
+            )))?;
         download_resource(&state.http_client, &client_metadata.url, client_path).await?
     }
 
@@ -65,10 +65,8 @@ pub async fn ensure_vanilla(
     if let Err(e) = vanilla::pre_download_log_config(mc_version, &state.http_client).await {
         log::warn!("log config pre-download failed for {mc_version}: {e}");
     }
-    Ok(())
+    Ok(mc_version.to_string())
 }
-
-// ── Fabric / Quilt ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 struct FabricLikeMetadata {
@@ -83,7 +81,7 @@ async fn ensure_fabric_like(
     mc_version: &str,
     loader_version: &str,
     client: &reqwest::Client,
-) -> Result<(), Error> {
+) -> Result<String, Error> {
     let installer_url = fetch_json::<Vec<FabricLikeMetadata>>(client, meta_url, &[], None)
         .await?
         .into_iter().next()
@@ -99,14 +97,14 @@ async fn ensure_fabric_like(
     fabric_like::pre_download_libraries(&version_id, client).await?;
 
     info!("Installed {label} {loader_version} for MC {mc_version}");
-    Ok(())
+    Ok(version_id)
 }
 
 pub async fn ensure_fabric(
     mc_version: &str,
     loader_version: &str,
     client: &reqwest::Client,
-) -> Result<(), Error> {
+) -> Result<String, Error> {
     ensure_fabric_like(
         ModLoader::Fabric,
         "Fabric",
@@ -122,7 +120,7 @@ pub async fn ensure_quilt(
     mc_version: &str,
     loader_version: &str,
     client: &reqwest::Client,
-) -> Result<(), Error> {
+) -> Result<String, Error> {
     ensure_fabric_like(
         ModLoader::Quilt,
         "Quilt",
@@ -134,155 +132,182 @@ pub async fn ensure_quilt(
     ).await
 }
 
-// ── Forge ─────────────────────────────────────────────────────────────────────
-
-fn is_old_format(mc_version: &str) -> bool {
-    let parts: Vec<u32> = mc_version.split('.').filter_map(|p| p.parse().ok()).collect();
-    matches!(parts.as_slice(), [1, minor, ..] if *minor <= 5)
-}
-
-/// Naming convention tier for Forge based on MC version:
-/// - `Modern` (1.12+): version_id `{mc}-forge-{loader}`, maven `{mc}-{loader}`
-/// - `Old` (1.8 – 1.11.2): version_id `{mc}-forge{mc}-{loader}`, maven `{mc}-{loader}-{mc}`
-/// - `VeryOld` (1.7.10 and earlier): version_id `{mc}-Forge{loader}-{mc}`, maven `{mc}-{loader}-{mc}`
-pub enum ForgeNaming { Modern, Old, VeryOld }
-
-pub fn forge_naming(mc_version: &str) -> ForgeNaming {
-    let parts: Vec<u32> = mc_version.split('.').filter_map(|p| p.parse().ok()).collect();
-    let minor = parts.get(1).copied().unwrap_or(0);
-    if minor >= 12 { ForgeNaming::Modern }
-    else if minor >= 8 { ForgeNaming::Old }
-    else { ForgeNaming::VeryOld }
-}
-
 /// Forge maven artifact version (the `<ver>` in `net.minecraftforge:forge:<ver>`
 /// and in the file path `forge/<ver>/forge-<ver>-installer.jar`).
-pub fn forge_maven_version(mc_version: &str, loader_version: &str) -> String {
-    match forge_naming(mc_version) {
-        ForgeNaming::Modern => format!("{mc_version}-{loader_version}"),
-        ForgeNaming::Old | ForgeNaming::VeryOld => format!("{mc_version}-{loader_version}-{mc_version}"),
-    }
-}
-
-/// Launcher-side version id (the folder name under `versions/`) matching the
-/// `id` that each era's Forge installer writes into its own `install_profile.json`.
-pub fn forge_version_id(mc_version: &str, loader_version: &str) -> String {
-    match forge_naming(mc_version) {
-        ForgeNaming::Modern => format!("{mc_version}-forge-{loader_version}"),
-        ForgeNaming::Old => format!("{mc_version}-forge{mc_version}-{loader_version}"),
-        ForgeNaming::VeryOld => format!("{mc_version}-Forge{loader_version}-{mc_version}"),
-    }
+///
+/// Always `{mc}-{loader_version}`. The post-`{mc}-` portion of the maven
+/// version (e.g. `-mc172`, `-1.7.10`, `-1.10.0`, or none) varies per era and
+/// is carried by `loader_version` itself; do not try to re-append it here.
+fn forge_maven_version(mc_version: &str, loader_version: &str) -> String {
+    format!("{mc_version}-{loader_version}")
 }
 
 pub async fn ensure_forge(
     mc_version: &str,
     loader_version: &str,
     client: &reqwest::Client,
-) -> Result<(), Error> {
+) -> Result<String, Error> {
     let forge_build = loader_version.strip_prefix("forge-").unwrap_or(loader_version);
     let forge_version = forge_maven_version(mc_version, forge_build);
 
-    let (install_type, installer_path) = if is_old_format(mc_version) {
-        download_from_maven(
-            client,
-            "https://maven.minecraftforge.net/",
-            format!("net.minecraftforge:forge:{forge_version}"),
-            Some("universal"),
-            "zip",
-            temp_dir().clone(),
-        ).await?;
-        let path = temp_dir()
-            .join("net").join("minecraftforge").join("forge")
-            .join(&forge_version)
-            .join(format!("forge-{forge_version}-universal.zip"));
-        (ForgeInstallType::NoProfile, path)
-    } else {
-        download_from_maven(
-            client,
-            "https://maven.minecraftforge.net/",
-            format!("net.minecraftforge:forge:{forge_version}"),
-            Some("installer"),
-            "jar",
-            temp_dir().clone(),
-        ).await?;
-        let path = temp_dir()
-            .join("net").join("minecraftforge").join("forge")
-            .join(&forge_version)
-            .join(format!("forge-{forge_version}-installer.jar"));
-        let install_type = detect_install_type(&path)?;
-        (install_type, path)
-    };
+    // Pre-1.6 (jar-mod era) is unsupported; the installer download 404s for
+    // those MC versions, surfacing as a clean network error.
+    download_from_maven(
+        client,
+        "https://maven.minecraftforge.net/",
+        format!("net.minecraftforge:forge:{forge_version}"),
+        Some("installer"),
+        "jar",
+        temp_dir().clone(),
+    ).await?;
+    let installer_path = temp_dir()
+        .join("net").join("minecraftforge").join("forge")
+        .join(&forge_version)
+        .join(format!("forge-{forge_version}-installer.jar"));
+    let install_type = detect_install_type(&installer_path)?;
 
-    match install_type {
-        ForgeInstallType::NoProfile => {
-            let version_id = forge_version_id(mc_version, forge_build);
-            forge_noprofile::install(&installer_path, &forge_version, &version_id)?;
-        }
+    let version_id = match install_type {
         ForgeInstallType::V1 => {
             let version_id = read_v1_version(&installer_path)?;
-            if versions_dir().join(&version_id).exists() {
+            // `install_from_parsed` writes the universal jar before the
+            // manifest, so a present manifest implies the jar is on disk too.
+            if !version_manifest_path(&version_id).exists() {
+                forge_v1::install(&installer_path, client).await?;
+            } else {
                 info!("Forge {forge_build} already installed, skipping");
-                return Ok(());
             }
-            forge_v1::install(&installer_path, client).await?;
+            version_id
         }
         ForgeInstallType::V2 => {
-            let version_id = forge_version_id(mc_version, forge_build);
+            let version_id = read_v2_version(&installer_path)?;
             if versions_dir().join(&version_id).exists() {
                 info!("Forge {forge_build} already installed, skipping installer");
             } else {
                 forge_v2::install(&ModLoader::Forge, &installer_path, client).await?;
             }
             forge_v2::pre_download_libraries(&version_id, client).await?;
+            version_id
         }
-    }
+    };
 
     info!("Installed Forge {forge_build} for MC {mc_version}");
-    Ok(())
+    Ok(version_id)
 }
-
-// ── NeoForge ──────────────────────────────────────────────────────────────────
 
 pub async fn ensure_neoforge(
     mc_version: &str,
     loader_version: &str,
     client: &reqwest::Client,
-) -> Result<(), Error> {
+) -> Result<String, Error> {
     let nf_version = loader_version.strip_prefix("neoforge-").unwrap_or(loader_version);
-    let version_id = format!("neoforge-{nf_version}");
 
-    // The version dir's existence only proves install was started, not that
-    // client.json libraries were all downloaded. Skip the installer phase
-    // when already present but always run pre_download_libraries.
+    // Download the installer once up front so we can read the authoritative
+    // version_id out of its `version.json` before deciding to skip.
+    download_from_maven(
+        client,
+        "https://maven.neoforged.net/releases/",
+        format!("net.neoforged:neoforge:{nf_version}"),
+        Some("installer"),
+        "jar",
+        temp_dir().clone(),
+    ).await?;
+
+    let installer_path = temp_dir()
+        .join("net").join("neoforged").join("neoforge")
+        .join(nf_version)
+        .join(format!("neoforge-{nf_version}-installer.jar"));
+
+    let version_id = read_v2_version(&installer_path)?;
+
+    // Version-dir presence only proves install started; always run
+    // pre_download_libraries to backfill anything the installer left out.
     if versions_dir().join(&version_id).exists() {
         info!("NeoForge {nf_version} already installed, skipping installer");
     } else {
-        download_from_maven(
-            client,
-            "https://maven.neoforged.net/releases/",
-            format!("net.neoforged:neoforge:{nf_version}"),
-            Some("installer"),
-            "jar",
-            temp_dir().clone(),
-        ).await?;
-
-        let installer_path = temp_dir()
-            .join("net").join("neoforged").join("neoforge")
-            .join(&nf_version)
-            .join(format!("neoforge-{nf_version}-installer.jar"));
-
         forge_v2::install(&ModLoader::NeoForge, &installer_path, client).await?;
     }
     forge_v2::pre_download_libraries(&version_id, client).await?;
 
     info!("Installed NeoForge {nf_version} for MC {mc_version}");
+    Ok(version_id)
+}
+
+// ── Shared library pre-download (install + launch) ────────────────────────────
+
+fn load_lib_manifest(version_id: &str) -> Result<ClientManifest, Error> {
+    let text = std::fs::read_to_string(version_manifest_path(version_id))?;
+    Ok(serde_json::from_str(&text)?)
+}
+
+/// Download every classpath library referenced by `versions/<id>/<id>.json`
+/// (and, one level up, its `inheritsFrom` parent) that is not already on disk.
+///
+/// Handles both manifest schemas: modern entries carry `downloads.artifact`
+/// with an explicit path + URL; legacy (pre-1.13 Forge) entries are bare maven
+/// coordinates whose jar lives at `<url base>/<maven path>`, defaulting to the
+/// Mojang library repo when no `url` is given.
+///
+/// Native (`natives`-bearing) entries are skipped — their classifier jars are
+/// unpacked separately and never go on the classpath. Entries already present
+/// on disk are skipped, so this is safe to call repeatedly (it runs again
+/// before launch to backfill anything an install left behind).
+pub async fn ensure_libraries(version_id: &str, client: &reqwest::Client) -> Result<(), Error> {
+    const DEFAULT_MAVEN: &str = "https://libraries.minecraft.net/";
+
+    let mut manifests = vec![load_lib_manifest(version_id)?];
+    if let Some(parent) = manifests[0].inherits_from.clone() {
+        manifests.push(load_lib_manifest(&parent)?);
+    }
+
+    let mut seen: HashSet<String> = HashSet::new();
+    for manifest in &manifests {
+        for lib in &manifest.libraries {
+            if !seen.insert(lib.name.clone()) { continue; }
+
+            // Pre-1.13 natives: the DLLs/SOs live in a classifier jar that
+            // `extract_natives` later unpacks; missing here = empty
+            // java.library.path = LWJGL/JNI failure at runtime.
+            if let Some(key) = lib.natives.get("windows").map(|s| s.replace("${arch}", "64")) {
+                let Some(classifiers) = lib.downloads.as_ref().and_then(|d| d.classifiers.as_ref()) else {
+                    continue;
+                };
+                let Some(artifact) = classifiers.get(&key) else { continue; };
+                if artifact.url.is_empty() { continue; }
+                let Some(path) = artifact.path.as_deref() else { continue; };
+                let dest = libraries_dir().join(path);
+                if dest.exists() { continue; }
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                download_resource(client, &artifact.url, dest).await?;
+                continue;
+            }
+
+            if let Some(artifact) = lib.downloads.as_ref().and_then(|d| d.artifact.as_ref()) {
+                if artifact.url.is_empty() { continue; }
+                let Some(path) = artifact.path.as_deref() else { continue; };
+                let dest = libraries_dir().join(path);
+                if dest.exists() { continue; }
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                download_resource(client, &artifact.url, dest).await?;
+            } else {
+                let dest = libraries_dir().join(maven_coord_to_path(&lib.name));
+                if dest.exists() { continue; }
+                let base = lib.url.as_deref().filter(|u| !u.is_empty()).unwrap_or(DEFAULT_MAVEN);
+                download_from_maven(client, base, lib.name.clone(), None, "jar", libraries_dir().clone()).await?;
+            }
+        }
+    }
+
+    info!("Ensured libraries for {version_id}");
     Ok(())
 }
 
 // ── Shared helpers (visible to submodules) ───────────────────────────────────
 
 enum ForgeInstallType {
-    NoProfile,
     V1,
     V2,
 }
@@ -298,11 +323,13 @@ struct VersionInfoV1 {
     id: String,
 }
 
-fn detect_install_type(installer_path: &Path) -> Result<ForgeInstallType, Error> {
-    let mut zip = ZipArchive::new(std::fs::File::open(installer_path)?)
-        .map_err(|e| Error::Invalid(e.to_string()))?;
+fn detect_install_type(installer_path: &std::path::Path) -> Result<ForgeInstallType, Error> {
+    let mut zip = installer_archive::open(installer_path)?;
     if zip.by_name("install_profile.json").is_err() {
-        return Ok(ForgeInstallType::NoProfile);
+        return Err(Error::Unsupported(format!(
+            "Forge installer at {} has no install_profile.json — pre-1.6 jar-mod-era Forge is not currently supported",
+            installer_path.display()
+        )));
     }
     Ok(if zip.by_name("version.json").is_ok() {
         ForgeInstallType::V2
@@ -311,18 +338,21 @@ fn detect_install_type(installer_path: &Path) -> Result<ForgeInstallType, Error>
     })
 }
 
-fn read_v1_version(installer_path: &Path) -> Result<String, Error> {
-    let mut zip = ZipArchive::new(std::fs::File::open(installer_path)?)
-        .map_err(|e| Error::Invalid(e.to_string()))?;
-    let mut entry = zip.by_name("install_profile.json")
-        .map_err(|e| Error::Invalid(e.to_string()))?;
-    let mut buf = String::new();
-    entry.read_to_string(&mut buf)?;
-    Ok(serde_json::from_str::<InstallProfileV1>(&buf)?.version_info.id)
+fn read_v1_version(installer_path: &std::path::Path) -> Result<String, Error> {
+    let text = installer_archive::read_entry_str(installer_path, "install_profile.json")?;
+    Ok(serde_json::from_str::<InstallProfileV1>(&text)?.version_info.id)
 }
 
-/// Convert a Maven coordinate (`group:artifact:version[:classifier][@ext]`) into a relative path.
-fn maven_coord_to_path(coord: &str) -> PathBuf {
+fn read_v2_version(installer_path: &std::path::Path) -> Result<String, Error> {
+    let text = installer_archive::read_entry_str(installer_path, "version.json")?;
+    Ok(serde_json::from_str::<VersionInfoV1>(&text)?.id)
+}
+
+/// Convert a Maven coordinate (`group:artifact:version[:classifier][@ext]`)
+/// into the relative path used under `libraries/`. Lenient: missing parts
+/// become empty path segments rather than an error, since most callers want
+/// "build a best-effort path, then check if it exists on disk".
+pub fn maven_coord_to_path(coord: &str) -> PathBuf {
     let (coord, ext) = coord.rsplit_once('@').unwrap_or((coord, "jar"));
     let mut parts = coord.splitn(4, ':');
     let group = parts.next().unwrap_or_default();
