@@ -119,8 +119,16 @@ pub fn run() {
             let handle = app.app_handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state = handle.state::<AppState>();
-                if let Ok(manifest) = fetch_minecraft_versions(versions_dir(), &state.http_client).await {
-                    let _ = state.mc_versions.set(manifest);
+                match fetch_minecraft_versions(versions_dir(), &state.http_client).await {
+                    Ok(manifest) => {
+                        // `OnceLock::set` only fails if the cell is already
+                        // populated, which can't happen at first-launch init.
+                        // Log so it surfaces if that assumption ever breaks.
+                        if state.mc_versions.set(manifest).is_err() {
+                            log::warn!("Minecraft version manifest cache was unexpectedly already populated");
+                        }
+                    }
+                    Err(e) => log::warn!("failed to fetch Minecraft version manifest: {e}"),
                 }
             });
 

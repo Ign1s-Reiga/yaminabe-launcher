@@ -269,7 +269,12 @@ pub fn PlayPage() -> impl IntoView {
         error.set(None);
 
         leptos::task::spawn_local(async move {
-            let _ = ipc::call::<_, ()>(
+            // Per-line failures arrive through the `instance-log` stream as
+            // `done: true` with `error: Some(_)`, which `log_lines` already
+            // surfaces. But an IPC-layer rejection (channel closed, args
+            // malformed) never produces a log event — feed it into the same
+            // viewer so the user sees *some* explanation.
+            if let Err(e) = ipc::call::<_, ()>(
                 "launch_instance",
                 LaunchArgs {
                     instance_id: inst.id.clone(),
@@ -277,7 +282,13 @@ pub fn PlayPage() -> impl IntoView {
                     mod_loader: inst.mod_loader.clone(),
                 },
             )
-            .await;
+            .await
+            {
+                log_lines.update(|v| v.push(format!("[launch_instance failed] {e}")));
+                running.set(false);
+                process_started.set(false);
+                error.set(Some(e));
+            }
         });
     });
 
@@ -323,11 +334,15 @@ fn PlayContent(
             .as_ref()
             .unchecked_ref::<js_sys::Function>()
             .clone();
-        let _ = window.add_event_listener_with_callback("mouseup", listener.as_ref());
+        if let Err(e) = window.add_event_listener_with_callback("mouseup", listener.as_ref()) {
+            log::warn!("failed to attach window mouseup listener: {e:?}");
+        }
         let callback = SendWrapper::new(callback);
         on_cleanup(move || {
             if let Some(window) = web_sys::window() {
-                let _ = window.remove_event_listener_with_callback("mouseup", listener.as_ref());
+                if let Err(e) = window.remove_event_listener_with_callback("mouseup", listener.as_ref()) {
+                    log::warn!("failed to remove window mouseup listener: {e:?}");
+                }
             }
             drop(callback);
         });
@@ -344,7 +359,7 @@ fn PlayContent(
 
     let scroll_for_effect = scroll.clone();
     Effect::new(move |_| {
-        let _ = log_lines.get();
+        log_lines.track();
         scroll_for_effect.schedule_scroll_to_bottom();
     });
 

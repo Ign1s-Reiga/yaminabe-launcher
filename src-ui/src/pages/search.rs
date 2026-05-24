@@ -42,7 +42,7 @@ pub fn SearchPage() -> impl IntoView {
     // the user lands at the top of the new result set instead of inheriting
     // the previous page's scroll offset.
     Effect::new(move |_| {
-        let _ = search_query.get();
+        search_query.track();
         if let Some(el) = results_wrapper_ref.get() {
             el.set_scroll_top(0);
         }
@@ -149,7 +149,13 @@ pub fn SearchPage() -> impl IntoView {
         install.set(None);
 
         leptos::task::spawn_local(async move {
-            let _ = call_install(args).await;
+            // Install progress surfaces through the `instance-install-progress`
+            // event stream, which the install sidebar already renders — but a
+            // synchronous IPC failure (bad args, channel closed) would never
+            // produce an event, so log it explicitly.
+            if let Err(e) = call_install(args).await {
+                log::error!("install_curseforge_modpack failed: {e}");
+            }
         });
     };
 

@@ -79,8 +79,10 @@ pub fn OpenInFileManager(instance_id: String) -> impl IntoView {
                             set_open_dropdown.set(false);
                             let id = id_root.get_untracked();
                             leptos::task::spawn_local(async move {
-                                let _ = ipc::call::<_, ()>("open_instance_subfolder",
-                                    OpenSubfolderArgs { id, subfolder: String::new() }).await;
+                                if let Err(e) = ipc::call::<_, ()>("open_instance_subfolder",
+                                    OpenSubfolderArgs { id, subfolder: String::new() }).await {
+                                    log::error!("open_instance_subfolder (root) failed: {e}");
+                                }
                             });
                         }
                     >
@@ -105,8 +107,10 @@ pub fn OpenInFileManager(instance_id: String) -> impl IntoView {
                                             let id = id.clone();
                                             let sf = subfolder.clone();
                                             leptos::task::spawn_local(async move {
-                                                let _ = ipc::call::<_, ()>("open_instance_subfolder",
-                                                    OpenSubfolderArgs { id, subfolder: sf }).await;
+                                                if let Err(e) = ipc::call::<_, ()>("open_instance_subfolder",
+                                                    OpenSubfolderArgs { id, subfolder: sf }).await {
+                                                    log::error!("open_instance_subfolder failed: {e}");
+                                                }
                                             });
                                         }
                                     >

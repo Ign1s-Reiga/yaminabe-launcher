@@ -47,10 +47,13 @@ pub fn App() -> impl IntoView {
     let refresh: RwSignal<u32> = RwSignal::new(0);
 
     Effect::new(move |_| {
-        let _ = refresh.get();
+        // Track only — re-fetch instances whenever `refresh` bumps without
+        // depending on its actual value.
+        refresh.track();
         leptos::task::spawn_local(async move {
-            if let Ok(list) = ipc::call_noargs::<Vec<InstanceMeta>>("get_instances").await {
-                instances.set(list);
+            match ipc::call_noargs::<Vec<InstanceMeta>>("get_instances").await {
+                Ok(list) => instances.set(list),
+                Err(e) => log::error!("get_instances failed: {e}"),
             }
         });
     });
