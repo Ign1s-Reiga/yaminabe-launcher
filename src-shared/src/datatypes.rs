@@ -203,6 +203,16 @@ pub struct GameVersion {
     pub release_type: ReleaseType,
 }
 
+/// Minimal view of a saved Microsoft account that is safe to ship to the
+/// frontend — no tokens, just the public profile identifiers the UI needs to
+/// render the account list and select an active player.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSummary {
+    pub uuid: String,
+    pub username: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoaderVersion {

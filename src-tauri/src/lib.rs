@@ -5,12 +5,17 @@ mod http_utils;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tauri::{Emitter, Manager};
 use yaminabe_launcher_shared::datatypes::{AppSettings, JavaInstall};
 use yaminabe_launcher_shared::error::InitializationError;
 use yaminabe_launcher_shared::ipc::InstallProgress;
+use crate::commands::auth::{
+    cancel_microsoft_login, get_accounts, get_selected_account, remove_account, set_selected_account,
+    start_microsoft_login, AccountStore,
+};
 use crate::commands::modfile::{
     download_mods, get_modpack_files, install_curseforge_modpack,
     search_curseforge_modpacks,
@@ -45,10 +50,17 @@ pub struct AppState {
     /// Populated by `launch_instance` after spawn and cleared when the child
     /// exits; read by `kill_instance` to issue a TerminateProcess.
     pub running_children: Mutex<HashMap<String, u32>>,
+    /// Persisted Microsoft accounts plus the currently selected UUID. Backed
+    /// by `accounts.json`.
+    pub accounts: Mutex<AccountStore>,
+    /// Cooperative cancel flag for an in-flight `start_microsoft_login` poll
+    /// loop. `cancel_microsoft_login` flips it to `true` to abort cleanly.
+    pub ms_login_cancel: Arc<AtomicBool>,
 }
 
 static TEMP_DIR: OnceLock<PathBuf> = OnceLock::new();
 static SETTINGS_PATH: OnceLock<PathBuf> = OnceLock::new();
+static ACCOUNTS_PATH: OnceLock<PathBuf> = OnceLock::new();
 static BIN_DIR: OnceLock<PathBuf> = OnceLock::new();
 static VERSIONS_DIR: OnceLock<PathBuf> = OnceLock::new();
 static ASSETS_DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -56,6 +68,7 @@ static LIBRARIES_DIR: OnceLock<PathBuf> = OnceLock::new();
 static RUNTIMES_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 fn settings_path() -> &'static PathBuf { SETTINGS_PATH.get().unwrap() }
+pub fn accounts_path() -> &'static PathBuf { ACCOUNTS_PATH.get().unwrap() }
 pub fn temp_dir() -> &'static PathBuf { TEMP_DIR.get().unwrap() }
 pub fn bin_dir() -> &'static PathBuf { BIN_DIR.get().unwrap() }
 pub fn versions_dir() -> &'static PathBuf { VERSIONS_DIR.get().unwrap() }
@@ -76,6 +89,7 @@ fn init_dirs(app: &tauri::App) -> Result<(), InitializationError> {
     RUNTIMES_DIR.set(bin_dir.join("runtimes"))?;
     BIN_DIR.set(bin_dir)?;
     SETTINGS_PATH.set(app_dir.join("settings.json"))?;
+    ACCOUNTS_PATH.set(app_dir.join("accounts.json"))?;
     for p in [versions_dir(), libraries_dir(), assets_dir(), runtimes_dir()] {
         std::fs::create_dir_all(p)?;
     }
@@ -108,12 +122,21 @@ pub fn run() {
 
             let java_installs = detect_java_installs();
 
+            // Accounts file is optional; a malformed file falls back to empty
+            // so a corrupted store doesn't block app launch.
+            let accounts: AccountStore = std::fs::read_to_string(accounts_path())
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+
             app.manage(AppState {
                 settings: Mutex::new(settings),
                 http_client: reqwest::Client::new(),
                 mc_versions: OnceLock::new(),
                 java_installs: Mutex::new(java_installs),
                 running_children: Mutex::new(HashMap::new()),
+                accounts: Mutex::new(accounts),
+                ms_login_cancel: Arc::new(AtomicBool::new(false)),
             });
 
             let handle = app.app_handle().clone();
@@ -152,6 +175,12 @@ pub fn run() {
             get_minecraft_versions,
             get_modloader_versions,
             get_java_installs,
+            start_microsoft_login,
+            cancel_microsoft_login,
+            get_accounts,
+            get_selected_account,
+            set_selected_account,
+            remove_account,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

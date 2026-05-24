@@ -1,11 +1,14 @@
 use bamboo_css_macro::{css, styled};
 use leptos::prelude::*;
 use leptos::{component, IntoView, view};
+use phosphor_leptos::{Icon, IconWeight, CHECK_CIRCLE, PLUS, TRASH};
 use serde::Serialize;
+use yaminabe_launcher_shared::datatypes::{AccountSummary, AppSettings};
+
+use crate::components::login_modal::LoginModal;
 use crate::components::settings::{SaveState, SettingsSection, SettingsProp};
 use crate::components::ui::*;
 use crate::ipc;
-use yaminabe_launcher_shared::datatypes::AppSettings;
 
 #[derive(Serialize)]
 struct SaveArgs {
@@ -158,6 +161,11 @@ pub fn SettingsPage() -> impl IntoView {
                         }.into_any(),
                     }
                 }
+                // Accounts sits outside the <form>: login is event-driven via
+                // a modal, not a form submission.
+                <SettingsSection id="accounts" heading="Accounts">
+                    <AccountsSection />
+                </SettingsSection>
             </div>
 
             <Sidebar>
@@ -165,9 +173,211 @@ pub fn SettingsPage() -> impl IntoView {
                 <SidebarLink attr:href="#general">"General"</SidebarLink>
                 <SidebarLink attr:href="#instance">"Instance Defaults"</SidebarLink>
                 <SidebarLink attr:href="#api-keys">"API Keys"</SidebarLink>
+                <SidebarLink attr:href="#accounts">"Accounts"</SidebarLink>
             </Sidebar>
         </div>
     }
+}
+
+/// Lists configured Microsoft accounts, lets the user select one as active,
+/// remove any of them, and add a new one via QR-code login. Backs onto the
+/// `get_accounts`, `get_selected_account`, `set_selected_account`,
+/// `remove_account`, and `start_microsoft_login` IPC commands.
+#[component]
+fn AccountsSection() -> impl IntoView {
+    // Bump this counter after any backend mutation to refetch both resources.
+    let refresh: RwSignal<u32> = RwSignal::new(0);
+    let show_modal: RwSignal<bool> = RwSignal::new(false);
+
+    let accounts = LocalResource::new(move || {
+        refresh.track();
+        async move {
+            ipc::call_noargs::<Vec<AccountSummary>>("get_accounts")
+                .await
+                .unwrap_or_default()
+        }
+    });
+    let selected = LocalResource::new(move || {
+        refresh.track();
+        async move {
+            ipc::call_noargs::<Option<String>>("get_selected_account")
+                .await
+                .ok()
+                .flatten()
+        }
+    });
+
+    let row = css! {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 12px 14px;
+        border: 1px solid var(--secondary-color);
+        border-radius: 10px;
+        margin-bottom: 10px;
+    };
+    let avatar = css! {
+        width: 40px;
+        height: 40px;
+        border-radius: 6px;
+        background-color: var(--secondary-color);
+        flex-shrink: 0;
+        image-rendering: pixelated;
+        object-fit: cover;
+    };
+    let meta = css! {
+        flex: 1;
+        min-width: 0;
+    };
+    let name = css! {
+        font-weight: 600;
+        font-size: 0.95rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    };
+    let uuid_mono = css! {
+        font-family: var(--font-mono, monospace);
+        font-size: 0.72rem;
+        opacity: 0.45;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    };
+    let pill = css! {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 0.72rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        color: #3a9e5f;
+        padding: 4px 8px;
+        background-color: rgb(58 158 95 / 0.12);
+        border-radius: 999px;
+    };
+    let actions = css! {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        flex-shrink: 0;
+    };
+    let empty = css! {
+        font-size: 0.85rem;
+        opacity: 0.55;
+        padding: 18px 4px;
+    };
+    let add_row = css! {
+        display: flex;
+        justify-content: flex-start;
+        margin-top: 6px;
+    };
+
+    let open_modal = Callback::new(move |_| show_modal.set(true));
+
+    view! {
+        <p style="font-size: 0.8rem; opacity: 0.55; margin: 0 0 16px 0;">
+            "Sign in with a Microsoft account to launch with your real profile. The selected account is used for every instance launch."
+        </p>
+
+        {move || match accounts.get() {
+            None => view! { <p class=empty>"Loading accounts…"</p> }.into_any(),
+            Some(list) if list.is_empty() => view! {
+                <p class=empty>"No accounts yet. Sign in below to add one."</p>
+            }.into_any(),
+            Some(list) => {
+                let selected_uuid = selected.get().flatten();
+                list.into_iter().map(|acc| {
+                    let acc_uuid = acc.uuid.clone();
+                    let undashed = acc_uuid.replace('-', "");
+                    let avatar_url = format!("https://mc-heads.net/avatar/{undashed}/64");
+                    let is_selected = selected_uuid.as_deref() == Some(acc_uuid.as_str());
+                    let acc_uuid_for_use = acc_uuid.clone();
+                    let acc_uuid_for_remove = acc_uuid.clone();
+                    view! {
+                        <div class=row>
+                            <img class=avatar src=avatar_url alt="" />
+                            <div class=meta>
+                                <div class=name>{acc.username}</div>
+                                <div class=uuid_mono>{acc_uuid}</div>
+                            </div>
+                            <div class=actions>
+                                {if is_selected {
+                                    view! {
+                                        <span class=pill>
+                                            <Icon icon=CHECK_CIRCLE size="14px" weight=IconWeight::Fill />
+                                            "Selected"
+                                        </span>
+                                    }.into_any()
+                                } else {
+                                    view! {
+                                        <Button
+                                            variant=ButtonVariant::Secondary
+                                            on_click=Callback::new(move |_| {
+                                                let uuid = acc_uuid_for_use.clone();
+                                                leptos::task::spawn_local(async move {
+                                                    let args = SelectArgs { uuid: Some(uuid) };
+                                                    match ipc::call::<_, ()>("set_selected_account", args).await {
+                                                        Ok(_) => refresh.update(|n| *n += 1),
+                                                        Err(e) => log::error!("set_selected_account failed: {e}"),
+                                                    }
+                                                });
+                                            })
+                                        >
+                                            "Use this"
+                                        </Button>
+                                    }.into_any()
+                                }}
+                                <Button
+                                    variant=ButtonVariant::Danger
+                                    on_click=Callback::new(move |_| {
+                                        let uuid = acc_uuid_for_remove.clone();
+                                        leptos::task::spawn_local(async move {
+                                            let args = RemoveArgs { uuid };
+                                            match ipc::call::<_, ()>("remove_account", args).await {
+                                                Ok(_) => refresh.update(|n| *n += 1),
+                                                Err(e) => log::error!("remove_account failed: {e}"),
+                                            }
+                                        });
+                                    })
+                                >
+                                    <Icon icon=TRASH size="14px" weight=IconWeight::Regular />
+                                </Button>
+                            </div>
+                        </div>
+                    }
+                }).collect_view().into_any()
+            }
+        }}
+
+        <div class=add_row>
+            <Button variant=ButtonVariant::Primary on_click=open_modal>
+                <span style="display: inline-flex; align-items: center; gap: 6px;">
+                    <Icon icon=PLUS size="14px" weight=IconWeight::Bold />
+                    "Add Microsoft Account"
+                </span>
+            </Button>
+        </div>
+
+        <Show when=move || show_modal.get() fallback=|| ()>
+            <LoginModal
+                on_close=Callback::new(move |_| show_modal.set(false))
+                on_success=Callback::new(move |_summary: AccountSummary| {
+                    refresh.update(|n| *n += 1);
+                })
+            />
+        </Show>
+    }
+}
+
+#[derive(Serialize)]
+struct SelectArgs {
+    uuid: Option<String>,
+}
+
+#[derive(Serialize)]
+struct RemoveArgs {
+    uuid: String,
 }
 
 styled!(Sidebar, nav, {

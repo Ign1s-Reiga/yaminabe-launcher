@@ -4,12 +4,14 @@ mod classpath;
 mod manifest;
 
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use log::info;
 use tauri::{Emitter, State};
 use yaminabe_launcher_shared::datatypes::{InstanceMeta, ModLoader};
 use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::ipc::LogLine;
 use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, AppState};
+use crate::commands::auth::{refresh_account_tokens, MinecraftAccount};
 use crate::commands::instance::find_instance_dir;
 use crate::commands::java::download_java_runtime;
 use crate::install_task::version_manifest_path;
@@ -51,6 +53,16 @@ pub async fn launch_instance(
         let height = instance_meta.as_ref().map(|m| if m.window_height > 0 { m.window_height } else { s.window_height }).unwrap_or(s.window_height);
         (jre, ram, width, height)
     };
+
+    // Clone the selected account out so the async refresh below doesn't hold
+    // the accounts mutex across an `.await`.
+    let mut auth_account: Option<MinecraftAccount> = {
+        let store = state.accounts.lock().unwrap();
+        store.selected.as_ref().and_then(|uuid| {
+            store.accounts.iter().find(|a| &a.uuid == uuid).cloned()
+        })
+    };
+
     for dir in [versions_dir(), libraries_dir()] {
         std::fs::create_dir_all(dir)?;
     }
@@ -77,6 +89,37 @@ pub async fn launch_instance(
             }).ok();
             return Err($e);
         }};
+    }
+
+    // Refresh the MC token if it's near expiry; 300 s headroom covers the
+    // library/asset prefetch that follows.
+    if let Some(account) = auth_account.as_mut() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if account.mc_access_token.is_empty() || account.mc_expires_at - now < 300 {
+            log!(format!("Refreshing Microsoft credentials for {}...", account.username));
+            if let Err(e) = refresh_account_tokens(&state.http_client, account).await {
+                fail!(Error::Auth(format!(
+                    "Could not refresh credentials for {}: {e}. \
+                     Re-add the account from Settings → Accounts.",
+                    account.username
+                )));
+            }
+            // Persist refreshed tokens; a failed save is non-fatal since
+            // `account` still holds valid tokens for this launch.
+            let mut store = state.accounts.lock().unwrap();
+            if let Some(existing) = store.accounts.iter_mut().find(|a| a.uuid == account.uuid) {
+                *existing = account.clone();
+            }
+            if let Err(e) = store.save() {
+                log!(format!("warning: failed to persist refreshed tokens: {e}"));
+            }
+        }
+        log!(format!("Signed in as {}.", account.username));
+    } else {
+        log!("No Microsoft account selected — launching as OfflinePlayer.");
     }
 
     log!("Resolving version JSON...");
@@ -203,6 +246,25 @@ pub async fn launch_instance(
     let libraries_dir_str = libraries_dir().to_string_lossy().into_owned();
     let classpath_separator = if cfg!(windows) { ";" } else { ":" };
 
+    // When an account is selected its tokens replace the offline defaults so
+    // ${auth_*} args expand into real credentials.
+    let (auth_player_name, auth_uuid_str, auth_access_token, auth_xuid_str, user_type) = match &auth_account {
+        Some(a) => (
+            a.username.clone(),
+            a.uuid_dashed(),
+            a.mc_access_token.clone(),
+            if a.xuid.is_empty() { "0".to_string() } else { a.xuid.clone() },
+            "msa",
+        ),
+        None => (
+            "OfflinePlayer".to_string(),
+            "00000000-0000-0000-0000-000000000000".to_string(),
+            "0".to_string(),
+            "0".to_string(),
+            "offline",
+        ),
+    };
+
     let vars = LaunchVars {
         natives_directory: &natives_str,
         classpath: &classpath,
@@ -210,18 +272,18 @@ pub async fn launch_instance(
         library_directory: &libraries_dir_str,
         launcher_name: "yaminabe",
         launcher_version: "0.1.0",
-        auth_player_name: "OfflinePlayer",
+        auth_player_name: &auth_player_name,
         version_name: &mc_version,
         game_directory: &game_dir_str,
         assets_root: &assets_dir,
         assets_index_name: &asset_index_name,
-        auth_uuid: "00000000-0000-0000-0000-000000000000",
-        auth_access_token: "0",
-        user_type: "offline",
+        auth_uuid: &auth_uuid_str,
+        auth_access_token: &auth_access_token,
+        user_type,
         user_properties: "{}",
         version_type: "release",
         clientid: "0",
-        auth_xuid: "0",
+        auth_xuid: &auth_xuid_str,
         resolution_width: &res_width,
         resolution_height: &res_height,
     };
