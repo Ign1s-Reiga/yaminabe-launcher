@@ -119,7 +119,7 @@ pub fn run() {
             let handle = app.app_handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state = handle.state::<AppState>();
-                match fetch_minecraft_versions(versions_dir(), &state.http_client).await {
+                match fetch_minecraft_versions(&state.http_client).await {
                     Ok(manifest) => {
                         // `OnceLock::set` only fails if the cell is already
                         // populated, which can't happen at first-launch init.

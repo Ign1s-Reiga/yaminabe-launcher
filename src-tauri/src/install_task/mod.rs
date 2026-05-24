@@ -68,8 +68,6 @@ pub async fn ensure_vanilla(
     Ok(mc_version.to_string())
 }
 
-// ── Fabric / Quilt ────────────────────────────────────────────────────────────
-
 #[derive(Debug, Deserialize)]
 struct FabricLikeMetadata {
     url: String,
@@ -134,8 +132,6 @@ pub async fn ensure_quilt(
     ).await
 }
 
-// ── Forge ─────────────────────────────────────────────────────────────────────
-
 /// Forge maven artifact version (the `<ver>` in `net.minecraftforge:forge:<ver>`
 /// and in the file path `forge/<ver>/forge-<ver>-installer.jar`).
 ///
@@ -197,8 +193,6 @@ pub async fn ensure_forge(
     info!("Installed Forge {forge_build} for MC {mc_version}");
     Ok(version_id)
 }
-
-// ── NeoForge ──────────────────────────────────────────────────────────────────
 
 pub async fn ensure_neoforge(
     mc_version: &str,
@@ -332,7 +326,7 @@ struct VersionInfoV1 {
 fn detect_install_type(installer_path: &std::path::Path) -> Result<ForgeInstallType, Error> {
     let mut zip = installer_archive::open(installer_path)?;
     if zip.by_name("install_profile.json").is_err() {
-        return Err(Error::Invalid(format!(
+        return Err(Error::Unsupported(format!(
             "Forge installer at {} has no install_profile.json — pre-1.6 jar-mod-era Forge is not currently supported",
             installer_path.display()
         )));
