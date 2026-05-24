@@ -2,17 +2,14 @@ use bamboo_css_macro::{css, styled};
 use leptos::control_flow::{For, Show};
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
+use yaminabe_launcher_shared::ipc::InstallProgress;
 
 // ── Data model ────────────────────────────────────────────────────────────────
 
-#[derive(Clone, PartialEq, serde::Deserialize)]
-pub struct InstallJob {
-    pub id: String,
-    pub name: String,
-    pub step: String,
-    pub done: bool,
-    pub error: Option<String>,
-}
+/// Re-export of the shared wire type under the sidebar's local name. Keeps the
+/// rest of the frontend importing `InstallJob` while making the backend's
+/// `InstallProgress` the single source of truth for the schema.
+pub type InstallJob = InstallProgress;
 
 // ── Styled primitives ─────────────────────────────────────────────────────────
 

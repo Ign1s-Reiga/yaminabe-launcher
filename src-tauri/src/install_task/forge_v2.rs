@@ -6,35 +6,10 @@ use serde::Deserialize;
 use zip::ZipArchive;
 use yaminabe_launcher_shared::datatypes::ModLoader;
 use yaminabe_launcher_shared::error::Error;
+use yaminabe_launcher_shared::version_manifest::{Library, ClientManifest};
 use crate::{bin_dir, libraries_dir, temp_dir, versions_dir};
 use crate::http_utils::{download_resource, sha1_hex};
 use super::maven_coord_to_path;
-
-#[derive(Deserialize)]
-struct VersionJson {
-    libraries: Vec<VersionLibrary>,
-}
-
-#[derive(Deserialize)]
-struct VersionLibrary {
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    downloads: Option<VersionLibraryDownloads>,
-}
-
-#[derive(Deserialize)]
-struct VersionLibraryDownloads {
-    artifact: Option<VersionLibraryArtifact>,
-}
-
-#[derive(Deserialize)]
-struct VersionLibraryArtifact {
-    path: String,
-    url: String,
-    #[serde(default)]
-    sha1: String,
-}
 
 #[derive(Deserialize)]
 struct InstallProfileV2 {
@@ -42,7 +17,7 @@ struct InstallProfileV2 {
     path: String,
     data: HashMap<String, SidedValue>,
     processors: Vec<ProcessorSpec>,
-    libraries: Vec<VersionLibrary>,
+    libraries: Vec<Library>,
 }
 
 #[derive(Deserialize)]
@@ -66,11 +41,6 @@ struct ProcessorSpec {
     outputs: HashMap<String, String>,
 }
 
-#[derive(Deserialize)]
-struct VersionIdOnly {
-    id: String,
-}
-
 /// Download every library referenced by the version JSON that has a non-empty
 /// download URL. Skips entries with an empty `url` (the patched
 /// `forge-…:client` jar, which is produced locally by the binary patcher) and
@@ -78,14 +48,15 @@ struct VersionIdOnly {
 pub async fn pre_download_libraries(version_id: &str, client: &reqwest::Client) -> Result<(), Error> {
     let version_json_path = versions_dir().join(version_id).join(format!("{version_id}.json"));
     let text = std::fs::read_to_string(&version_json_path)?;
-    let version = serde_json::from_str::<VersionJson>(&text)?;
+    let version = serde_json::from_str::<ClientManifest>(&text)?;
 
     for lib in &version.libraries {
         let Some(artifact) = lib.downloads.as_ref().and_then(|d| d.artifact.as_ref()) else {
             continue;
         };
         if artifact.url.is_empty() { continue; }
-        let dest = libraries_dir().join(&artifact.path);
+        let Some(path) = artifact.path.as_deref() else { continue; };
+        let dest = libraries_dir().join(path);
         if dest.exists() { continue; }
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
@@ -136,7 +107,9 @@ pub async fn install(
         zip.by_name("version.json")
             .map_err(|e| Error::Invalid(format!("version.json missing: {e}")))?
             .read_to_string(&mut version_buf)?;
-        let version_id = serde_json::from_str::<VersionIdOnly>(&version_buf)?.id;
+        let parsed: ClientManifest = serde_json::from_str(&version_buf)?;
+        let version_id = parsed.id.clone()
+            .ok_or_else(|| Error::Invalid("V2 installer version.json missing top-level `id`".to_string()))?;
 
         (profile, version_buf, version_id)
     };
@@ -152,8 +125,10 @@ pub async fn install(
             .ok_or_else(|| Error::Invalid(format!("install_profile.libraries has no entry matching path {}", profile.path)))?;
         let artifact = universal.downloads.as_ref().and_then(|d| d.artifact.as_ref())
             .ok_or_else(|| Error::Invalid(format!("Universal library {} has no artifact downloads", profile.path)))?;
+        let artifact_path = artifact.path.as_deref()
+            .ok_or_else(|| Error::Invalid(format!("Universal library {} artifact has no path", profile.path)))?;
 
-        let embedded = format!("maven/{}", artifact.path);
+        let embedded = format!("maven/{artifact_path}");
         let mut zip = ZipArchive::new(std::fs::File::open(&installer_path)?)
             .map_err(|e| Error::Invalid(e.to_string()))?;
         let mut primary_jar_bytes = Vec::new();
@@ -171,7 +146,7 @@ pub async fn install(
             }
         }
 
-        let version_info: super::forge_v1::VersionInfo = serde_json::from_str(&version_json_text)?;
+        let version_info: ClientManifest = serde_json::from_str(&version_json_text)?;
         let v1_version_id = super::forge_v1::install_from_parsed(&version_info, &version_json_text, &profile.path, &primary_jar_bytes, client).await?;
         info!("Installed {loader} via V1 delegation ({})", installer_path.display());
         return Ok(v1_version_id);
@@ -190,7 +165,8 @@ pub async fn install(
         let Some(artifact) = lib.downloads.as_ref().and_then(|d| d.artifact.as_ref()) else {
             continue;
         };
-        let dest = libraries_dir().join(&artifact.path);
+        let Some(artifact_path) = artifact.path.as_deref() else { continue; };
+        let dest = libraries_dir().join(artifact_path);
         if dest.exists() { continue; }
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
@@ -199,7 +175,7 @@ pub async fn install(
         let extracted = {
             let mut zip = ZipArchive::new(std::fs::File::open(&installer_path)?)
                 .map_err(|e| Error::Invalid(e.to_string()))?;
-            let embedded = format!("maven/{}", artifact.path);
+            let embedded = format!("maven/{artifact_path}");
             match zip.by_name(&embedded) {
                 Ok(mut entry) => {
                     let mut buf = Vec::new();

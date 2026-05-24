@@ -1,8 +1,9 @@
 use std::io::Read;
 use std::path::Path;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use zip::ZipArchive;
 use yaminabe_launcher_shared::error::Error;
+use yaminabe_launcher_shared::version_manifest::ClientManifest;
 use crate::{libraries_dir, versions_dir};
 use crate::http_utils::download_from_maven;
 use super::maven_coord_to_path;
@@ -11,7 +12,7 @@ use super::maven_coord_to_path;
 #[serde(rename_all = "camelCase")]
 struct InstallProfile {
     install: InstallInfo,
-    version_info: VersionInfo,
+    version_info: ClientManifest,
 }
 
 #[derive(Deserialize)]
@@ -19,38 +20,6 @@ struct InstallProfile {
 struct InstallInfo {
     file_path: String,
     path: String,
-}
-
-#[derive(Deserialize, Serialize)]
-pub struct VersionInfo {
-    id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    time: Option<String>,
-    #[serde(rename = "releaseTime", skip_serializing_if = "Option::is_none")]
-    release_time: Option<String>,
-    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
-    version_type: Option<String>,
-    #[serde(rename = "inheritsFrom", skip_serializing_if = "Option::is_none")]
-    inherits_from: Option<String>,
-    #[serde(rename = "minecraftArguments", skip_serializing_if = "Option::is_none")]
-    minecraft_arguments: Option<String>,
-    #[serde(rename = "mainClass", skip_serializing_if = "Option::is_none")]
-    main_class: Option<String>,
-    #[serde(rename = "minimumLauncherVersion", skip_serializing_if = "Option::is_none")]
-    minimum_launcher_version: Option<u32>,
-    #[serde(default)]
-    libraries: Vec<Library>,
-}
-
-#[derive(Deserialize, Serialize)]
-struct Library {
-    name: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    url: String,
-    #[serde(default, rename = "clientreq", skip_serializing_if = "Option::is_none")]
-    client_req: Option<bool>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    checksums: Vec<String>,
 }
 
 pub async fn install(installer_path: &Path, client: &reqwest::Client) -> Result<String, Error> {
@@ -103,13 +72,14 @@ pub async fn install(installer_path: &Path, client: &reqwest::Client) -> Result<
 /// skipped here and assumed to be handled by a downstream pass (V2 callers
 /// rely on `forge_v2::pre_download_libraries` for the actual fetch).
 pub async fn install_from_parsed(
-    version_info: &VersionInfo,
+    version_info: &ClientManifest,
     version_info_text: &str,
     universal_coord: &str,
     universal_jar_bytes: &[u8],
     client: &reqwest::Client,
 ) -> Result<String, Error> {
-    let version_id = version_info.id.clone();
+    let version_id = version_info.id.clone()
+        .ok_or_else(|| Error::Invalid("Forge V1 version manifest is missing top-level `id`".to_string()))?;
 
     // Place the universal jar before the manifest: the caller gates re-install
     // on the manifest's existence, so a present manifest must imply the jar is
@@ -127,12 +97,13 @@ pub async fn install_from_parsed(
     std::fs::write(version_dir.join(format!("{version_id}.json")), version_info_text)?;
 
     for lib in &version_info.libraries {
-        if lib.url.is_empty() || lib.name.split(':').nth(3).is_some() {
+        let url = lib.url.as_deref().unwrap_or_default();
+        if url.is_empty() || lib.name.split(':').nth(3).is_some() {
             continue;
         }
         let lib_path = libraries_dir().join(maven_coord_to_path(&lib.name));
         if lib_path.exists() { continue; }
-        download_from_maven(client, &lib.url, lib.name.clone(), None, "jar", libraries_dir().clone()).await?;
+        download_from_maven(client, url, lib.name.clone(), None, "jar", libraries_dir().clone()).await?;
     }
 
     Ok(version_id)

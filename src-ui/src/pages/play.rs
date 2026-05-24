@@ -8,11 +8,12 @@ use leptos::prelude::*;
 use leptos::{IntoView, component, html, view, web_sys};
 use leptos_router::hooks::{use_navigate, use_params};
 use leptos_router::params::Params;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::{cell::RefCell, rc::Rc};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use yaminabe_launcher_shared::datatypes::{InstanceMeta, ModLoader};
+use yaminabe_launcher_shared::ipc::LogLine;
 
 const LOG_STICKY_THRESHOLD_PX: i32 = 8;
 const LOG_SCROLL_THROTTLE_MS: i32 = 50;
@@ -147,14 +148,6 @@ impl LogScrollState {
 #[derive(PartialEq, Clone, Params)]
 struct PlayParams {
     id: Option<String>,
-}
-
-#[derive(Clone, Deserialize)]
-pub struct LogLine {
-    pub instance_id: String,
-    pub line: String,
-    pub done: bool,
-    pub error: Option<String>,
 }
 
 #[derive(Serialize)]

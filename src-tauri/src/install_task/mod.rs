@@ -3,7 +3,7 @@ mod forge_v1;
 mod forge_v2;
 mod vanilla;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use log::info;
@@ -12,23 +12,11 @@ use tauri::State;
 use zip::ZipArchive;
 use yaminabe_launcher_shared::datatypes::ModLoader;
 use yaminabe_launcher_shared::error::Error;
+use yaminabe_launcher_shared::version_manifest::ClientManifest;
 use crate::{libraries_dir, temp_dir, versions_dir, AppState};
 use crate::http_utils::{download_from_maven, download_resource, fetch_json, get_resource_name, sha1_hex};
 
 // ── Vanilla ───────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DownloadJarMetadata {
-    sha1: String,
-    size: u32,
-    url: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct VersionManifestJson {
-    downloads: HashMap<String, DownloadJarMetadata>,
-}
 
 pub async fn ensure_vanilla(
     mc_version: &str,
@@ -42,19 +30,24 @@ pub async fn ensure_vanilla(
 
     if !client_manifest_path.exists() {
         let version_metadata = state.mc_versions.get()
-            .ok_or_else(|| Error::Invalid("version manifest".to_string()))?
+            .ok_or_else(|| Error::Invalid("version manifest cache not yet populated".to_string()))?
             .versions
             .iter().find(|v| v.id == mc_version)
-            .unwrap();
+            .ok_or_else(|| Error::Invalid(format!(
+                "Minecraft version '{mc_version}' not present in the Mojang version manifest"
+            )))?;
 
         download_resource(&state.http_client, &version_metadata.manifest_url, client_manifest_path.clone()).await?
     }
 
     let text = std::fs::read_to_string(&client_manifest_path)?;
-    let manifest = serde_json::from_str::<VersionManifestJson>(&text)?;
+    let manifest = serde_json::from_str::<ClientManifest>(&text)?;
 
     if !client_path.exists() {
-        let client_metadata = manifest.downloads.get("client").unwrap();
+        let client_metadata = manifest.downloads.get("client")
+            .ok_or_else(|| Error::Invalid(format!(
+                "version manifest for '{mc_version}' has no client download entry"
+            )))?;
         download_resource(&state.http_client, &client_metadata.url, client_path).await?
     }
 
@@ -245,39 +238,7 @@ pub async fn ensure_neoforge(
 
 // ── Shared library pre-download (install + launch) ────────────────────────────
 
-#[derive(Deserialize)]
-struct LibManifest {
-    #[serde(rename = "inheritsFrom")]
-    inherits_from: Option<String>,
-    #[serde(default)]
-    libraries: Vec<LibEntry>,
-}
-
-#[derive(Deserialize)]
-struct LibEntry {
-    name: String,
-    #[serde(default)]
-    url: Option<String>,
-    #[serde(default)]
-    downloads: Option<LibEntryDownloads>,
-    #[serde(default)]
-    natives: HashMap<String, String>,
-}
-
-#[derive(Deserialize)]
-struct LibEntryDownloads {
-    artifact: Option<LibEntryArtifact>,
-    #[serde(default)]
-    classifiers: Option<HashMap<String, LibEntryArtifact>>
-}
-
-#[derive(Deserialize)]
-struct LibEntryArtifact {
-    path: String,
-    url: String,
-}
-
-fn load_lib_manifest(version_id: &str) -> Result<LibManifest, Error> {
+fn load_lib_manifest(version_id: &str) -> Result<ClientManifest, Error> {
     let path = versions_dir().join(version_id).join(format!("{version_id}.json"));
     let text = std::fs::read_to_string(&path)?;
     Ok(serde_json::from_str(&text)?)
@@ -318,7 +279,8 @@ pub async fn ensure_libraries(version_id: &str, client: &reqwest::Client) -> Res
                 };
                 let Some(artifact) = classifiers.get(&key) else { continue; };
                 if artifact.url.is_empty() { continue; }
-                let dest = libraries_dir().join(&artifact.path);
+                let Some(path) = artifact.path.as_deref() else { continue; };
+                let dest = libraries_dir().join(path);
                 if dest.exists() { continue; }
                 if let Some(parent) = dest.parent() {
                     std::fs::create_dir_all(parent)?;
@@ -329,7 +291,8 @@ pub async fn ensure_libraries(version_id: &str, client: &reqwest::Client) -> Res
 
             if let Some(artifact) = lib.downloads.as_ref().and_then(|d| d.artifact.as_ref()) {
                 if artifact.url.is_empty() { continue; }
-                let dest = libraries_dir().join(&artifact.path);
+                let Some(path) = artifact.path.as_deref() else { continue; };
+                let dest = libraries_dir().join(path);
                 if dest.exists() { continue; }
                 if let Some(parent) = dest.parent() {
                     std::fs::create_dir_all(parent)?;

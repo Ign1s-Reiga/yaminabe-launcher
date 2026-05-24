@@ -7,10 +7,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use serde::Serialize;
 use tauri::{Emitter, Manager};
 use yaminabe_launcher_shared::datatypes::{AppSettings, JavaInstall};
 use yaminabe_launcher_shared::error::InitializationError;
+use yaminabe_launcher_shared::ipc::InstallProgress;
 use crate::commands::modfile::{
     download_mods, get_modpack_files, install_curseforge_modpack,
     search_curseforge_modpacks,
@@ -23,25 +23,16 @@ use crate::commands::launch::{kill_instance, launch_instance};
 use crate::commands::java::{detect_java_installs, get_java_installs};
 use crate::commands::settings::{get_instance_subfolders, get_settings, open_instance_subfolder, pick_folder, save_settings};
 
-// ── Shared types ─────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize)]
-pub struct InstallProgress {
-    pub id: String,
-    pub name: String,
-    pub step: String,
-    pub done: bool,
-    pub error: Option<String>,
-}
-
 pub fn emit_progress(app: &tauri::AppHandle, id: &str, name: &str, step: &str, done: bool, error: Option<String>) {
-    let _ = app.emit("instance-install-progress", InstallProgress {
+    if let Err(e) = app.emit("instance-install-progress", InstallProgress {
         id: id.to_string(),
         name: name.to_string(),
         step: step.to_string(),
         done,
         error,
-    });
+    }) {
+        log::warn!("failed to emit instance-install-progress for {id}: {e}");
+    }
 }
 
 

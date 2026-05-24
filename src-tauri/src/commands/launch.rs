@@ -1,65 +1,20 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use log::info;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tauri::{Emitter, State};
 use yaminabe_launcher_shared::datatypes::{InstanceMeta, ModLoader};
 use yaminabe_launcher_shared::error::Error;
+use yaminabe_launcher_shared::ipc::LogLine;
+use yaminabe_launcher_shared::version_manifest::{
+    ArgRule, ArgValue, ArgumentItem, AssetIndex, DefaultJvmItem, Library, ClientManifest,
+};
 use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, AppState};
 use crate::http_utils::sha1_hex;
 use crate::commands::instance::find_instance_dir;
 use crate::commands::java::download_java_runtime;
 
-// ── IPC event ─────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize)]
-pub struct LogLine {
-    pub instance_id: String,
-    pub line: String,
-    pub done: bool,
-    pub error: Option<String>,
-}
-
-// ── Version JSON types ────────────────────────────────────────────────────────
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClientManifest {
-    #[serde(default)]
-    main_class: String,
-    #[serde(default)]
-    arguments: Option<Arguments>,
-    asset_index: Option<AssetIndex>,
-    #[serde(default)]
-    libraries: Vec<Library>,
-    minecraft_arguments: Option<String>,
-    inherits_from: Option<String>,
-    java_version: Option<JavaVersion>,
-}
-
-#[derive(Deserialize)]
-struct JavaVersion {
-    component: String,
-}
-
-#[derive(Deserialize)]
-struct Arguments {
-    #[serde(rename = "default-user-jvm", default)]
-    default_user_jvm: Vec<DefaultJvmItem>,
-    #[serde(default)]
-    game: Vec<ArgumentItem>,
-    #[serde(default)]
-    jvm: Vec<ArgumentItem>,
-}
-
-#[derive(Deserialize)]
-struct AssetIndex {
-    id: String,
-    #[serde(default)]
-    url: Option<String>,
-    #[serde(default)]
-    sha1: Option<String>,
-}
+// ── Asset index types (the file referenced by ClientManifest::asset_index) ──
 
 #[derive(Deserialize)]
 struct AssetIndexJson {
@@ -69,97 +24,6 @@ struct AssetIndexJson {
 #[derive(Deserialize)]
 struct AssetObject {
     hash: String,
-}
-
-#[derive(Deserialize)]
-struct Library {
-    name: String,
-    #[serde(default)]
-    rules: Vec<ArgRule>,
-    #[serde(default)]
-    downloads: Option<LibraryDownloads>,
-    #[serde(default)]
-    natives: HashMap<String, String>,
-    url: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct LibraryDownloads {
-    artifact: Option<LibraryArtifact>,
-    classifiers: Option<HashMap<String, LibraryArtifact>>,
-}
-
-#[derive(Deserialize)]
-struct LibraryArtifact {
-    path: Option<String>,
-    url: String,
-}
-
-// ── Argument item types ───────────────────────────────────────────────────────
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum ArgValue {
-    One(String),
-    Many(Vec<String>),
-}
-
-
-#[derive(Deserialize)]
-struct VersionRange {
-    min: Option<String>,
-    max: Option<String>,
-}
-
-#[derive(Deserialize, Default)]
-struct ArgRuleOs {
-    name: Option<String>,
-    arch: Option<String>,
-    #[serde(rename = "versionRange")]
-    version_range: Option<VersionRange>,
-}
-
-#[derive(Deserialize, Default)]
-struct ArgFeatures {
-    #[serde(default)]
-    has_custom_resolution: bool,
-    #[serde(default)]
-    is_demo_user: bool,
-    #[serde(default)]
-    has_quick_plays_support: bool,
-    #[serde(default)]
-    is_quick_play_singleplayer: bool,
-    #[serde(default)]
-    is_quick_play_multiplayer: bool,
-    #[serde(default)]
-    is_quick_play_realms: bool,
-}
-
-#[derive(Deserialize)]
-struct ArgRule {
-    action: String,
-    #[serde(default)]
-    os: ArgRuleOs,
-    #[serde(default)]
-    features: Option<ArgFeatures>,
-}
-
-#[derive(Deserialize)]
-struct DefaultJvmItem {
-    #[serde(default)]
-    rules: Vec<ArgRule>,
-    value: ArgValue,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum ArgumentItem {
-    Plain(String),
-    Conditional {
-        #[serde(default)]
-        rules: Vec<ArgRule>,
-        value: ArgValue,
-    },
 }
 
 // ── Helper functions ──────────────────────────────────────────────────────────
