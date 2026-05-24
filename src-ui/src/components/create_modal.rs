@@ -6,9 +6,10 @@ use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
 use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use log::info;
-use yaminabe_launcher_shared::datatypes::{InstanceMeta, ModLoader, ReleaseType};
+use yaminabe_launcher_shared::datatypes::{InstanceMeta, LoaderVersion, ModLoader, ReleaseType};
 
 // ── IPC arg type ──────────────────────────────────────────────────────────────
 
@@ -49,18 +50,45 @@ pub fn CreateInstanceModal(
         call_get_minecraft_versions().await.unwrap_or_default()
     });
 
-    // ── lazy modloader fetch (kicked off on entering step 3) ──────────────────
-    // The backend filters by (kind, mc_version), so we re-fetch whenever those change
-    // while the user is on step 3 and has selected a non-vanilla loader.
-    let loader_versions = LocalResource::new(move || {
+    // ── eager per-loader prefetch on step-3 entry ─────────────────────────────
+    // Every entry into step 3 kicks off four parallel IPC fetches (one per
+    // non-vanilla loader), cached in `loader_versions`. Whichever lands first
+    // is immediately usable by the selector; `loader_pending` tracks in-flight
+    // kinds so the version dropdown can show "Loading…" until that loader's
+    // list arrives. Re-fetching on every entry is intentional (confirmed
+    // acceptable) — keeps the cache aligned with the current `selected_mcver`
+    // without a separate invalidation path.
+    let loader_versions: RwSignal<HashMap<String, Vec<LoaderVersion>>> = RwSignal::new(HashMap::new());
+    let loader_pending: RwSignal<HashSet<String>> = RwSignal::new(HashSet::new());
+
+    Effect::new(move |_| {
         let step = modal_step.get();
-        let kind = selected_modloader.get();
         let mcver = selected_mcver.get();
-        async move {
-            if step != 3 || kind == "vanilla" || mcver.is_empty() {
-                return Vec::new();
-            }
-            call_get_modloader_versions(&kind, &mcver).await.unwrap_or_default()
+        if step != 3 || mcver.is_empty() { return; }
+
+        loader_versions.set(HashMap::new());
+        let kinds = ["forge", "fabric", "neoforge", "quilt"];
+        loader_pending.set(kinds.iter().map(|s| s.to_string()).collect());
+
+        for kind in kinds {
+            let mcver = mcver.clone();
+            leptos::task::spawn_local(async move {
+                let versions = call_get_modloader_versions(kind, &mcver).await.unwrap_or_default();
+                loader_versions.update(|map| { map.insert(kind.to_string(), versions); });
+                loader_pending.update(|set| { set.remove(kind); });
+            });
+        }
+    });
+
+    // ── derived: NoProfile-era Forge (unsupported) ────────────────────────────
+    // True when the user has picked Forge with MC 1.0–1.5.x — the jar-mod era
+    // that needs a per-Forge-version FML bootstrap lib table the launcher
+    // doesn't yet ship. Gates both the warning banner and the Create button.
+    let is_noprofile_forge: Memo<bool> = Memo::new(move |_| {
+        selected_modloader.get() == "forge" && {
+            let parts: Vec<u32> = selected_mcver.get()
+                .split('.').filter_map(|p| p.parse().ok()).collect();
+            matches!(parts.as_slice(), [1, m, ..] if *m <= 5)
         }
     });
 
@@ -93,13 +121,16 @@ pub fn CreateInstanceModal(
     });
 
     // Keep `selected_modloader_version` valid as the loader list changes.
+    // Skips on `None` (fetch still pending) — when the cache populates the
+    // effect re-runs against the fresh list.
     Effect::new(move |_| {
         let kind = selected_modloader.get();
         if kind == "vanilla" {
             selected_modloader_version.set(String::new());
             return;
         }
-        let candidates = loader_versions.get().unwrap_or_default();
+        let map = loader_versions.get();
+        let Some(candidates) = map.get(&kind) else { return; };
         let current = selected_modloader_version.get_untracked();
         if !candidates.iter().any(|m| m.version == current) {
             if let Some(first) = candidates.first() {
@@ -155,6 +186,22 @@ pub fn CreateInstanceModal(
     let option_info  = css! { display: flex; flex-direction: column; gap: 3px; };
     let option_title = css! { font-weight: 600; font-size: 0.9rem; };
     let option_desc  = css! { font-size: 0.8rem; opacity: 0.55; };
+
+    let step_subtitle = css! {
+        margin: 0 0 16px 0;
+        font-weight: 500;
+        font-size: 1rem;
+        opacity: 0.65;
+    };
+    let noprofile_warning = css! {
+        margin: 8px 0 0 0;
+        padding: 8px 12px;
+        background-color: rgba(192, 57, 43, 0.08);
+        color: #c0392b;
+        border-radius: 6px;
+        font-size: 0.82rem;
+        line-height: 1.45;
+    };
 
     let filter_row = css! {
         display: flex;
@@ -228,7 +275,8 @@ pub fn CreateInstanceModal(
                     // ── Step 2: name + game version + category ───────────────
                     <Show when=move || modal_step.get() == 2 && selected_method.get() == Some(1) fallback=|| ()>
                         <ModalBody>
-                            <h2 style="margin: 0 0 16px 0;">"Create Manually"</h2>
+                            <h2 style="margin: 0 0 4px 0;">"Create Manually"</h2>
+                            <h3 class=step_subtitle>"Set Up Instance"</h3>
                             <FormFields style="margin-top: 8px;">
                                 <FormField label="Instance Name" uppercase=true>
                                     <TextInput
@@ -319,47 +367,56 @@ pub fn CreateInstanceModal(
                     // ── Step 3: mod loader ────────────────────────────────────
                     <Show when=move || modal_step.get() == 3 && selected_method.get() == Some(1) fallback=|| ()>
                         <ModalBody>
-                            <h2 style="margin: 0 0 16px 0;">"Mod Loader"</h2>
+                            <h2 style="margin: 0 0 4px 0;">"Create Manually"</h2>
+                            <h3 class=step_subtitle>"Select a Mod Loader"</h3>
                             <FormFields style="margin-top: 8px;">
                                 <FormField label="Mod Loader" uppercase=true>
-                                    {move || {
-                                        let current = selected_modloader.get();
-                                        view! {
-                                            <SelectInput
-                                                on_change=Callback::new(move |val: String| selected_modloader.set(val))
-                                            >
-                                                <option value="vanilla" selected={current == "vanilla"}>"Vanilla (no mod loader)"</option>
-                                                <option value="forge" selected={current == "forge"}>"Forge"</option>
-                                                <option value="fabric" selected={current == "fabric"}>"Fabric"</option>
-                                                <option value="neoforge" selected={current == "neoforge"}>"NeoForge"</option>
-                                                <option value="quilt" selected={current == "quilt"}>"Quilt"</option>
-                                            </SelectInput>
-                                        }
-                                    }}
+                                    <SegmentedControl
+                                        items=vec![
+                                            ("vanilla", "Vanilla"),
+                                            ("forge", "Forge"),
+                                            ("fabric", "Fabric"),
+                                            ("neoforge", "NeoForge"),
+                                            ("quilt", "Quilt"),
+                                        ]
+                                        selected=selected_modloader
+                                        on_change=Callback::new(move |val: String| selected_modloader.set(val))
+                                    />
                                 </FormField>
                                 <FormField label="Mod Loader Version" uppercase=true>
                                     {move || {
-                                        let is_vanilla = selected_modloader.get() == "vanilla";
+                                        let kind = selected_modloader.get();
+                                        let is_vanilla = kind == "vanilla";
+                                        let is_loading = !is_vanilla && loader_pending.get().contains(&kind);
                                         let candidates = if is_vanilla {
                                             Vec::new()
                                         } else {
-                                            loader_versions.get().unwrap_or_default()
+                                            loader_versions.get().get(&kind).cloned().unwrap_or_default()
                                         };
                                         let current = selected_modloader_version.get();
                                         view! {
                                             <SelectInput
-                                                disabled=is_vanilla
+                                                disabled=is_vanilla || is_loading
                                                 on_change=Callback::new(move |val: String| selected_modloader_version.set(val))
                                             >
-                                                {candidates.into_iter().map(|m| {
-                                                    let is_selected = m.version == current;
-                                                    view! {
-                                                        <option value=m.version.clone() selected=is_selected>{m.version.clone()}</option>
-                                                    }
-                                                }).collect_view()}
+                                                {if is_loading {
+                                                    view! { <option disabled selected>"Loading…"</option> }.into_any()
+                                                } else {
+                                                    candidates.into_iter().map(|m| {
+                                                        let is_selected = m.version == current;
+                                                        view! {
+                                                            <option value=m.version.clone() selected=is_selected>{m.version.clone()}</option>
+                                                        }
+                                                    }).collect_view().into_any()
+                                                }}
                                             </SelectInput>
                                         }
                                     }}
+                                    <Show when=move || is_noprofile_forge.get()>
+                                        <p class=noprofile_warning>
+                                            "NoProfile (pre-1.6 jar-mod) Forge is not currently supported. Please pick MC 1.6 or later."
+                                        </p>
+                                    </Show>
                                 </FormField>
                             </FormFields>
                         </ModalBody>
@@ -373,8 +430,9 @@ pub fn CreateInstanceModal(
                             <Button
                                 variant=ButtonVariant::Primary
                                 disabled=Signal::derive(move || {
-                                    selected_modloader.get() != "vanilla"
-                                        && selected_modloader_version.get().trim().is_empty()
+                                    is_noprofile_forge.get()
+                                        || (selected_modloader.get() != "vanilla"
+                                            && selected_modloader_version.get().trim().is_empty())
                                 })
                                 on_click=Callback::new(move |_| {
                                     let mod_loader = ModLoader::from_str(&selected_modloader.get_untracked())

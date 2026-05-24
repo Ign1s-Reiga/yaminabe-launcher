@@ -3,52 +3,6 @@
 This file provides STRICT guidance to Claude Code when working with this repository.
 Follow these rules to minimize unnecessary context usage and avoid scanning the entire project.
 
-## CRITICAL RULES (MUST FOLLOW)
-
-### 1. Limit Scope Aggressively
-- NEVER read the entire project.
-- ONLY read files explicitly mentioned in the user prompt.
-- If a file is not provided or specified, DO NOT open or analyze it.
-- Assume unspecified parts already work.
-
-### 2. No Autonomous Refactoring
-- DO NOT refactor existing code.
-- DO NOT redesign architecture.
-- DO NOT improve unrelated parts.
-- ONLY do exactly what the user requested.
-
-### 3. Minimize Changes
-- Make the smallest possible change to satisfy the request.
-- Prefer editing existing code instead of rewriting.
-- Do not rename functions, files, or variables unless explicitly asked.
-
-### 4. Output Restrictions
-- DO NOT output full files unless explicitly requested.
-- ALWAYS output only:
-    - changed lines, OR
-    - minimal patch/diff
-- Avoid long explanations unless asked.
-
-### 5. No Exploration Behavior
-- DO NOT search for "better implementations" in other files.
-- DO NOT try to understand the whole architecture.
-- DO NOT follow import chains unless strictly necessary.
-
-## TASK EXECUTION STRATEGY
-
-When implementing a feature:
-
-1. Use ONLY the provided files and instructions
-2. If integration points are unclear, assume a simple interface
-3. Do not attempt to validate against the entire project
-4. If unsure, make a reasonable assumption instead of exploring
-
-When fixing errors:
-
-1. Focus ONLY on the error message and given code
-2. Do not trace dependencies across the project
-3. Fix locally with minimal edits
-
 ## Architecture Overview
 
 **Yaminabe Launcher** is a Tauri 2.x desktop app for managing game modpacks. It uses a dual-crate workspace:
@@ -129,19 +83,3 @@ async fn my_command(arg: &str) -> String { ... }
 // Frontend (src-ui — via wasm-bindgen)
 invoke("my_command", JsValue::from_serde(&args).unwrap()).await
 ```
-
-## ✅ SAFE DEFAULTS
-
-If instructions are ambiguous:
-
-- Choose the simplest implementation
-- Stay within ONE file if possible
-- Avoid cross-file dependencies
-- Do not introduce new abstractions
-
-## ❌ WHAT NOT TO DO
-
-- Do not scan the entire repo
-- Do not rewrite large sections
-- Do not "improve" unrelated code
-- Do not introduce new architecture

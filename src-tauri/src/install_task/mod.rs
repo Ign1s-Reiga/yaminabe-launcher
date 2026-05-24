@@ -1,5 +1,4 @@
 mod fabric_like;
-mod forge_noprofile;
 mod forge_v1;
 mod forge_v2;
 mod vanilla;
@@ -136,11 +135,6 @@ pub async fn ensure_quilt(
 
 // ── Forge ─────────────────────────────────────────────────────────────────────
 
-fn is_old_format(mc_version: &str) -> bool {
-    let parts: Vec<u32> = mc_version.split('.').filter_map(|p| p.parse().ok()).collect();
-    matches!(parts.as_slice(), [1, minor, ..] if *minor <= 5)
-}
-
 /// Forge maven artifact version (the `<ver>` in `net.minecraftforge:forge:<ver>`
 /// and in the file path `forge/<ver>/forge-<ver>-installer.jar`).
 ///
@@ -159,45 +153,26 @@ pub async fn ensure_forge(
     let forge_build = loader_version.strip_prefix("forge-").unwrap_or(loader_version);
     let forge_version = forge_maven_version(mc_version, forge_build);
 
-    let (install_type, installer_path) = if is_old_format(mc_version) {
-        download_from_maven(
-            client,
-            "https://maven.minecraftforge.net/",
-            format!("net.minecraftforge:forge:{forge_version}"),
-            Some("universal"),
-            "zip",
-            temp_dir().clone(),
-        ).await?;
-        let path = temp_dir()
-            .join("net").join("minecraftforge").join("forge")
-            .join(&forge_version)
-            .join(format!("forge-{forge_version}-universal.zip"));
-        (ForgeInstallType::NoProfile, path)
-    } else {
-        download_from_maven(
-            client,
-            "https://maven.minecraftforge.net/",
-            format!("net.minecraftforge:forge:{forge_version}"),
-            Some("installer"),
-            "jar",
-            temp_dir().clone(),
-        ).await?;
-        let path = temp_dir()
-            .join("net").join("minecraftforge").join("forge")
-            .join(&forge_version)
-            .join(format!("forge-{forge_version}-installer.jar"));
-        let install_type = detect_install_type(&path)?;
-        (install_type, path)
-    };
+    // Pre-1.6 Forge (jar-mod era, no install_profile.json) is not currently
+    // supported — see `project-noprofile-fml-bootstrap-blocker` for what a
+    // re-implementation would need. The installer-jar download below will
+    // 404 for those MC versions, which surfaces the unsupported case as a
+    // clear network error rather than a half-broken install.
+    download_from_maven(
+        client,
+        "https://maven.minecraftforge.net/",
+        format!("net.minecraftforge:forge:{forge_version}"),
+        Some("installer"),
+        "jar",
+        temp_dir().clone(),
+    ).await?;
+    let installer_path = temp_dir()
+        .join("net").join("minecraftforge").join("forge")
+        .join(&forge_version)
+        .join(format!("forge-{forge_version}-installer.jar"));
+    let install_type = detect_install_type(&installer_path)?;
 
     let version_id = match install_type {
-        // NoProfile has no installer-authoritative id; pick a single launcher
-        // convention (era-independent) so the on-disk layout is predictable.
-        ForgeInstallType::NoProfile => {
-            let version_id = format!("{mc_version}-forge-{forge_build}");
-            forge_noprofile::install(&installer_path, &forge_version, &version_id)?;
-            version_id
-        }
         ForgeInstallType::V1 => {
             let version_id = read_v1_version(&installer_path)?;
             // Pre-1.13 Forge produces no version jar (the universal jar lives
@@ -376,7 +351,6 @@ pub async fn ensure_libraries(version_id: &str, client: &reqwest::Client) -> Res
 // ── Shared helpers (visible to submodules) ───────────────────────────────────
 
 enum ForgeInstallType {
-    NoProfile,
     V1,
     V2,
 }
@@ -396,7 +370,10 @@ fn detect_install_type(installer_path: &Path) -> Result<ForgeInstallType, Error>
     let mut zip = ZipArchive::new(std::fs::File::open(installer_path)?)
         .map_err(|e| Error::Invalid(e.to_string()))?;
     if zip.by_name("install_profile.json").is_err() {
-        return Ok(ForgeInstallType::NoProfile);
+        return Err(Error::Invalid(format!(
+            "Forge installer at {} has no install_profile.json — pre-1.6 jar-mod-era Forge is not currently supported",
+            installer_path.display()
+        )));
     }
     Ok(if zip.by_name("version.json").is_ok() {
         ForgeInstallType::V2
