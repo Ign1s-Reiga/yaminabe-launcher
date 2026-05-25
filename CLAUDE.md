@@ -121,6 +121,10 @@ Do NOT refactor styling unless explicitly requested.
 ### Rust Code Rules
 
 - Do not use `let _ = ...` pattern to consume value.
+- Inline comments (`//`) should be kept to 2-3 lines or less.
+- Inline comments should not be used as separators.
+- Documentation comments (`///`) can be any number of lines, up to 10 lines. However, fewer comments are preferable.
+  - However, documentation comments (`//!`) for the entire source file should not be written.
 
 ### Formatting Prefrences
 - **No Vertical Alignment**: Do not align values or assignments vertically. Avoid adding extra spaces before `=` or `:` to match the positioning of other lines.
