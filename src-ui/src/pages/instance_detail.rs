@@ -65,9 +65,12 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     let meta_text = format!("MC {}  ·  {}  ·  {}", instance.game_version, instance.mod_loader, category_label);
 
     let instance_id = instance.id.clone();
-    let instance_id_play = instance_id.clone();
+    let instance_id_play_online = instance_id.clone();
+    let instance_id_play_offline = instance_id.clone();
     let instance_id_save: RwSignal<String> = RwSignal::new(instance_id.clone());
     let instance_id_open = instance_id.clone();
+    let dropdown_open: RwSignal<bool> = RwSignal::new(false);
+    let navigate_play_offline = navigate_play.clone();
     let jre_path: RwSignal<String> = RwSignal::new(instance.jre_path.clone());
 
     let java_installs = LocalResource::new(|| async move {
@@ -131,15 +134,23 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
         <div class=header_strip style=header_bg></div>
         <InstanceDetailHeader instance_name=instance_name meta_text=meta_text>
             <OpenInFileManager instance_id=instance_id_open />
-            <Button
-                variant=ButtonVariant::Primary
-                size=ButtonSize::Big
-                on:click=move |_| {
-                    navigate_play(&format!("/library/{}/play", instance_id_play), Default::default());
-                }
-            >
-                "▶  Play Instance"
-            </Button>
+            <SplitPlayButton
+                dropdown_open=dropdown_open
+                on_online=Callback::new(move |_| {
+                    dropdown_open.set(false);
+                    navigate_play(
+                        &format!("/library/{}/play?mode=online", instance_id_play_online),
+                        Default::default(),
+                    );
+                })
+                on_offline=Callback::new(move |_| {
+                    dropdown_open.set(false);
+                    navigate_play_offline(
+                        &format!("/library/{}/play?mode=offline", instance_id_play_offline),
+                        Default::default(),
+                    );
+                })
+            />
         </InstanceDetailHeader>
 
         <TabBar
@@ -253,6 +264,90 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
                 </SettingsSection>
             </form>
         </Show>
+    }
+}
+
+/// Split Play button: the main half launches in online mode; the caret half
+/// reveals a small dropdown whose only item launches offline. Default click
+/// is online so the common path stays one-click.
+#[component]
+fn SplitPlayButton(
+    dropdown_open: RwSignal<bool>,
+    on_online: Callback<leptos::web_sys::MouseEvent>,
+    on_offline: Callback<leptos::web_sys::MouseEvent>,
+) -> impl IntoView {
+    let wrapper = css! {
+        position: relative;
+        display: inline-flex;
+    };
+    let dropdown = css! {
+        position: absolute;
+        top: calc(100% + 6px);
+        right: 0;
+        min-width: 180px;
+        background-color: var(--background-color);
+        border: 1px solid var(--secondary-color);
+        border-radius: 8px;
+        padding: 4px;
+        z-index: 50;
+        box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
+    };
+    let dropdown_item = css! {
+        display: block;
+        width: 100%;
+        text-align: left;
+        padding: 8px 12px;
+        background: transparent;
+        border: none;
+        color: var(--text-color);
+        font-size: 0.88rem;
+        font-family: inherit;
+        cursor: pointer;
+        border-radius: 6px;
+        &:hover { background-color: var(--secondary-color); }
+    };
+    let dropdown_hint = css! {
+        display: block;
+        font-size: 0.72rem;
+        opacity: 0.5;
+        margin-top: 2px;
+    };
+
+    view! {
+        <div class=wrapper>
+            <Button
+                variant=ButtonVariant::Primary
+                size=ButtonSize::Big
+                style="border-top-right-radius: 0; border-bottom-right-radius: 0;"
+                on_click=on_online
+            >
+                "▶  Play Instance"
+            </Button>
+            <Button
+                variant=ButtonVariant::Primary
+                size=ButtonSize::Big
+                style="border-top-left-radius: 0; border-bottom-left-radius: 0; \
+                       padding-left: 10px; padding-right: 10px; \
+                       border-left: 1px solid rgb(255 255 255 / 0.22);"
+                on_click=Callback::new(move |_| dropdown_open.update(|o| *o = !*o))
+            >
+                "▾"
+            </Button>
+            <Show when=move || dropdown_open.get() fallback=|| ()>
+                <div class=dropdown>
+                    <button
+                        type="button"
+                        class=dropdown_item
+                        on:click=move |ev| on_offline.run(ev)
+                    >
+                        "Launch Offline"
+                        <span class=dropdown_hint>
+                            "Skip Microsoft sign-in for this launch."
+                        </span>
+                    </button>
+                </div>
+            </Show>
+        </div>
     }
 }
 

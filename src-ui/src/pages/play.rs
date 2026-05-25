@@ -6,10 +6,10 @@ use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{IntoView, component, view};
-use leptos_router::hooks::{use_navigate, use_params};
+use leptos_router::hooks::{use_navigate, use_params, use_query_map};
 use leptos_router::params::Params;
 use serde::Serialize;
-use yaminabe_launcher_shared::datatypes::{InstanceMeta, ModLoader};
+use yaminabe_launcher_shared::datatypes::{InstanceMeta, LaunchMode, ModLoader};
 use yaminabe_launcher_shared::ipc::LogLine;
 
 #[derive(PartialEq, Clone, Params)]
@@ -23,6 +23,7 @@ struct LaunchArgs {
     instance_id: String,
     mc_version: String,
     mod_loader: ModLoader,
+    launch_mode: LaunchMode,
 }
 
 #[derive(Serialize)]
@@ -43,6 +44,13 @@ pub fn PlayPage() -> impl IntoView {
                 .unwrap_or_default()
         })
     });
+
+    // Read `?mode=offline|online` once on mount; the query is set by the
+    // split Play button on the instance detail page.
+    let query = use_query_map();
+    let launch_mode = LaunchMode::from_query(
+        query.with_untracked(|q| q.get("mode")).as_deref(),
+    );
 
     let instances_ctx = use_context::<RwSignal<Vec<InstanceMeta>>>().expect("instances context");
     let instance: RwSignal<Option<InstanceMeta>> = RwSignal::new(None);
@@ -104,6 +112,7 @@ pub fn PlayPage() -> impl IntoView {
                     instance_id: inst.id.clone(),
                     mc_version: inst.game_version.clone(),
                     mod_loader: inst.mod_loader.clone(),
+                    launch_mode,
                 },
             )
             .await
@@ -119,7 +128,7 @@ pub fn PlayPage() -> impl IntoView {
     view! {
         <Show when=move || instance.get().is_some()>
             {move || instance.get().map(|inst| view! {
-                <PlayContent instance=inst log_lines running process_started error />
+                <PlayContent instance=inst log_lines running process_started error launch_mode />
             })}
         </Show>
     }
@@ -132,6 +141,7 @@ fn PlayContent(
     running: RwSignal<bool>,
     process_started: RwSignal<bool>,
     error: RwSignal<Option<String>>,
+    launch_mode: LaunchMode,
 ) -> impl IntoView {
     let navigate = use_navigate();
     let inst_name = instance.name.clone();
@@ -183,7 +193,13 @@ fn PlayContent(
                 "← Back to Instance"
             </Button>
 
-            <h2 style="margin: 0 0 4px 0;">{inst_name}" — Offline Play"</h2>
+            <h2 style="margin: 0 0 4px 0;">
+                {inst_name}
+                {match launch_mode {
+                    LaunchMode::Online => " — Online Play",
+                    LaunchMode::Offline => " — Offline Play",
+                }}
+            </h2>
 
             <div class=status_row>
                 <Show

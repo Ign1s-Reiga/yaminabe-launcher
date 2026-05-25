@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use log::info;
 use tauri::{Emitter, State};
-use yaminabe_launcher_shared::datatypes::{InstanceMeta, ModLoader};
+use yaminabe_launcher_shared::datatypes::{InstanceMeta, LaunchMode, ModLoader};
 use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::ipc::LogLine;
 use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, AppState};
@@ -32,8 +32,12 @@ pub async fn launch_instance(
     // version_id is the source of truth) but is preserved in the IPC signature
     // for frontend compatibility. Prefix-underscore to silence the unused warning.
     _mod_loader: ModLoader,
+    // Optional so existing call sites that omit it keep working; None and
+    // Some(Online) are treated identically.
+    launch_mode: Option<LaunchMode>,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
+    let launch_mode = launch_mode.unwrap_or(LaunchMode::Online);
     let instance_location = {
         let install_dir = state.settings.lock().unwrap().instance_install_dir.clone();
         find_instance_dir(Path::new(&install_dir), &instance_id)?
@@ -55,8 +59,10 @@ pub async fn launch_instance(
     };
 
     // Clone the selected account out so the async refresh below doesn't hold
-    // the accounts mutex across an `.await`.
-    let mut auth_account: Option<MinecraftAccount> = {
+    // the accounts mutex across an `.await`. Skipped entirely in Offline mode.
+    let mut auth_account: Option<MinecraftAccount> = if launch_mode == LaunchMode::Offline {
+        None
+    } else {
         let store = state.accounts.lock().unwrap();
         store.selected.as_ref().and_then(|uuid| {
             store.accounts.iter().find(|a| &a.uuid == uuid).cloned()
@@ -118,6 +124,8 @@ pub async fn launch_instance(
             }
         }
         log!(format!("Signed in as {}.", account.username));
+    } else if launch_mode == LaunchMode::Offline {
+        log!("Offline mode selected — launching as OfflinePlayer.");
     } else {
         log!("No Microsoft account selected — launching as OfflinePlayer.");
     }
