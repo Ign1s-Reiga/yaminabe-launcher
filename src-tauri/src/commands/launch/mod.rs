@@ -11,7 +11,10 @@ use yaminabe_launcher_shared::datatypes::{InstanceMeta, LaunchMode, ModLoader};
 use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::ipc::LogLine;
 use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, AppState};
-use crate::commands::auth::{refresh_account_tokens, MinecraftAccount};
+use crate::commands::auth::{
+    hydrate_account, persist_account, refresh_account_tokens, MinecraftAccount,
+    MinecraftAccountRecord,
+};
 use crate::commands::instance::find_instance_dir;
 use crate::commands::java::download_java_runtime;
 use crate::install_task::version_manifest_path;
@@ -58,9 +61,10 @@ pub async fn launch_instance(
         (jre, ram, width, height)
     };
 
-    // Clone the selected account out so the async refresh below doesn't hold
-    // the accounts mutex across an `.await`. Skipped entirely in Offline mode.
-    let mut auth_account: Option<MinecraftAccount> = if launch_mode == LaunchMode::Offline {
+    // Clone the selected record out under the mutex; secrets are pulled from
+    // the OS keyring after the macros are defined so a missing entry can fail
+    // through `fail!` with a friendly message.
+    let auth_record: Option<MinecraftAccountRecord> = if launch_mode == LaunchMode::Offline {
         None
     } else {
         let store = state.accounts.lock().unwrap();
@@ -97,6 +101,21 @@ pub async fn launch_instance(
         }};
     }
 
+    // Hydrate the cloned record by reading its secret from the OS keyring.
+    // A missing keyring entry means the account was removed externally or
+    // the migration never ran — bail out asking the user to re-add it.
+    let mut auth_account: Option<MinecraftAccount> = match auth_record {
+        Some(record) => Some(match hydrate_account(&record) {
+            Ok(a) => a,
+            Err(e) => fail!(Error::Auth(format!(
+                "Stored credentials for {} are missing or unreadable ({e}). \
+                 Re-add the account from Settings → Accounts.",
+                record.username
+            ))),
+        }),
+        None => None,
+    };
+
     // Refresh the MC token if it's near expiry; 300 s headroom covers the
     // library/asset prefetch that follows.
     if let Some(account) = auth_account.as_mut() {
@@ -113,13 +132,11 @@ pub async fn launch_instance(
                     account.username
                 )));
             }
-            // Persist refreshed tokens; a failed save is non-fatal since
-            // `account` still holds valid tokens for this launch.
+            // Persist refreshed tokens to both the keyring secret and the
+            // records file; failure is non-fatal — `account` still holds
+            // valid tokens for this launch.
             let mut store = state.accounts.lock().unwrap();
-            if let Some(existing) = store.accounts.iter_mut().find(|a| a.uuid == account.uuid) {
-                *existing = account.clone();
-            }
-            if let Err(e) = store.save() {
+            if let Err(e) = persist_account(&mut store, account) {
                 log!(format!("warning: failed to persist refreshed tokens: {e}"));
             }
         }

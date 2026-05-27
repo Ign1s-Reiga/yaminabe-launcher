@@ -34,9 +34,15 @@ const MC_PROFILE_URL: &str = "https://api.minecraftservices.com/minecraft/profil
 const EVT_PROMPT: &str = "ms-login-prompt";
 const EVT_RESULT: &str = "ms-login-result";
 
-/// One persisted Microsoft / Minecraft account. The launch command refreshes
-/// `mc_access_token` via `ms_refresh_token` once `mc_expires_at` is reached.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Keyring service name used for every per-account credential. The credential
+/// "username" portion is the dash-stripped Minecraft UUID, so each account
+/// gets its own keyring entry.
+const KEYRING_SERVICE: &str = "yaminabe-launcher";
+
+/// In-memory composite an account is hydrated to whenever the auth code needs
+/// to actually mint or use tokens. Secrets live in the OS keyring; the
+/// non-secret fields live in `accounts.json` via `MinecraftAccountRecord`.
+#[derive(Debug, Clone)]
 pub struct MinecraftAccount {
     pub uuid: String,
     pub username: String,
@@ -44,9 +50,6 @@ pub struct MinecraftAccount {
     /// Epoch seconds (UTC) at which `mc_access_token` ceases to be valid.
     pub mc_expires_at: i64,
     pub ms_refresh_token: String,
-    /// XUID surfaced to the game as `${auth_xuid}`. Optional because the XSTS
-    /// `DisplayClaims.xui[0].xid` field is only populated for Xbox Live users.
-    #[serde(default)]
     pub xuid: String,
 }
 
@@ -64,13 +67,51 @@ impl MinecraftAccount {
     }
 }
 
-/// File-backed container for the accounts list plus the currently selected
+/// Non-secret portion of an account; this is what gets serialized to
+/// `accounts.json`. The two token fields move into the OS keyring under
+/// `service=KEYRING_SERVICE, user=<uuid>` as a small JSON payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MinecraftAccountRecord {
+    pub uuid: String,
+    pub username: String,
+    pub mc_expires_at: i64,
+    #[serde(default)]
+    pub xuid: String,
+}
+
+impl MinecraftAccountRecord {
+    fn from_account(account: &MinecraftAccount) -> Self {
+        Self {
+            uuid: account.uuid.clone(),
+            username: account.username.clone(),
+            mc_expires_at: account.mc_expires_at,
+            xuid: account.xuid.clone(),
+        }
+    }
+
+    pub(crate) fn summary(&self) -> AccountSummary {
+        AccountSummary {
+            uuid: format_uuid_dashed(&self.uuid),
+            username: self.username.clone(),
+        }
+    }
+}
+
+/// Secret payload written into the OS keyring as a single JSON blob.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MinecraftAccountSecret {
+    pub mc_access_token: String,
+    pub ms_refresh_token: String,
+}
+
+/// File-backed container for the records list plus the currently selected
 /// account. Wrapped in a `Mutex` on `AppState`; persisted as JSON.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountStore {
     #[serde(default)]
-    pub accounts: Vec<MinecraftAccount>,
+    pub accounts: Vec<MinecraftAccountRecord>,
     /// Stored as the dash-stripped UUID (same format as Mojang returns).
     #[serde(default)]
     pub selected: Option<String>,
@@ -83,18 +124,151 @@ impl AccountStore {
         Ok(())
     }
 
-    fn upsert(&mut self, account: MinecraftAccount) {
-        if let Some(existing) = self.accounts.iter_mut().find(|a| a.uuid == account.uuid) {
-            *existing = account;
+    fn upsert(&mut self, record: MinecraftAccountRecord) {
+        if let Some(existing) = self.accounts.iter_mut().find(|a| a.uuid == record.uuid) {
+            *existing = record;
         } else {
             // A new account becomes selected if nothing else is — first login
             // immediately becomes the launch identity.
             if self.selected.is_none() {
-                self.selected = Some(account.uuid.clone());
+                self.selected = Some(record.uuid.clone());
             }
-            self.accounts.push(account);
+            self.accounts.push(record);
         }
     }
+}
+
+/// Pre-keyring on-disk shape; only used during the one-shot migration that
+/// moves tokens out of `accounts.json` into the OS keyring.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyAccountStore {
+    #[serde(default)]
+    accounts: Vec<LegacyMinecraftAccount>,
+    #[serde(default)]
+    selected: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyMinecraftAccount {
+    uuid: String,
+    username: String,
+    #[serde(default)]
+    mc_access_token: String,
+    #[serde(default)]
+    mc_expires_at: i64,
+    #[serde(default)]
+    ms_refresh_token: String,
+    #[serde(default)]
+    xuid: String,
+}
+
+/// Read `accounts.json` and migrate any inline tokens to the keyring. Called
+/// once at startup by `lib.rs`. A missing or malformed file falls back to an
+/// empty store so a corrupted record doesn't block app launch.
+pub fn load_account_store() -> AccountStore {
+    let Ok(text) = std::fs::read_to_string(accounts_path()) else {
+        return AccountStore::default();
+    };
+    let legacy: LegacyAccountStore = match serde_json::from_str(&text) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("accounts.json is malformed ({e}); starting with empty account list");
+            return AccountStore::default();
+        }
+    };
+
+    let mut migrated_any = false;
+    let mut accounts = Vec::with_capacity(legacy.accounts.len());
+    for la in legacy.accounts {
+        if !la.mc_access_token.is_empty() || !la.ms_refresh_token.is_empty() {
+            let secret = MinecraftAccountSecret {
+                mc_access_token: la.mc_access_token,
+                ms_refresh_token: la.ms_refresh_token,
+            };
+            match write_secret(&la.uuid, &secret) {
+                Ok(()) => migrated_any = true,
+                Err(e) => warn!("failed to migrate tokens for {}: {e}", la.uuid),
+            }
+        }
+        accounts.push(MinecraftAccountRecord {
+            uuid: la.uuid,
+            username: la.username,
+            mc_expires_at: la.mc_expires_at,
+            xuid: la.xuid,
+        });
+    }
+    let store = AccountStore { accounts, selected: legacy.selected };
+    if migrated_any
+        && let Err(e) = store.save()
+    {
+        warn!("failed to rewrite accounts.json after token migration: {e}");
+    }
+    store
+}
+
+fn keyring_entry(uuid: &str) -> Result<keyring_core::Entry, Error> {
+    keyring_core::Entry::new(KEYRING_SERVICE, uuid)
+        .map_err(|e| Error::Auth(format!("keyring entry for {uuid}: {e}")))
+}
+
+fn read_secret(uuid: &str) -> Result<MinecraftAccountSecret, Error> {
+    let entry = keyring_entry(uuid)?;
+    let payload = entry.get_password().map_err(|e| match e {
+        keyring_core::Error::NoEntry => {
+            Error::NotExists(format!("stored credentials for account {uuid}"))
+        }
+        other => Error::Auth(format!("keyring read for {uuid}: {other}")),
+    })?;
+    serde_json::from_str(&payload).map_err(Error::ParseJson)
+}
+
+fn write_secret(uuid: &str, secret: &MinecraftAccountSecret) -> Result<(), Error> {
+    let entry = keyring_entry(uuid)?;
+    let payload = serde_json::to_string(secret)?;
+    entry
+        .set_password(&payload)
+        .map_err(|e| Error::Auth(format!("keyring write for {uuid}: {e}")))
+}
+
+fn delete_secret(uuid: &str) -> Result<(), Error> {
+    let entry = keyring_entry(uuid)?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        // Already gone — treat as success so a stale UI re-issue doesn't fail.
+        Err(keyring_core::Error::NoEntry) => Ok(()),
+        Err(e) => Err(Error::Auth(format!("keyring delete for {uuid}: {e}"))),
+    }
+}
+
+/// Compose a full `MinecraftAccount` by reading the secret payload for the
+/// record's UUID from the OS keyring.
+pub fn hydrate_account(record: &MinecraftAccountRecord) -> Result<MinecraftAccount, Error> {
+    let secret = read_secret(&record.uuid)?;
+    Ok(MinecraftAccount {
+        uuid: record.uuid.clone(),
+        username: record.username.clone(),
+        mc_access_token: secret.mc_access_token,
+        mc_expires_at: record.mc_expires_at,
+        ms_refresh_token: secret.ms_refresh_token,
+        xuid: record.xuid.clone(),
+    })
+}
+
+/// Write a fully-formed `MinecraftAccount` back to disk + keyring. The secret
+/// is written first so a failure leaves no orphaned record pointing at a
+/// missing keyring entry.
+pub fn persist_account(store: &mut AccountStore, account: &MinecraftAccount) -> Result<(), Error> {
+    write_secret(
+        &account.uuid,
+        &MinecraftAccountSecret {
+            mc_access_token: account.mc_access_token.clone(),
+            ms_refresh_token: account.ms_refresh_token.clone(),
+        },
+    )?;
+    store.upsert(MinecraftAccountRecord::from_account(account));
+    store.save()
 }
 
 fn now_epoch_seconds() -> i64 {
@@ -521,7 +695,7 @@ pub fn get_accounts(state: State<'_, AppState>) -> Vec<AccountSummary> {
         .unwrap()
         .accounts
         .iter()
-        .map(MinecraftAccount::summary)
+        .map(MinecraftAccountRecord::summary)
         .collect()
 }
 
@@ -556,11 +730,17 @@ pub fn set_selected_account(
 pub fn remove_account(uuid: String, state: State<'_, AppState>) -> Result<(), Error> {
     let mut store = state.accounts.lock().unwrap();
     let normalised = uuid.replace('-', "");
+    let had_record = store.accounts.iter().any(|a| a.uuid == normalised);
     store.accounts.retain(|a| a.uuid != normalised);
     if store.selected.as_deref() == Some(normalised.as_str()) {
         // Fall back to the first remaining account rather than `None` so a
         // user who deleted the selected entry still has a launch identity.
         store.selected = store.accounts.first().map(|a| a.uuid.clone());
+    }
+    if had_record
+        && let Err(e) = delete_secret(&normalised)
+    {
+        warn!("failed to delete keyring entry for {normalised}: {e}");
     }
     store.save()
 }
@@ -672,9 +852,10 @@ pub async fn start_microsoft_login(
 
     {
         let mut store = state.accounts.lock().unwrap();
-        store.upsert(account);
-        if let Err(e) = store.save() {
-            warn!("failed to persist accounts.json: {e}");
+        if let Err(e) = persist_account(&mut store, &account) {
+            warn!("failed to persist new account: {e}");
+            emit_result(&app, "error", e.to_string(), None);
+            return Err(e);
         }
     }
 

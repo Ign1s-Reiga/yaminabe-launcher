@@ -13,8 +13,8 @@ use yaminabe_launcher_shared::datatypes::{AppSettings, JavaInstall};
 use yaminabe_launcher_shared::error::InitializationError;
 use yaminabe_launcher_shared::ipc::InstallProgress;
 use crate::commands::auth::{
-    cancel_microsoft_login, get_accounts, get_selected_account, remove_account, set_selected_account,
-    start_microsoft_login, AccountStore,
+    cancel_microsoft_login, get_accounts, get_selected_account, load_account_store,
+    remove_account, set_selected_account, start_microsoft_login, AccountStore,
 };
 use crate::commands::modfile::{
     download_mods, get_modpack_files, install_curseforge_modpack,
@@ -113,6 +113,14 @@ pub fn run() {
         .setup(|app| {
             init_dirs(app)?;
 
+            // Register the OS-native credential store as the keyring default
+            // (DPAPI on Windows, Keychain on macOS, keyutils on Linux). A
+            // failure is non-fatal: account secrets simply won't persist and
+            // the login flow will surface a clear error next time it's used.
+            if let Err(e) = keyring::use_native_store(false) {
+                log::warn!("failed to register native keyring store: {e}");
+            }
+
             // Initialize and load AppSettings
             let settings_text = std::fs::read_to_string(settings_path())?;
             let mut settings: AppSettings = serde_json::from_str(&settings_text)?;
@@ -125,12 +133,9 @@ pub fn run() {
 
             let java_installs = detect_java_installs();
 
-            // Accounts file is optional; a malformed file falls back to empty
-            // so a corrupted store doesn't block app launch.
-            let accounts: AccountStore = std::fs::read_to_string(accounts_path())
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default();
+            // Loads the accounts list, migrating any pre-keyring token fields
+            // out of accounts.json into the OS keyring on the way through.
+            let accounts: AccountStore = load_account_store();
 
             app.manage(AppState {
                 settings: Mutex::new(settings),
