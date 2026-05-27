@@ -102,6 +102,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_log::Builder::new()
+            // Filter out Trace; the builder's default is LevelFilter::Trace,
+            // which surfaces every hyper/h2/reqwest trace call on stdout.
+            .level(log::LevelFilter::Debug)
             .target(tauri_plugin_log::Target::new(
                 tauri_plugin_log::TargetKind::Stdout,
             ))
