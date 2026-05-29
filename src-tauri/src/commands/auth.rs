@@ -52,7 +52,10 @@ pub struct MinecraftAccount {
     pub username: String,
     pub mc_access_token: String,
     /// Epoch seconds (UTC) at which `mc_access_token` ceases to be valid.
-    pub mc_expires_at: i64,
+    /// The MS refresh token is rotated by Microsoft on each refresh and has
+    /// its own (~90-day) lifetime tracked server-side, so we don't store an
+    /// expiry for it here.
+    pub expires_at: i64,
     pub ms_refresh_token: String,
     pub xuid: String,
 }
@@ -79,7 +82,8 @@ impl MinecraftAccount {
 pub struct MinecraftAccountRecord {
     pub uuid: String,
     pub username: String,
-    pub mc_expires_at: i64,
+    #[serde(alias = "mcExpiresAt")]
+    pub expires_at: i64,
     #[serde(default)]
     pub xuid: String,
 }
@@ -89,7 +93,7 @@ impl MinecraftAccountRecord {
         Self {
             uuid: account.uuid.clone(),
             username: account.username.clone(),
-            mc_expires_at: account.mc_expires_at,
+            expires_at: account.expires_at,
             xuid: account.xuid.clone(),
         }
     }
@@ -199,7 +203,7 @@ pub fn load_account_store() -> AccountStore {
         accounts.push(MinecraftAccountRecord {
             uuid: la.uuid,
             username: la.username,
-            mc_expires_at: la.mc_expires_at,
+            expires_at: la.mc_expires_at,
             xuid: la.xuid,
         });
     }
@@ -271,7 +275,7 @@ pub fn hydrate_account(record: &MinecraftAccountRecord) -> Result<MinecraftAccou
         uuid: record.uuid.clone(),
         username: record.username.clone(),
         mc_access_token: secret.mc_access_token,
-        mc_expires_at: record.mc_expires_at,
+        expires_at: record.expires_at,
         ms_refresh_token: secret.ms_refresh_token,
         xuid: record.xuid.clone(),
     })
@@ -702,7 +706,7 @@ pub async fn refresh_account_tokens(
     account.uuid = profile.id;
     account.username = profile.name;
     account.mc_access_token = mc.access_token;
-    account.mc_expires_at = now_epoch_seconds() + mc.expires_in as i64;
+    account.expires_at = now_epoch_seconds() + mc.expires_in as i64;
     account.ms_refresh_token = token.refresh_token;
     account.xuid = xuid;
     Ok(())
@@ -865,7 +869,7 @@ pub async fn start_microsoft_login(
         uuid: profile.id,
         username: profile.name,
         mc_access_token: mc.access_token,
-        mc_expires_at: now_epoch_seconds() + mc.expires_in as i64,
+        expires_at: now_epoch_seconds() + mc.expires_in as i64,
         ms_refresh_token: token.refresh_token,
         xuid,
     };

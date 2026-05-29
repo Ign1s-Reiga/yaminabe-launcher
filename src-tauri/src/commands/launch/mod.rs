@@ -123,7 +123,7 @@ pub async fn launch_instance(
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        if account.mc_access_token.is_empty() || account.mc_expires_at - now < 300 {
+        if account.mc_access_token.is_empty() || account.expires_at - now < 300 {
             log!(format!("Refreshing Microsoft credentials for {}...", account.username));
             if let Err(e) = refresh_account_tokens(&state.http_client, account).await {
                 fail!(Error::Auth(format!(
