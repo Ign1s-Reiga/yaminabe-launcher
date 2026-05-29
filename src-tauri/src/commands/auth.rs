@@ -165,7 +165,7 @@ struct LegacyMinecraftAccount {
     #[serde(default)]
     mc_access_token: String,
     #[serde(default)]
-    mc_expires_at: i64,
+    expires_at: i64,
     #[serde(default)]
     ms_refresh_token: String,
     #[serde(default)]
@@ -203,7 +203,7 @@ pub fn load_account_store() -> AccountStore {
         accounts.push(MinecraftAccountRecord {
             uuid: la.uuid,
             username: la.username,
-            expires_at: la.mc_expires_at,
+            expires_at: la.expires_at,
             xuid: la.xuid,
         });
     }
