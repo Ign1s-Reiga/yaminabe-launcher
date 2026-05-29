@@ -34,10 +34,14 @@ const MC_PROFILE_URL: &str = "https://api.minecraftservices.com/minecraft/profil
 const EVT_PROMPT: &str = "ms-login-prompt";
 const EVT_RESULT: &str = "ms-login-result";
 
-/// Keyring service name used for every per-account credential. The credential
-/// "username" portion is the dash-stripped Minecraft UUID, so each account
-/// gets its own keyring entry.
+/// Keyring service name used for every per-account credential. Each account
+/// has two entries under this service — `<uuid>:mc_access` and
+/// `<uuid>:ms_refresh` — because Windows DPAPI caps a single credential
+/// blob at 2560 UTF-16 chars, which a combined JSON of the two tokens
+/// frequently exceeds.
 const KEYRING_SERVICE: &str = "yaminabe-launcher";
+const MC_ACCESS_SUFFIX: &str = ":mc_access";
+const MS_REFRESH_SUFFIX: &str = ":ms_refresh";
 
 /// In-memory composite an account is hydrated to whenever the auth code needs
 /// to actually mint or use tokens. Secrets live in the OS keyring; the
@@ -208,38 +212,55 @@ pub fn load_account_store() -> AccountStore {
     store
 }
 
-fn keyring_entry(uuid: &str) -> Result<keyring_core::Entry, Error> {
-    keyring_core::Entry::new(KEYRING_SERVICE, uuid)
-        .map_err(|e| Error::Auth(format!("keyring entry for {uuid}: {e}")))
+fn keyring_entry(user: &str) -> Result<keyring_core::Entry, Error> {
+    keyring_core::Entry::new(KEYRING_SERVICE, user)
+        .map_err(|e| Error::Keyring(format!("entry for {user}: {e}")))
 }
 
-fn read_secret(uuid: &str) -> Result<MinecraftAccountSecret, Error> {
-    let entry = keyring_entry(uuid)?;
-    let payload = entry.get_password().map_err(|e| match e {
-        keyring_core::Error::NoEntry => {
-            Error::NotExists(format!("stored credentials for account {uuid}"))
-        }
-        other => Error::Auth(format!("keyring read for {uuid}: {other}")),
-    })?;
-    serde_json::from_str(&payload).map_err(Error::ParseJson)
+fn read_one(user: &str) -> Result<String, Error> {
+    let entry = keyring_entry(user)?;
+    entry.get_password().map_err(|e| match e {
+        keyring_core::Error::NoEntry => Error::NotExists(format!("stored credential '{user}'")),
+        other => Error::Keyring(format!("read for {user}: {other}")),
+    })
 }
 
-fn write_secret(uuid: &str, secret: &MinecraftAccountSecret) -> Result<(), Error> {
-    let entry = keyring_entry(uuid)?;
-    let payload = serde_json::to_string(secret)?;
+fn write_one(user: &str, value: &str) -> Result<(), Error> {
+    let entry = keyring_entry(user)?;
     entry
-        .set_password(&payload)
-        .map_err(|e| Error::Auth(format!("keyring write for {uuid}: {e}")))
+        .set_password(value)
+        .map_err(|e| Error::Keyring(format!("write for {user}: {e}")))
 }
 
-fn delete_secret(uuid: &str) -> Result<(), Error> {
-    let entry = keyring_entry(uuid)?;
+fn delete_one(user: &str) -> Result<(), Error> {
+    let entry = keyring_entry(user)?;
     match entry.delete_credential() {
         Ok(()) => Ok(()),
         // Already gone — treat as success so a stale UI re-issue doesn't fail.
         Err(keyring_core::Error::NoEntry) => Ok(()),
-        Err(e) => Err(Error::Auth(format!("keyring delete for {uuid}: {e}"))),
+        Err(e) => Err(Error::Keyring(format!("delete for {user}: {e}"))),
     }
+}
+
+fn read_secret(uuid: &str) -> Result<MinecraftAccountSecret, Error> {
+    let mc = read_one(&format!("{uuid}{MC_ACCESS_SUFFIX}"))?;
+    let ms = read_one(&format!("{uuid}{MS_REFRESH_SUFFIX}"))?;
+    Ok(MinecraftAccountSecret {
+        mc_access_token: mc,
+        ms_refresh_token: ms,
+    })
+}
+
+fn write_secret(uuid: &str, secret: &MinecraftAccountSecret) -> Result<(), Error> {
+    write_one(&format!("{uuid}{MC_ACCESS_SUFFIX}"), &secret.mc_access_token)?;
+    write_one(&format!("{uuid}{MS_REFRESH_SUFFIX}"), &secret.ms_refresh_token)?;
+    Ok(())
+}
+
+fn delete_secret(uuid: &str) -> Result<(), Error> {
+    delete_one(&format!("{uuid}{MC_ACCESS_SUFFIX}"))?;
+    delete_one(&format!("{uuid}{MS_REFRESH_SUFFIX}"))?;
+    Ok(())
 }
 
 /// Compose a full `MinecraftAccount` by reading the secret payload for the
@@ -850,21 +871,33 @@ pub async fn start_microsoft_login(
     };
     let summary = account.summary();
 
+    // Login is considered complete the moment the Minecraft profile fetch
+    // returns: upsert the record, save accounts.json, and emit the success
+    // event so the settings UI reflects the new account immediately. The
+    // keyring write below is allowed to fail without rolling back any of
+    // this — a missing keyring entry on next launch surfaces a clear
+    // "Re-add the account" message via `hydrate_account`.
     {
         let mut store = state.accounts.lock().unwrap();
-        if let Err(e) = persist_account(&mut store, &account) {
-            warn!("failed to persist new account: {e}");
-            emit_result(&app, "error", e.to_string(), None);
-            return Err(e);
+        store.upsert(MinecraftAccountRecord::from_account(&account));
+        if let Err(e) = store.save() {
+            warn!("failed to save accounts.json after login: {e}");
         }
     }
-
     emit_result(
         &app,
         "success",
         format!("Signed in as {}.", summary.username),
         Some(summary),
     );
+
+    let secret = MinecraftAccountSecret {
+        mc_access_token: account.mc_access_token,
+        ms_refresh_token: account.ms_refresh_token,
+    };
+    if let Err(e) = write_secret(&account.uuid, &secret) {
+        warn!("failed to write keyring secret for {}: {e}", account.uuid);
+    }
     Ok(())
 }
 

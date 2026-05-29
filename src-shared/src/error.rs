@@ -40,6 +40,11 @@ pub enum Error {
     /// Authentication-flow failure (Microsoft / Xbox Live / Minecraft services).
     #[error("Authentication failed: {0}")]
     Auth(String),
+    /// Failure interacting with the OS credential store (keyring backend).
+    /// Kept separate from `Auth` so a storage-layer problem doesn't get
+    /// mislabelled as an authentication error.
+    #[error("Credential storage failed: {0}")]
+    Keyring(String),
 }
 
 impl Serialize for Error {
