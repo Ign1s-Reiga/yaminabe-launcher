@@ -113,12 +113,12 @@ pub async fn download_java_runtime(
         return Ok(javaw_path);
     }
 
-    let all = fetch_json::<HashMap<String, HashMap<String, Vec<JavaRuntimeEntry>>>>(
+    let all = fetch_json(
         client,
         "https://piston-meta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json",
-        &[],
-        None
-    ).await?;
+    )
+    .send::<HashMap<String, HashMap<String, Vec<JavaRuntimeEntry>>>>()
+    .await?;
 
     let manifest_url = all
         .get("windows-x64")
@@ -127,12 +127,9 @@ pub async fn download_java_runtime(
         .map(|e| e.manifest.url.clone())
         .ok_or_else(|| Error::Invalid(format!("No Mojang JRE for component '{component}' on windows-x64")))?;
 
-    let manifest = fetch_json::<RuntimeManifest>(
-        client,
-        &manifest_url,
-        &[],
-        None
-    ).await?;
+    let manifest = fetch_json(client, &manifest_url)
+        .send::<RuntimeManifest>()
+        .await?;
 
     std::fs::create_dir_all(&runtime_dir)?;
 

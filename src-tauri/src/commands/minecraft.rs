@@ -84,7 +84,7 @@ pub async fn fetch_loader_versions(
         loaders: Vec<LoaderVersion>,
     }
     let url = format!("https://api.feed-the-beast.com/v1/modpacks/loaders/{mc_version}/{kind}");
-    Ok(fetch_json::<Response>(client, &url, &[], None).await?.loaders)
+    Ok(fetch_json(client, &url).send::<Response>().await?.loaders)
 }
 
 #[tauri::command]
