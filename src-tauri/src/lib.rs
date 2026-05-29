@@ -52,7 +52,7 @@ pub struct AppState {
     pub running_children: Mutex<HashMap<String, u32>>,
     /// Persisted Microsoft accounts plus the currently selected UUID. Backed
     /// by `accounts.json`.
-    pub accounts: Mutex<AccountStore>,
+    pub account_store: Mutex<AccountStore>,
     /// Cooperative cancel flag for an in-flight `start_microsoft_login` poll
     /// loop. `cancel_microsoft_login` flips it to `true` to abort cleanly.
     pub ms_login_cancel: Arc<AtomicBool>,
@@ -135,7 +135,7 @@ pub fn run() {
 
             // Loads the accounts list, migrating any pre-keyring token fields
             // out of accounts.json into the OS keyring on the way through.
-            let accounts: AccountStore = load_account_store();
+            let account_store: AccountStore = load_account_store();
 
             app.manage(AppState {
                 settings: Mutex::new(settings),
@@ -143,7 +143,7 @@ pub fn run() {
                 mc_versions: OnceLock::new(),
                 java_installs: Mutex::new(java_installs),
                 running_children: Mutex::new(HashMap::new()),
-                accounts: Mutex::new(accounts),
+                account_store: Mutex::new(account_store),
                 ms_login_cancel: Arc::new(AtomicBool::new(false)),
             });
 

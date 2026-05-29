@@ -23,12 +23,12 @@ struct CurseForgeArrayResponse<T>
 #[derive(Debug, Deserialize)]
 struct CurseForgePaginatedResponse<T> {
     data: Vec<T>,
-    pagination: CfPagination,
+    pagination: Pagination,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CfPagination {
+struct Pagination {
     total_count: u32,
 }
 
@@ -171,16 +171,15 @@ pub async fn get_modpack_files(
     http_client: &reqwest::Client,
     api_key: &str,
 ) -> Result<Vec<ModpackVersionFile>, Error> {
-    let body = fetch_json(
+    let mut entries = fetch_json(
         http_client,
-        &format!("https://api.curseforge.com/v1/mods/{mod_id}/files"),
+        &format!("https://api.curseforge.com/v1/mods/{mod_id}/files")
     )
-    .header("x-api-key", api_key)
-    .query(&[("pageSize", "50")])
-    .send::<CurseForgeArrayResponse<ModFilesEntry>>()
-    .await?;
-
-    let mut entries = body.data;
+        .header("x-api-key", api_key)
+        .query(&[("pageSize", "50")])
+        .send::<CurseForgeArrayResponse<ModFilesEntry>>().await?
+        .data;
+    
     entries.sort_by(|a, b| b.id.cmp(&a.id));
 
     let versions = entries.into_iter().filter_map(|f| {

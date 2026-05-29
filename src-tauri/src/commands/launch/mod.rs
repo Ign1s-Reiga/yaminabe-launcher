@@ -67,7 +67,7 @@ pub async fn launch_instance(
     let auth_record: Option<MinecraftAccountRecord> = if launch_mode == LaunchMode::Offline {
         None
     } else {
-        let store = state.accounts.lock().unwrap();
+        let store = state.account_store.lock().unwrap();
         store.selected.as_ref().and_then(|uuid| {
             store.accounts.iter().find(|a| &a.uuid == uuid).cloned()
         })
@@ -135,7 +135,7 @@ pub async fn launch_instance(
             // Persist refreshed tokens to both the keyring secret and the
             // records file; failure is non-fatal — `account` still holds
             // valid tokens for this launch.
-            let mut store = state.accounts.lock().unwrap();
+            let mut store = state.account_store.lock().unwrap();
             if let Err(e) = persist_account(&mut store, account) {
                 log!(format!("warning: failed to persist refreshed tokens: {e}"));
             }
