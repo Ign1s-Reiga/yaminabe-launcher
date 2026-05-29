@@ -313,9 +313,13 @@ pub async fn launch_instance(
         resolution_height: &res_height,
     };
 
-    log!(format!("Java: {java}"));
-    log!(format!("Main class: {}", manifest.main_class));
-    log!(format!("Game dir: {game_dir_str}"));
+    // Gated on debug builds so user-facing release logs don't leak the
+    // local Java path, instance directory, or main class.
+    if cfg!(debug_assertions) {
+        log!(format!("Java: {java}"));
+        log!(format!("Main class: {}", manifest.main_class));
+        log!(format!("Game dir: {game_dir_str}"));
+    }
 
     // Build the full argument list up front so we can log it verbatim before
     // spawning — useful for diagnosing crashes where Java exits before printing.
@@ -351,12 +355,15 @@ pub async fn launch_instance(
         }
     }
 
-    log!("Launch command:");
-    log!(format!("  {java}"));
-    // `{:?}` so hidden whitespace / control chars in the substituted strings
-    // surface as escapes (`\r`, `\u{a0}`, …) rather than rendering invisibly.
-    for a in &launch_args {
-        log!(format!("    {a:?}"));
+    // Gated to debug builds so the live MC bearer token can't reach a user's
+    // log viewer; `cmd.args` below still receives the real values. `{:?}`
+    // surfaces hidden whitespace / control chars in dev.
+    if cfg!(debug_assertions) {
+        log!("Launch command:");
+        log!(format!("  {java}"));
+        for arg in &launch_args {
+            log!(format!("    {arg:?}"));
+        }
     }
     log!("Starting process...");
 
