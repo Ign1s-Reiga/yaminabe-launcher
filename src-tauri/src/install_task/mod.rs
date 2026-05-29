@@ -82,7 +82,8 @@ async fn ensure_fabric_like(
     loader_version: &str,
     client: &reqwest::Client,
 ) -> Result<String, Error> {
-    let installer_url = fetch_json::<Vec<FabricLikeMetadata>>(client, meta_url, &[], None)
+    let installer_url = fetch_json(client, meta_url)
+        .send::<Vec<FabricLikeMetadata>>()
         .await?
         .into_iter().next()
         .ok_or_else(|| Error::Invalid(format!("No {label} installer metadata available")))?

@@ -4,12 +4,17 @@ mod classpath;
 mod manifest;
 
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use log::info;
 use tauri::{Emitter, State};
-use yaminabe_launcher_shared::datatypes::{InstanceMeta, ModLoader};
+use yaminabe_launcher_shared::datatypes::{InstanceMeta, LaunchMode, ModLoader};
 use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::ipc::LogLine;
 use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, AppState};
+use crate::commands::auth::{
+    hydrate_account, persist_account, refresh_account_tokens, MinecraftAccount,
+    MinecraftAccountRecord,
+};
 use crate::commands::instance::find_instance_dir;
 use crate::commands::java::download_java_runtime;
 use crate::install_task::version_manifest_path;
@@ -30,8 +35,12 @@ pub async fn launch_instance(
     // version_id is the source of truth) but is preserved in the IPC signature
     // for frontend compatibility. Prefix-underscore to silence the unused warning.
     _mod_loader: ModLoader,
+    // Optional so existing call sites that omit it keep working; None and
+    // Some(Online) are treated identically.
+    launch_mode: Option<LaunchMode>,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
+    let launch_mode = launch_mode.unwrap_or(LaunchMode::Online);
     let instance_location = {
         let install_dir = state.settings.lock().unwrap().instance_install_dir.clone();
         find_instance_dir(Path::new(&install_dir), &instance_id)?
@@ -51,6 +60,19 @@ pub async fn launch_instance(
         let height = instance_meta.as_ref().map(|m| if m.window_height > 0 { m.window_height } else { s.window_height }).unwrap_or(s.window_height);
         (jre, ram, width, height)
     };
+
+    // Clone the selected record out under the mutex; secrets are pulled from
+    // the OS keyring after the macros are defined so a missing entry can fail
+    // through `fail!` with a friendly message.
+    let auth_record: Option<MinecraftAccountRecord> = if launch_mode == LaunchMode::Offline {
+        None
+    } else {
+        let store = state.account_store.lock().unwrap();
+        store.selected.as_ref().and_then(|uuid| {
+            store.accounts.iter().find(|a| &a.uuid == uuid).cloned()
+        })
+    };
+
     for dir in [versions_dir(), libraries_dir()] {
         std::fs::create_dir_all(dir)?;
     }
@@ -77,6 +99,52 @@ pub async fn launch_instance(
             }).ok();
             return Err($e);
         }};
+    }
+
+    // Hydrate the cloned record by reading its secret from the OS keyring.
+    // A missing keyring entry means the account was removed externally or
+    // the migration never ran — bail out asking the user to re-add it.
+    let mut auth_account: Option<MinecraftAccount> = match auth_record {
+        Some(record) => Some(match hydrate_account(&record) {
+            Ok(a) => a,
+            Err(e) => fail!(Error::Auth(format!(
+                "Stored credentials for {} are missing or unreadable ({e}). \
+                 Re-add the account from Settings → Accounts.",
+                record.username
+            ))),
+        }),
+        None => None,
+    };
+
+    // Refresh the MC token if it's near expiry; 300 s headroom covers the
+    // library/asset prefetch that follows.
+    if let Some(account) = auth_account.as_mut() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if account.mc_access_token.is_empty() || account.expires_at - now < 300 {
+            log!(format!("Refreshing Microsoft credentials for {}...", account.username));
+            if let Err(e) = refresh_account_tokens(&state.http_client, account).await {
+                fail!(Error::Auth(format!(
+                    "Could not refresh credentials for {}: {e}. \
+                     Re-add the account from Settings → Accounts.",
+                    account.username
+                )));
+            }
+            // Persist refreshed tokens to both the keyring secret and the
+            // records file; failure is non-fatal — `account` still holds
+            // valid tokens for this launch.
+            let mut store = state.account_store.lock().unwrap();
+            if let Err(e) = persist_account(&mut store, account) {
+                log!(format!("warning: failed to persist refreshed tokens: {e}"));
+            }
+        }
+        log!(format!("Signed in as {}.", account.username));
+    } else if launch_mode == LaunchMode::Offline {
+        log!("Offline mode selected — launching as OfflinePlayer.");
+    } else {
+        log!("No Microsoft account selected — launching as OfflinePlayer.");
     }
 
     log!("Resolving version JSON...");
@@ -203,6 +271,25 @@ pub async fn launch_instance(
     let libraries_dir_str = libraries_dir().to_string_lossy().into_owned();
     let classpath_separator = if cfg!(windows) { ";" } else { ":" };
 
+    // When an account is selected its tokens replace the offline defaults so
+    // ${auth_*} args expand into real credentials.
+    let (auth_player_name, auth_uuid_str, auth_access_token, auth_xuid_str, user_type) = match &auth_account {
+        Some(a) => (
+            a.username.clone(),
+            a.uuid_dashed(),
+            a.mc_access_token.clone(),
+            if a.xuid.is_empty() { "0".to_string() } else { a.xuid.clone() },
+            "msa",
+        ),
+        None => (
+            "OfflinePlayer".to_string(),
+            "00000000-0000-0000-0000-000000000000".to_string(),
+            "0".to_string(),
+            "0".to_string(),
+            "offline",
+        ),
+    };
+
     let vars = LaunchVars {
         natives_directory: &natives_str,
         classpath: &classpath,
@@ -210,25 +297,29 @@ pub async fn launch_instance(
         library_directory: &libraries_dir_str,
         launcher_name: "yaminabe",
         launcher_version: "0.1.0",
-        auth_player_name: "OfflinePlayer",
+        auth_player_name: &auth_player_name,
         version_name: &mc_version,
         game_directory: &game_dir_str,
         assets_root: &assets_dir,
         assets_index_name: &asset_index_name,
-        auth_uuid: "00000000-0000-0000-0000-000000000000",
-        auth_access_token: "0",
-        user_type: "offline",
+        auth_uuid: &auth_uuid_str,
+        auth_access_token: &auth_access_token,
+        user_type,
         user_properties: "{}",
         version_type: "release",
         clientid: "0",
-        auth_xuid: "0",
+        auth_xuid: &auth_xuid_str,
         resolution_width: &res_width,
         resolution_height: &res_height,
     };
 
-    log!(format!("Java: {java}"));
-    log!(format!("Main class: {}", manifest.main_class));
-    log!(format!("Game dir: {game_dir_str}"));
+    // Gated on debug builds so user-facing release logs don't leak the
+    // local Java path, instance directory, or main class.
+    if cfg!(debug_assertions) {
+        log!(format!("Java: {java}"));
+        log!(format!("Main class: {}", manifest.main_class));
+        log!(format!("Game dir: {game_dir_str}"));
+    }
 
     // Build the full argument list up front so we can log it verbatim before
     // spawning — useful for diagnosing crashes where Java exits before printing.
@@ -264,12 +355,15 @@ pub async fn launch_instance(
         }
     }
 
-    log!("Launch command:");
-    log!(format!("  {java}"));
-    // `{:?}` so hidden whitespace / control chars in the substituted strings
-    // surface as escapes (`\r`, `\u{a0}`, …) rather than rendering invisibly.
-    for a in &launch_args {
-        log!(format!("    {a:?}"));
+    // Gated to debug builds so the live MC bearer token can't reach a user's
+    // log viewer; `cmd.args` below still receives the real values. `{:?}`
+    // surfaces hidden whitespace / control chars in dev.
+    if cfg!(debug_assertions) {
+        log!("Launch command:");
+        log!(format!("  {java}"));
+        for arg in &launch_args {
+            log!(format!("    {arg:?}"));
+        }
     }
     log!("Starting process...");
 

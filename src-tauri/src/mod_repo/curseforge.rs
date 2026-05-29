@@ -23,12 +23,12 @@ struct CurseForgeArrayResponse<T>
 #[derive(Debug, Deserialize)]
 struct CurseForgePaginatedResponse<T> {
     data: Vec<T>,
-    pagination: CfPagination,
+    pagination: Pagination,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CfPagination {
+struct Pagination {
     total_count: u32,
 }
 
@@ -122,10 +122,9 @@ pub async fn search_modpacks(
 
     let index_str = index.to_string();
 
-    let body = fetch_json::<CurseForgePaginatedResponse<SearchModsEntry>>(
-        http_client,
-        "https://api.curseforge.com/v1/mods/search",
-        &[
+    let body = fetch_json(http_client, "https://api.curseforge.com/v1/mods/search")
+        .header("x-api-key", api_key)
+        .query(&[
             ("gameId", "432"),
             ("classId", "4471"),
             ("searchFilter", query),
@@ -133,9 +132,9 @@ pub async fn search_modpacks(
             ("pageSize", "50"),
             ("sortOrder", "desc"),
             ("index", index_str.as_str()),
-        ],
-        Some(api_key.to_string()),
-    ).await?;
+        ])
+        .send::<CurseForgePaginatedResponse<SearchModsEntry>>()
+        .await?;
 
     let total = body.pagination.total_count;
     let items: Vec<ModpackInfo> = body.data.into_iter().map(|m| {
@@ -172,14 +171,15 @@ pub async fn get_modpack_files(
     http_client: &reqwest::Client,
     api_key: &str,
 ) -> Result<Vec<ModpackVersionFile>, Error> {
-    let body = fetch_json::<CurseForgeArrayResponse<ModFilesEntry>>(
+    let mut entries = fetch_json(
         http_client,
-        &format!("https://api.curseforge.com/v1/mods/{mod_id}/files"),
-        &[("pageSize", "50")],
-        Some(api_key.to_string()),
-    ).await?;
-
-    let mut entries = body.data;
+        &format!("https://api.curseforge.com/v1/mods/{mod_id}/files")
+    )
+        .header("x-api-key", api_key)
+        .query(&[("pageSize", "50")])
+        .send::<CurseForgeArrayResponse<ModFilesEntry>>().await?
+        .data;
+    
     entries.sort_by(|a, b| b.id.cmp(&a.id));
 
     let versions = entries.into_iter().filter_map(|f| {

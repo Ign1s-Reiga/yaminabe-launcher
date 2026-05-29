@@ -1,30 +1,124 @@
-use reqwest::Client;
+use reqwest::header::{HeaderName, HeaderValue, CONTENT_TYPE};
+use reqwest::{Client, Method};
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use sha1::{Digest, Sha1};
 use std::path::PathBuf;
 use yaminabe_launcher_shared::error::Error;
 
-pub async fn fetch_json<T>(
-    client: &Client,
-    url: &str,
-    query: &[(&str, &str)],
-    curseforge_api_key: Option<String>,
-) -> Result<T, Error>
-where
-    T: DeserializeOwned
-{
-    let mut req = client.get(url);
-    if let Some(key) = curseforge_api_key {
-        req = req.header("x-api-key", key);
+/// Entry point for the JSON-fetching builder. Default method is GET; chain
+/// `.method(...)` / `.payload(...)` / `.query(...)` / `.header(...)` before
+/// `.send().await` to customise. The shared `reqwest::Client` is positional
+/// because every call site already has one (`state.http_client`); making it
+/// the first argument keeps the "I have a client, fetch this URL" mental
+/// model honest and avoids a runtime check for an unset client in `send()`.
+pub fn fetch_json(client: &Client, url: &str) -> FetchJsonBuilder {
+    FetchJsonBuilder {
+        client: client.clone(),
+        url: url.to_string(),
+        method: Method::GET,
+        payload: None,
+        form: None,
+        query: Vec::new(),
+        headers: Vec::new(),
     }
-    if !query.is_empty() {
-        req = req.query(query);
+}
+
+/// Fluent builder for a single JSON-decoded HTTP request. Methods like
+/// `.payload()` defer serialization until `.send()` so a Serialize failure
+/// surfaces as the Result of `.send()` instead of breaking the chain.
+pub struct FetchJsonBuilder {
+    client: Client,
+    url: String,
+    method: Method,
+    payload: Option<Result<Vec<u8>, Error>>,
+    form: Option<Vec<(String, String)>>,
+    query: Vec<(String, String)>,
+    headers: Vec<(String, String)>,
+}
+
+impl FetchJsonBuilder {
+    /// Override the HTTP method. Default is `Method::GET`.
+    pub fn method(mut self, method: Method) -> Self {
+        self.method = method;
+        self
     }
-    let resp = req.send().await?;
-    if !resp.status().is_success() {
-        return Err(Error::HttpRequestRejected(resp.status().as_u16(), url.to_string()));
+
+    /// Serialize `data` to JSON and attach it as the request body. If the
+    /// type's `Serialize` impl fails, the error is propagated when `.send()`
+    /// is called rather than panicking here. Clears any previously-set form.
+    pub fn payload<T: Serialize>(mut self, data: T) -> Self {
+        self.payload = Some(serde_json::to_vec(&data).map_err(Error::ParseJson));
+        self.form = None;
+        self
     }
-    Ok(resp.json::<T>().await.map_err(Error::InvalidResponse)?)
+
+    /// Attach an application/x-www-form-urlencoded body built from the given
+    /// key/value pairs. Clears any previously-set JSON payload.
+    pub fn form(mut self, params: &[(&str, &str)]) -> Self {
+        let owned = params
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        self.form = Some(owned);
+        self.payload = None;
+        self
+    }
+
+    /// Append query-string parameters. Call repeatedly to combine multiple
+    /// sources; pairs are passed through to `RequestBuilder::query`.
+    pub fn query(mut self, params: &[(&str, &str)]) -> Self {
+        for (k, v) in params {
+            self.query.push(((*k).to_string(), (*v).to_string()));
+        }
+        self
+    }
+
+    /// Add a single request header. Invalid names or values surface as an
+    /// error on `.send()`.
+    pub fn header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_string(), value.to_string()));
+        self
+    }
+
+    /// Build the request via `client.request(method, url)`, send it, and
+    /// decode the response body as JSON. The fact that we construct the
+    /// `RequestBuilder` here — not at chain time — is what lets `.method(...)`
+    /// actually change the verb (reqwest's `RequestBuilder` doesn't let you
+    /// mutate its method after creation).
+    pub async fn send<T: DeserializeOwned>(self) -> Result<T, Error> {
+        let mut req = self.client.request(self.method, &self.url);
+
+        if !self.query.is_empty() {
+            // Borrow as &[(&str, &str)] for the reqwest API.
+            let q: Vec<(&str, &str)> = self.query.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            req = req.query(&q);
+        }
+
+        for (name, value) in &self.headers {
+            let header_name = HeaderName::from_bytes(name.as_bytes())
+                .map_err(|e| Error::Invalid(format!("invalid header name '{name}': {e}")))?;
+            let header_value = HeaderValue::from_str(value)
+                .map_err(|e| Error::Invalid(format!("invalid header value for '{name}': {e}")))?;
+            req = req.header(header_name, header_value);
+        }
+
+        if let Some(form) = self.form {
+            req = req.form(&form);
+        } else if let Some(payload_result) = self.payload {
+            let bytes = payload_result?;
+            req = req.header(CONTENT_TYPE, "application/json").body(bytes);
+        }
+
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            return Err(Error::HttpRequestRejected(
+                resp.status().as_u16(),
+                self.url,
+            ));
+        }
+        resp.json::<T>().await.map_err(Error::InvalidResponse)
+    }
 }
 
 pub async fn download_resource(

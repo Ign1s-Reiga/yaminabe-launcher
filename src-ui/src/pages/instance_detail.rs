@@ -10,7 +10,7 @@ use leptos::{component, view, IntoView};
 use leptos_router::hooks::{use_navigate, use_params};
 use leptos_router::params::Params;
 use serde::Serialize;
-use yaminabe_launcher_shared::datatypes::{InstanceMeta, JavaInstall};
+use yaminabe_launcher_shared::datatypes::{InstanceMeta, JavaInstall, LaunchMode};
 
 #[derive(Params, PartialEq, Clone)]
 struct InstanceParams {
@@ -68,6 +68,8 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     let instance_id_play = instance_id.clone();
     let instance_id_save: RwSignal<String> = RwSignal::new(instance_id.clone());
     let instance_id_open = instance_id.clone();
+    let dropdown_open: RwSignal<bool> = RwSignal::new(false);
+    let launch_mode: RwSignal<LaunchMode> = RwSignal::new(LaunchMode::Online);
     let jre_path: RwSignal<String> = RwSignal::new(instance.jre_path.clone());
 
     let java_installs = LocalResource::new(|| async move {
@@ -131,15 +133,18 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
         <div class=header_strip style=header_bg></div>
         <InstanceDetailHeader instance_name=instance_name meta_text=meta_text>
             <OpenInFileManager instance_id=instance_id_open />
-            <Button
-                variant=ButtonVariant::Primary
-                size=ButtonSize::Big
-                on:click=move |_| {
-                    navigate_play(&format!("/library/{}/play", instance_id_play), Default::default());
-                }
-            >
-                "▶  Play Instance"
-            </Button>
+            <SplitPlayButton
+                dropdown_open=dropdown_open
+                launch_mode=launch_mode
+                on_play=Callback::new(move |_| {
+                    dropdown_open.set(false);
+                    let mode = launch_mode.get_untracked();
+                    navigate_play(
+                        &format!("/library/{}/play?mode={}", instance_id_play, mode.as_str()),
+                        Default::default(),
+                    );
+                })
+            />
         </InstanceDetailHeader>
 
         <TabBar
@@ -253,6 +258,150 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
                 </SettingsSection>
             </form>
         </Show>
+    }
+}
+
+/// Split Play button: the main half launches with the currently-selected mode
+/// (default Online); the caret half opens a dropdown that lets the user pick
+/// Online or Offline. A full-viewport transparent backdrop captures clicks
+/// outside the dropdown to close it.
+#[component]
+fn SplitPlayButton(
+    dropdown_open: RwSignal<bool>,
+    launch_mode: RwSignal<LaunchMode>,
+    on_play: Callback<leptos::web_sys::MouseEvent>,
+) -> impl IntoView {
+    let wrapper = css! {
+        position: relative;
+        display: inline-flex;
+        z-index: 50;
+    };
+    // Backdrop sits below the dropdown but above everything else inside the
+    // button's stacking context; any mousedown anywhere closes the menu.
+    let backdrop = css! {
+        position: fixed;
+        inset: 0;
+        background-color: transparent;
+        z-index: 1;
+    };
+    let dropdown = css! {
+        position: absolute;
+        top: 100%;
+        margin-top: 6px;
+        right: 0;
+        min-width: 220px;
+        background-color: var(--background-color);
+        border: 1px solid var(--secondary-color);
+        border-radius: 8px;
+        padding: 4px;
+        z-index: 2;
+        box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
+    };
+    let dropdown_item = css! {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        width: 100%;
+        text-align: left;
+        padding: 8px 10px;
+        background: transparent;
+        border: none;
+        color: var(--text-color);
+        font-size: 0.88rem;
+        font-family: inherit;
+        cursor: pointer;
+        border-radius: 6px;
+        box-sizing: border-box;
+        &:hover { background-color: var(--secondary-color); }
+    };
+    let item_check = css! {
+        width: 14px;
+        flex-shrink: 0;
+        color: #3a9e5f;
+        font-weight: 700;
+        text-align: center;
+        padding-top: 1px;
+    };
+    let item_body = css! {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    };
+    let item_label = css! {
+        font-weight: 600;
+    };
+    let item_hint = css! {
+        font-size: 0.72rem;
+        opacity: 0.55;
+    };
+
+    let on_pick_online = Callback::new(move |_| {
+        launch_mode.set(LaunchMode::Online);
+        dropdown_open.set(false);
+    });
+    let on_pick_offline = Callback::new(move |_| {
+        launch_mode.set(LaunchMode::Offline);
+        dropdown_open.set(false);
+    });
+
+    view! {
+        <div class=wrapper>
+            <Button
+                variant=ButtonVariant::Primary
+                size=ButtonSize::Big
+                style="border-top-right-radius: 0; border-bottom-right-radius: 0;"
+                on_click=on_play
+            >
+                {move || match launch_mode.get() {
+                    LaunchMode::Online => "▶  Play Online",
+                    LaunchMode::Offline => "▶  Play Offline",
+                }}
+            </Button>
+            <Button
+                variant=ButtonVariant::Primary
+                size=ButtonSize::Big
+                style="border-top-left-radius: 0; border-bottom-left-radius: 0; \
+                       padding-left: 10px; padding-right: 10px; \
+                       border-left: 1px solid rgb(255 255 255 / 0.22);"
+                on_click=Callback::new(move |_| dropdown_open.update(|o| *o = !*o))
+            >
+                "▾"
+            </Button>
+            <Show when=move || dropdown_open.get() fallback=|| ()>
+                <div
+                    class=backdrop
+                    on:mousedown=move |_| dropdown_open.set(false)
+                />
+                <div class=dropdown>
+                    <button
+                        type="button"
+                        class=dropdown_item
+                        on:click=move |ev| on_pick_online.run(ev)
+                    >
+                        <span class=item_check>
+                            {move || if launch_mode.get() == LaunchMode::Online { "✓" } else { "" }}
+                        </span>
+                        <span class=item_body>
+                            <span class=item_label>"Online"</span>
+                            <span class=item_hint>"Use the selected Microsoft account."</span>
+                        </span>
+                    </button>
+                    <button
+                        type="button"
+                        class=dropdown_item
+                        on:click=move |ev| on_pick_offline.run(ev)
+                    >
+                        <span class=item_check>
+                            {move || if launch_mode.get() == LaunchMode::Offline { "✓" } else { "" }}
+                        </span>
+                        <span class=item_body>
+                            <span class=item_label>"Offline"</span>
+                            <span class=item_hint>"Skip Microsoft sign-in for this launch."</span>
+                        </span>
+                    </button>
+                </div>
+            </Show>
+        </div>
     }
 }
 

@@ -203,6 +203,42 @@ pub struct GameVersion {
     pub release_type: ReleaseType,
 }
 
+/// Minimal view of a saved Microsoft account that is safe to ship to the
+/// frontend — no tokens, just the public profile identifiers the UI needs to
+/// render the account list and select an active player.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSummary {
+    pub uuid: String,
+    pub username: String,
+}
+
+/// Launch authentication mode chosen from the split Play button. `Online`
+/// uses the currently-selected Microsoft account (falling back to offline if
+/// none); `Offline` ignores the selected account entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LaunchMode {
+    Online,
+    Offline,
+}
+
+impl LaunchMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LaunchMode::Online => "online",
+            LaunchMode::Offline => "offline",
+        }
+    }
+
+    pub fn from_query(value: Option<&str>) -> Self {
+        match value {
+            Some("offline") => LaunchMode::Offline,
+            _ => LaunchMode::Online,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoaderVersion {
