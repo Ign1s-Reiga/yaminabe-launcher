@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use log::warn;
 use qrcode::render::svg;
 use qrcode::QrCode;
-use reqwest::Client;
+use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::time::sleep;
@@ -12,6 +12,7 @@ use yaminabe_launcher_shared::datatypes::AccountSummary;
 use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::ipc::{MsLoginPrompt, MsLoginResult};
 
+use crate::http_utils::fetch_json;
 use crate::{accounts_path, AppState};
 
 /// Build-time Azure Application (client) ID for the OAuth 2.0 device-code
@@ -412,21 +413,12 @@ struct McProfile {
 }
 
 async fn request_device_code(client: &Client, client_id: &str) -> Result<DeviceCodeResponse, Error> {
-    let resp = client
-        .post(DEVICE_CODE_URL)
+    fetch_json(client, DEVICE_CODE_URL)
+        .method(Method::POST)
         .form(&[("client_id", client_id), ("scope", SCOPE)])
-        .send()
-        .await?;
-    if !resp.status().is_success() {
-        let status = resp.status().as_u16();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(Error::Auth(format!(
-            "device code request rejected ({status}): {body}"
-        )));
-    }
-    resp.json::<DeviceCodeResponse>()
+        .send::<DeviceCodeResponse>()
         .await
-        .map_err(Error::InvalidResponse)
+        .map_err(|e| Error::Auth(format!("device code request: {e}")))
 }
 
 /// Poll the token endpoint. `Ok(Some)` is a real grant, `Ok(None)` means MS
@@ -545,22 +537,13 @@ async fn xbl_authenticate(client: &Client, ms_access_token: &str) -> Result<Xbox
         relying_party: "http://auth.xboxlive.com",
         token_type: "JWT",
     };
-    let resp = client
-        .post(XBL_AUTH_URL)
+    fetch_json(client, XBL_AUTH_URL)
+        .method(Method::POST)
         .header("Accept", "application/json")
-        .json(&body)
-        .send()
-        .await?;
-    if !resp.status().is_success() {
-        let status = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(Error::Auth(format!(
-            "Xbox Live authentication rejected ({status}): {text}"
-        )));
-    }
-    resp.json::<XboxAuthResponse>()
+        .payload(&body)
+        .send::<XboxAuthResponse>()
         .await
-        .map_err(Error::InvalidResponse)
+        .map_err(|e| Error::Auth(format!("Xbox Live authentication: {e}")))
 }
 
 async fn xsts_authorize(client: &Client, xbl_token: &str) -> Result<XboxAuthResponse, Error> {
@@ -622,23 +605,14 @@ async fn mc_login_with_xbox(
         #[serde(rename = "identityToken")]
         identity_token: String,
     }
-    let resp = client
-        .post(MC_LOGIN_URL)
-        .json(&Body {
+    fetch_json(client, MC_LOGIN_URL)
+        .method(Method::POST)
+        .payload(&Body {
             identity_token: format!("XBL3.0 x={user_hash};{xsts_token}"),
         })
-        .send()
-        .await?;
-    if !resp.status().is_success() {
-        let status = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(Error::Auth(format!(
-            "Minecraft services rejected the Xbox token ({status}): {text}"
-        )));
-    }
-    resp.json::<McLoginResponse>()
+        .send::<McLoginResponse>()
         .await
-        .map_err(Error::InvalidResponse)
+        .map_err(|e| Error::Auth(format!("Minecraft services rejected the Xbox token: {e}")))
 }
 
 async fn mc_fetch_profile(client: &Client, mc_access_token: &str) -> Result<McProfile, Error> {
@@ -727,7 +701,7 @@ pub async fn refresh_account_tokens(
 #[tauri::command]
 pub fn get_accounts(state: State<'_, AppState>) -> Vec<AccountSummary> {
     state
-        .accounts
+        .account_store
         .lock()
         .unwrap()
         .accounts
@@ -739,7 +713,7 @@ pub fn get_accounts(state: State<'_, AppState>) -> Vec<AccountSummary> {
 #[tauri::command]
 pub fn get_selected_account(state: State<'_, AppState>) -> Option<String> {
     state
-        .accounts
+        .account_store
         .lock()
         .unwrap()
         .selected
@@ -752,7 +726,7 @@ pub fn set_selected_account(
     uuid: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
-    let mut store = state.accounts.lock().unwrap();
+    let mut store = state.account_store.lock().unwrap();
     let normalised = uuid.map(|u| u.replace('-', ""));
     if let Some(target) = &normalised
         && !store.accounts.iter().any(|a| &a.uuid == target)
@@ -765,7 +739,7 @@ pub fn set_selected_account(
 
 #[tauri::command]
 pub fn remove_account(uuid: String, state: State<'_, AppState>) -> Result<(), Error> {
-    let mut store = state.accounts.lock().unwrap();
+    let mut store = state.account_store.lock().unwrap();
     let normalised = uuid.replace('-', "");
     let had_record = store.accounts.iter().any(|a| a.uuid == normalised);
     store.accounts.retain(|a| a.uuid != normalised);
@@ -894,7 +868,7 @@ pub async fn start_microsoft_login(
     // this — a missing keyring entry on next launch surfaces a clear
     // "Re-add the account" message via `hydrate_account`.
     {
-        let mut store = state.accounts.lock().unwrap();
+        let mut store = state.account_store.lock().unwrap();
         store.upsert(MinecraftAccountRecord::from_account(&account));
         if let Err(e) = store.save() {
             warn!("failed to save accounts.json after login: {e}");

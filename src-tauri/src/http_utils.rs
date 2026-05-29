@@ -18,6 +18,7 @@ pub fn fetch_json(client: &Client, url: &str) -> FetchJsonBuilder {
         url: url.to_string(),
         method: Method::GET,
         payload: None,
+        form: None,
         query: Vec::new(),
         headers: Vec::new(),
     }
@@ -30,11 +31,8 @@ pub struct FetchJsonBuilder {
     client: Client,
     url: String,
     method: Method,
-    /// `Ok(bytes)` once `.payload()` has been called and serialization
-    /// succeeded; `Err(e)` if serialization failed; `None` if no payload was
-    /// supplied. The Result-shape is held here so the chain itself stays
-    /// non-fallible and `.send()` is the single failure point.
     payload: Option<Result<Vec<u8>, Error>>,
+    form: Option<Vec<(String, String)>>,
     query: Vec<(String, String)>,
     headers: Vec<(String, String)>,
 }
@@ -48,9 +46,22 @@ impl FetchJsonBuilder {
 
     /// Serialize `data` to JSON and attach it as the request body. If the
     /// type's `Serialize` impl fails, the error is propagated when `.send()`
-    /// is called rather than panicking here.
+    /// is called rather than panicking here. Clears any previously-set form.
     pub fn payload<T: Serialize>(mut self, data: T) -> Self {
         self.payload = Some(serde_json::to_vec(&data).map_err(Error::ParseJson));
+        self.form = None;
+        self
+    }
+
+    /// Attach an application/x-www-form-urlencoded body built from the given
+    /// key/value pairs. Clears any previously-set JSON payload.
+    pub fn form(mut self, params: &[(&str, &str)]) -> Self {
+        let owned = params
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        self.form = Some(owned);
+        self.payload = None;
         self
     }
 
@@ -92,7 +103,9 @@ impl FetchJsonBuilder {
             req = req.header(header_name, header_value);
         }
 
-        if let Some(payload_result) = self.payload {
+        if let Some(form) = self.form {
+            req = req.form(&form);
+        } else if let Some(payload_result) = self.payload {
             let bytes = payload_result?;
             req = req.header(CONTENT_TYPE, "application/json").body(bytes);
         }
