@@ -861,12 +861,19 @@ pub async fn start_microsoft_login(
     };
     let summary = account.summary();
 
-    // Login is considered complete the moment the Minecraft profile fetch
-    // returns: upsert the record, save accounts.json, and emit the success
-    // event so the settings UI reflects the new account immediately. The
-    // keyring write below is allowed to fail without rolling back any of
-    // this — a missing keyring entry on next launch surfaces a clear
-    // "Re-add the account" message via `hydrate_account`.
+    // Keyring write must succeed before login is reported as successful:
+    // otherwise the user sees a selectable account whose next launch fails
+    // in `hydrate_account` because no tokens are persisted.
+    let secret = MinecraftAccountSecret {
+        mc_access_token: account.mc_access_token.clone(),
+        ms_refresh_token: account.ms_refresh_token.clone(),
+    };
+    if let Err(e) = write_secret(&account.uuid, &secret) {
+        warn!("keyring write failed for {}: {e}", account.uuid);
+        emit_result(&app, "error", e.to_string(), None);
+        return Err(e);
+    }
+
     {
         let mut store = state.account_store.lock().unwrap();
         store.upsert(MinecraftAccountRecord::from_account(&account));
@@ -880,20 +887,22 @@ pub async fn start_microsoft_login(
         format!("Signed in as {}.", summary.username),
         Some(summary),
     );
-
-    let secret = MinecraftAccountSecret {
-        mc_access_token: account.mc_access_token,
-        ms_refresh_token: account.ms_refresh_token,
-    };
-    if let Err(e) = write_secret(&account.uuid, &secret) {
-        warn!("failed to write keyring secret for {}: {e}", account.uuid);
-    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Once;
+
+    static MOCK_STORE_INIT: Once = Once::new();
+
+    fn init_test_keyring() {
+        MOCK_STORE_INIT.call_once(|| {
+            let store = keyring_core::mock::Store::new().expect("mock keyring store");
+            keyring_core::set_default_store(store);
+        });
+    }
 
     #[test]
     fn dashes_undashed_uuid() {
@@ -907,5 +916,84 @@ mod tests {
     fn passes_through_already_dashed() {
         let already = "12345678-abcd-1234-abcd-1234567890ab";
         assert_eq!(format_uuid_dashed(already), already);
+    }
+
+    #[test]
+    fn secret_round_trip() {
+        init_test_keyring();
+        let uuid = "round-trip-uuid";
+        let secret = MinecraftAccountSecret {
+            mc_access_token: "access-token-value".into(),
+            ms_refresh_token: "refresh-token-value".into(),
+        };
+        write_secret(uuid, &secret).expect("write_secret");
+        let got = read_secret(uuid).expect("read_secret");
+        assert_eq!(got.mc_access_token, "access-token-value");
+        assert_eq!(got.ms_refresh_token, "refresh-token-value");
+        delete_secret(uuid).ok();
+    }
+
+    #[test]
+    fn read_missing_is_not_exists() {
+        init_test_keyring();
+        let err = read_secret("never-written-uuid-read").expect_err("expected NotExists");
+        assert!(matches!(err, Error::NotExists(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn delete_idempotent_on_missing() {
+        init_test_keyring();
+        delete_secret("never-written-uuid-del").expect("delete missing should succeed");
+    }
+
+    #[test]
+    fn delete_then_read_is_not_exists() {
+        init_test_keyring();
+        let uuid = "delete-then-read-uuid";
+        let secret = MinecraftAccountSecret {
+            mc_access_token: "a".into(),
+            ms_refresh_token: "r".into(),
+        };
+        write_secret(uuid, &secret).expect("write");
+        delete_secret(uuid).expect("delete");
+        let err = read_secret(uuid).expect_err("expected NotExists after delete");
+        assert!(matches!(err, Error::NotExists(_)));
+    }
+
+    #[test]
+    fn split_entries_handle_long_values() {
+        // Each token is stored as its own keyring entry, so the combined
+        // length doesn't have to fit any single-credential ceiling.
+        init_test_keyring();
+        let uuid = "split-entries-uuid";
+        let secret = MinecraftAccountSecret {
+            mc_access_token: "a".repeat(3000),
+            ms_refresh_token: "r".repeat(2000),
+        };
+        write_secret(uuid, &secret).expect("write");
+        let got = read_secret(uuid).expect("read");
+        assert_eq!(got.mc_access_token.len(), 3000);
+        assert_eq!(got.ms_refresh_token.len(), 2000);
+        delete_secret(uuid).ok();
+    }
+
+    #[test]
+    fn rewrite_replaces_value() {
+        init_test_keyring();
+        let uuid = "rewrite-uuid";
+        let first = MinecraftAccountSecret {
+            mc_access_token: "first-access".into(),
+            ms_refresh_token: "first-refresh".into(),
+        };
+        let second = MinecraftAccountSecret {
+            mc_access_token: "second-access".into(),
+            ms_refresh_token: "second-refresh".into(),
+        };
+        write_secret(uuid, &first).expect("first write");
+        write_secret(uuid, &second).expect("second write");
+        let got = read_secret(uuid).expect("read");
+        assert_eq!(got.mc_access_token, "second-access");
+        assert_eq!(got.ms_refresh_token, "second-refresh");
+        delete_secret(uuid).ok();
     }
 }
