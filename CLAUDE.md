@@ -140,3 +140,9 @@ async fn my_command(arg: &str) -> String { ... }
 // Frontend (src-ui — via wasm-bindgen)
 invoke("my_command", JsValue::from_serde(&args).unwrap()).await
 ```
+
+## Git
+
+- The commit message title should follow Conventional Commits guidelines.
+- The commit message description should be concise.
+- Include only information relevant to the code changes; omit anything else.
