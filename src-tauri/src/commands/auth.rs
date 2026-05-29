@@ -23,8 +23,7 @@ const AZURE_CLIENT_ID: Option<&str> = option_env!("YAMINABE_AZURE_CLIENT_ID");
 /// Live token; `offline_access` returns a refresh_token for silent renewal.
 const SCOPE: &str = "XboxLive.signin offline_access";
 
-const DEVICE_CODE_URL: &str =
-    "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode";
+const DEVICE_CODE_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode";
 const TOKEN_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
 const XBL_AUTH_URL: &str = "https://user.auth.xboxlive.com/user/authenticate";
 const XSTS_AUTH_URL: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
@@ -390,8 +389,6 @@ struct XboxDisplayClaims {
 #[derive(Deserialize)]
 struct XboxXui {
     uhs: String,
-    #[serde(default)]
-    xid: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -682,16 +679,31 @@ async fn finalize_minecraft_login(
         .ok_or_else(|| Error::Auth("XBL response missing user hash".into()))?;
 
     let xsts = xsts_authorize(client, &xbl.token).await?;
-    let xuid = xsts
-        .display_claims
-        .xui
-        .first()
-        .and_then(|x| x.xid.clone())
-        .unwrap_or_default();
-
     let mc = mc_login_with_xbox(client, &user_hash, &xsts.token).await?;
     let profile = mc_fetch_profile(client, &mc.access_token).await?;
+    // The XSTS response's DisplayClaims.xui[0].xid is unreliable for the
+    // Minecraft relying party (frequently absent), so the authoritative
+    // source for ${auth_xuid} is the MC access token's JWT payload.
+    let xuid = xuid_from_mc_token(&mc.access_token).unwrap_or_default();
     Ok((profile, mc, xuid))
+}
+
+/// Decode the unsigned middle segment of the Minecraft access token JWT and
+/// pull the `xuid` claim out of it. Signature verification is the upstream
+/// service's job; we only need to read public claims.
+fn xuid_from_mc_token(token: &str) -> Option<String> {
+    use base64::Engine;
+    let payload_b64 = token.split('.').nth(1)?;
+    let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .ok()?;
+    #[derive(Deserialize)]
+    struct McTokenPayload {
+        xuid: Option<String>,
+    }
+    serde_json::from_slice::<McTokenPayload>(&payload_bytes)
+        .ok()?
+        .xuid
 }
 
 /// Refresh + chain-exchange an existing account in place. Called from
