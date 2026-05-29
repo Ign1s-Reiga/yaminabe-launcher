@@ -129,6 +129,7 @@ Do NOT refactor styling unless explicitly requested.
 ### Formatting Prefrences
 - **No Vertical Alignment**: Do not align values or assignments vertically. Avoid adding extra spaces before `=` or `:` to match the positioning of other lines.
 - **Single Space Only**: Use only a single space around operators and after delimiters.
+- **Newline at EOF**: Insert Newline at End of File.
 
 ### Tauri IPC Pattern
 
@@ -146,3 +147,4 @@ invoke("my_command", JsValue::from_serde(&args).unwrap()).await
 - The commit message title should follow Conventional Commits guidelines.
 - The commit message description should be concise.
 - Include only information relevant to the code changes; omit anything else.
+- Please use `git` instead of `gh` for basic Git operations (i.e., everything you can do with the `git` command).
