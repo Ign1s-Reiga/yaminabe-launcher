@@ -258,29 +258,33 @@ pub async fn install_modpack(
     let mod_loader = ModLoader::from_str(loader_name)?;
 
     emit_progress(app_handle, id, instance_name, &format!("Installing Minecraft {mc_version}"), false, None);
-    ensure_vanilla(&mc_version, state).await?;
+    let vanilla_version_id = ensure_vanilla(&mc_version, state).await?;
 
     let require_loader_version = || loader_version.as_deref()
         .ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")));
-    match &mod_loader {
+    let loader_version_id = match &mod_loader {
         ModLoader::Fabric => {
             emit_progress(app_handle, id, instance_name, "Installing Fabric", false, None);
-            ensure_fabric(&mc_version, require_loader_version()?, http_client).await?;
+            Some(ensure_fabric(&mc_version, require_loader_version()?, http_client).await?)
         }
         ModLoader::Quilt => {
             emit_progress(app_handle, id, instance_name, "Installing Quilt", false, None);
-            ensure_quilt(&mc_version, require_loader_version()?, http_client).await?;
+            Some(ensure_quilt(&mc_version, require_loader_version()?, http_client).await?)
         }
         ModLoader::Forge => {
             emit_progress(app_handle, id, instance_name, "Installing Forge", false, None);
-            ensure_forge(&mc_version, require_loader_version()?, http_client).await?;
+            Some(ensure_forge(&mc_version, require_loader_version()?, http_client).await?)
         }
         ModLoader::NeoForge => {
             emit_progress(app_handle, id, instance_name, "Installing NeoForge", false, None);
-            ensure_neoforge(&mc_version, require_loader_version()?, http_client).await?;
+            Some(ensure_neoforge(&mc_version, require_loader_version()?, http_client).await?)
         }
-        ModLoader::Vanilla => {}
-    }
+        ModLoader::Vanilla => None,
+    };
+
+    // The loader's own version manifest takes precedence; Vanilla instances
+    // fall back to the bare MC id.
+    let version_id = loader_version_id.unwrap_or(vanilla_version_id);
 
     let instance_path = PathBuf::from(&instance_location).join(instance_name.to_lowercase());
     std::fs::create_dir_all(&instance_path)?;
@@ -322,6 +326,7 @@ pub async fn install_modpack(
         game_version: mc_version.clone(),
         mod_loader: mod_loader.clone(),
         mod_loader_version: loader_version,
+        version_id,
         ..InstanceMeta::default()
     };
 
