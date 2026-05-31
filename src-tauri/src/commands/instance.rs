@@ -206,3 +206,12 @@ pub fn save_instance_settings(
     std::fs::write(&json_path, json)?;
     Ok(())
 }
+
+#[tauri::command]
+pub fn delete_instance(id: String, state: State<'_, AppState>) -> Result<(), Error> {
+    let install_dir = state.settings.lock().unwrap().instance_install_dir.clone();
+    let dir = find_instance_dir(Path::new(&install_dir), &id)?;
+    std::fs::remove_dir_all(&dir)?;
+    info!("Deleted instance '{id}' at {}", dir.display());
+    Ok(())
+}

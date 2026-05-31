@@ -7,7 +7,7 @@ use leptos::control_flow::Show;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
-use leptos_router::hooks::{use_navigate, use_params};
+use leptos_router::hooks::{use_navigate, use_params, use_query_map};
 use leptos_router::params::Params;
 use serde::Serialize;
 use yaminabe_launcher_shared::datatypes::{InstanceMeta, JavaInstall, LaunchMode};
@@ -56,7 +56,13 @@ pub fn InstanceDetailPage() -> impl IntoView {
 fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     let navigate = use_navigate();
     let navigate_play = navigate.clone();
-    let active_tab = RwSignal::new(String::from("Description"));
+    // Allow deep-linking to a tab via `?tab=` (used by the library card's
+    // context-menu "Settings" entry); fall back to Description otherwise.
+    let initial_tab = use_query_map()
+        .with_untracked(|q| q.get("tab"))
+        .filter(|t| ["Description", "Mods", "Settings"].contains(&t.as_str()))
+        .unwrap_or_else(|| "Description".to_string());
+    let active_tab = RwSignal::new(initial_tab);
     let save_state: RwSignal<SaveState> = RwSignal::new(SaveState::Idle);
 
     let header_bg = format!("background-color: {}", &instance.mod_loader.get_modloader_color());

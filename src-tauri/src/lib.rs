@@ -23,7 +23,7 @@ use crate::commands::modfile::{
 use crate::commands::minecraft::{
     fetch_minecraft_versions, get_minecraft_versions, get_modloader_versions, VersionManifest,
 };
-use crate::commands::instance::{create_instance, get_instances, save_instance_settings};
+use crate::commands::instance::{create_instance, delete_instance, get_instances, save_instance_settings};
 use crate::commands::launch::{kill_instance, launch_instance};
 use crate::commands::java::{detect_java_installs, get_java_installs};
 use crate::commands::settings::{get_instance_subfolders, get_settings, open_instance_subfolder, pick_folder, save_settings};
@@ -180,6 +180,7 @@ pub fn run() {
             create_instance,
             get_instances,
             save_instance_settings,
+            delete_instance,
             get_minecraft_versions,
             get_modloader_versions,
             get_java_installs,
