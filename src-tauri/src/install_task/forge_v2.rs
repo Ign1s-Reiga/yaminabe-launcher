@@ -30,10 +30,17 @@ struct SidedValue {
     server: String,
 }
 
+#[derive(Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum Side {
+    Client,
+    Server,
+}
+
 #[derive(Deserialize)]
 struct ProcessorSpec {
     #[serde(default)]
-    sides: Option<Vec<String>>,
+    sides: Option<Vec<Side>>,
     jar: String,
     #[serde(default)]
     classpath: Vec<String>,
@@ -214,7 +221,7 @@ pub async fn install(
     let total = profile.processors.len();
     for (idx, proc) in profile.processors.iter().enumerate() {
         if let Some(sides) = &proc.sides {
-            if !sides.iter().any(|s| s == "client") { continue; }
+            if !sides.contains(&Side::Client) { continue; }
         }
 
         let outputs: Vec<(PathBuf, String)> = proc.outputs.iter()
