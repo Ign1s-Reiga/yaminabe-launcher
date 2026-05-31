@@ -10,14 +10,14 @@ use crate::pages::{
     play::PlayPage,
 };
 use crate::ipc;
-use bamboo_css_macro::{css, styled};
+use bamboo_css_macro::{css, cx, styled};
 use leptos::prelude::*;
 use leptos::{component, IntoView, view};
 use leptos_router::components::{Route, Router, Routes};
 use leptos_router::hooks::{use_location, use_navigate};
 use leptos_router::path;
-use phosphor_leptos::{Icon, IconData, IconWeight, BOOKS, GEAR_SIX, HOUSE, MAGNIFYING_GLASS};
-use yaminabe_launcher_shared::datatypes::InstanceMeta;
+use phosphor_leptos::{Icon, IconData, IconWeight, BOOKS, GEAR_SIX, HOUSE, MAGNIFYING_GLASS, PLAY};
+use yaminabe_launcher_shared::datatypes::{AppSettings, InstanceMeta};
 
 styled!(MainViewWrapper, div, {
     height: 100vh;
@@ -61,6 +61,19 @@ pub fn App() -> impl IntoView {
     provide_context(instances);
     provide_context(refresh);
 
+    // Id of the most recently launched instance, seeded from persisted settings
+    // and kept fresh by `PlayPage` on each launch. Drives the navbar's
+    // Instant-Play button.
+    let last_played: RwSignal<Option<String>> = RwSignal::new(None);
+    provide_context(last_played);
+    leptos::task::spawn_local(async move {
+        if let Ok(s) = ipc::call_noargs::<AppSettings>("get_settings").await {
+            if !s.last_played_instance_id.is_empty() {
+                last_played.set(Some(s.last_played_instance_id));
+            }
+        }
+    });
+
     let install_jobs: RwSignal<Vec<InstallJob>> = RwSignal::new(vec![]);
     let sidebar_open: RwSignal<bool> = RwSignal::new(false);
 
@@ -100,10 +113,10 @@ pub fn App() -> impl IntoView {
                         <Route path=path!("settings") view=SettingsPage />
                     </Routes>
                 </MainView>
-                // TODO: Add PLAY button in center of the navbar.
                 <MainViewNavbar>
                     <NavigationButton href="/library" icon=BOOKS label="Library"/>
                     <NavigationButton href="/" icon=HOUSE label="Home"/>
+                    <InstantPlayButton last_played=last_played instances=instances />
                     <NavigationButton href="/search" icon=MAGNIFYING_GLASS label="Search"/>
                     <NavigationButton href="/settings" icon=GEAR_SIX label="Settings"/>
                 </MainViewNavbar>
@@ -144,5 +157,66 @@ pub fn NavigationButton(
             </Show>
             <p class=css! { margin: 0; font-weight: 300; }>{label}</p>
         </div>
+    }
+}
+
+/// Centre-of-navbar shortcut that relaunches the most recently played instance.
+/// Disabled (and greyed) when no instance has been played yet, or when the
+/// recorded instance no longer exists in the library.
+#[component]
+pub fn InstantPlayButton(
+    last_played: RwSignal<Option<String>>,
+    instances: RwSignal<Vec<InstanceMeta>>,
+) -> impl IntoView {
+    let navigate = use_navigate();
+
+    let target = Signal::derive(move || {
+        let id = last_played.get()?;
+        instances.get().into_iter().find(|i| i.id == id)
+    });
+    let disabled = Signal::derive(move || target.get().is_none());
+    let title = move || {
+        target.get()
+            .map(|i| format!("Instant Play — {}", i.name))
+            .unwrap_or_else(|| "No recently played instance".to_string())
+    };
+
+    let btn_base = css! {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 60px;
+        height: 60px;
+        border-radius: 50%;
+        border: none;
+        align-self: center;
+        color: white;
+        transition: background-color 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease;
+    };
+    let btn_enabled = css! {
+        background-color: #3a9e5f;
+        cursor: pointer;
+        box-shadow: 0 4px 14px rgb(58 158 95 / 0.4);
+        &:hover { background-color: #2e7d4f; transform: translateY(-2px); }
+    };
+    let btn_disabled = css! {
+        background-color: var(--secondary-color);
+        opacity: 0.5;
+        cursor: not-allowed;
+    };
+
+    view! {
+        <button
+            class=move || if disabled.get() { cx!(btn_base, btn_disabled) } else { cx!(btn_base, btn_enabled) }
+            title=title
+            prop:disabled=move || disabled.get()
+            on:click=move |_| {
+                if let Some(inst) = target.get_untracked() {
+                    navigate(&format!("/library/{}/play?mode=online", inst.id), Default::default());
+                }
+            }
+        >
+            <Icon icon=PLAY size="30px" weight=IconWeight::Fill />
+        </button>
     }
 }

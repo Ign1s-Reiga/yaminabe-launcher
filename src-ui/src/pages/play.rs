@@ -53,6 +53,7 @@ pub fn PlayPage() -> impl IntoView {
     );
 
     let instances_ctx = use_context::<RwSignal<Vec<InstanceMeta>>>().expect("instances context");
+    let last_played_ctx = use_context::<RwSignal<Option<String>>>();
     let instance: RwSignal<Option<InstanceMeta>> = RwSignal::new(None);
 
     Effect::new(move |_| {
@@ -97,6 +98,9 @@ pub fn PlayPage() -> impl IntoView {
             return;
         }
         launched_instance_id.set(Some(inst.id.clone()));
+        if let Some(lp) = last_played_ctx {
+            lp.set(Some(inst.id.clone()));
+        }
 
         running.set(true);
         process_started.set(false);

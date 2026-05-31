@@ -101,6 +101,22 @@ pub async fn launch_instance(
         }};
     }
 
+    // Remember this as the most recently launched instance so the navbar's
+    // Instant-Play button can relaunch it across sessions. A write failure is
+    // non-fatal — it only costs the convenience shortcut.
+    {
+        let mut s = state.settings.lock().unwrap();
+        s.last_played_instance_id = instance_id.clone();
+        match serde_json::to_string_pretty(&*s) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(crate::settings_path(), json) {
+                    log::warn!("failed to persist last_played_instance_id: {e}");
+                }
+            }
+            Err(e) => log::warn!("failed to serialize settings: {e}"),
+        }
+    }
+
     // Hydrate the cloned record by reading its secret from the OS keyring.
     // A missing keyring entry means the account was removed externally or
     // the migration never ran — bail out asking the user to re-add it.

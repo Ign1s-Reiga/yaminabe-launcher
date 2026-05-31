@@ -39,6 +39,10 @@ pub fn SettingsPage() -> impl IntoView {
             curseforge_api_key: get("curseforge_api_key"),
             window_width: get_u32("window_width"),
             window_height: get_u32("window_height"),
+            // Not editable here — preserve whatever launch last recorded.
+            last_played_instance_id: app_settings.get()
+                .map(|s| s.last_played_instance_id)
+                .unwrap_or_default(),
         };
         save_state.set(SaveState::Saving);
         leptos::task::spawn_local(async move {
