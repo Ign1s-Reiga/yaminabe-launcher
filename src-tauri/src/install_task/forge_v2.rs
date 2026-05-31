@@ -17,20 +17,12 @@ struct InstallProfileV2 {
     // NeoForge omits this field entirely; only the empty-data shortcut needs it.
     #[serde(default)]
     path: Option<String>,
-    data: HashMap<String, SidedValue>,
+    data: HashMap<String, HashMap<Side, String>>,
     processors: Vec<ProcessorSpec>,
     libraries: Vec<Library>,
 }
 
-#[derive(Deserialize)]
-struct SidedValue {
-    client: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    server: String,
-}
-
-#[derive(Deserialize, PartialEq)]
+#[derive(Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 enum Side {
     Client,
@@ -204,7 +196,9 @@ pub async fn install(
     {
         let mut zip = installer_archive::open(&installer_path)?;
         for (key, val) in &profile.data {
-            data.insert(key.clone(), resolve_data_entry(&val.client, &mut zip, &extract_dir)?);
+            let client = val.get(&Side::Client)
+                .ok_or_else(|| Error::Invalid(format!("install_profile data entry {key} has no client value")))?;
+            data.insert(key.clone(), resolve_data_entry(client, &mut zip, &extract_dir)?);
         }
     }
 
