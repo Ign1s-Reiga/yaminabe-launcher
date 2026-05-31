@@ -46,10 +46,11 @@ pub fn PlayPage() -> impl IntoView {
         instance.set(instances_ctx.get().into_iter().find(|i| i.id == id));
     });
 
-    // Auto-launch when the viewed instance changes, but only if it isn't
-    // already running — navigating in from the Running sidebar should just view
-    // its live logs, not spawn a second process. Keyed on id so switching
-    // between two instances' play pages launches the new one.
+    // Decide per viewed instance whether to launch or just view. A `?mode=`
+    // query marks a deliberate Play action (the detail page's Play button sets
+    // it); the Running sidebar navigates here without it, so clicking a stopped
+    // row inspects its retained logs instead of relaunching. Keyed on id so
+    // switching between two instances' play pages re-evaluates for the new one.
     let launched_id: RwSignal<Option<String>> = RwSignal::new(None);
     Effect::new(move |_| {
         let Some(inst) = instance.get() else {
@@ -59,13 +60,22 @@ pub fn PlayPage() -> impl IntoView {
             return;
         }
         launched_id.set(Some(inst.id.clone()));
-        let already_running = registry
-            .with_untracked(|list| list.iter().any(|r| r.id == inst.id && r.running));
-        if !already_running {
+
+        let (has_entry, is_running) = registry.with_untracked(|list| {
+            match list.iter().find(|r| r.id == inst.id) {
+                Some(r) => (true, r.running),
+                None => (false, false),
+            }
+        });
+        let launch_intent = query.with_untracked(|q| q.get("mode").is_some());
+
+        // Launch on a first-time open, or an explicit Play of a non-running
+        // instance; otherwise just view the existing (live or stopped) entry.
+        if !is_running && (!has_entry || launch_intent) {
             start_launch(registry, &inst, launch_mode.get_untracked());
-        }
-        if let Some(open) = sidebar_open {
-            open.0.set(true);
+            if let Some(open) = sidebar_open {
+                open.0.set(true);
+            }
         }
     });
 
