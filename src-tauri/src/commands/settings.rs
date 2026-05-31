@@ -9,7 +9,7 @@ use crate::commands::instance::find_instance_dir;
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, AppState>) -> AppSettings {
-    state.settings.lock().unwrap().clone()
+    state.settings.read().unwrap().clone()
 }
 
 #[tauri::command]
@@ -31,7 +31,7 @@ pub async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
 
 #[tauri::command]
 pub fn get_instance_subfolders(id: String, state: State<'_, AppState>) -> Vec<bool> {
-    let install_dir = state.settings.lock().unwrap().instance_install_dir.clone();
+    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
     let Ok(dir) = find_instance_dir(Path::new(&install_dir), &id) else {
         return vec![false; 4];
     };
@@ -43,7 +43,7 @@ pub fn get_instance_subfolders(id: String, state: State<'_, AppState>) -> Vec<bo
 
 #[tauri::command]
 pub fn open_instance_subfolder(id: String, subfolder: String, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), Error> {
-    let install_dir = state.settings.lock().unwrap().instance_install_dir.clone();
+    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
     let dir = find_instance_dir(Path::new(&install_dir), &id)?;
     let path = if subfolder.is_empty() { dir } else { dir.join(&subfolder) };
     app.opener().open_path(path.to_string_lossy().as_ref(), Option::<String>::None)
@@ -57,6 +57,6 @@ pub fn save_settings(
 ) -> Result<(), Error> {
     let json = serde_json::to_string_pretty(&settings)?;
     std::fs::write(settings_path(), &json)?;
-    *state.settings.lock().unwrap() = settings;
+    *state.settings.write().unwrap() = settings;
     Ok(())
 }
