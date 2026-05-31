@@ -209,6 +209,14 @@ pub fn save_instance_settings(
 
 #[tauri::command]
 pub fn delete_instance(id: String, state: State<'_, AppState>) -> Result<(), Error> {
+    // Refuse while the game is live — its working directory and ${game_directory}
+    // point at this folder, so removing it could unlink files under a running
+    // process (or just fail on locked files on Windows).
+    if state.running_children.lock().unwrap().contains_key(&id) {
+        return Err(Error::Invalid(
+            "Cannot delete an instance while it is running. Stop it first.".to_string(),
+        ));
+    }
     let install_dir = state.settings.lock().unwrap().instance_install_dir.clone();
     let dir = find_instance_dir(Path::new(&install_dir), &id)?;
     std::fs::remove_dir_all(&dir)?;

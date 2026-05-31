@@ -45,6 +45,7 @@ pub fn InstanceCard(
     let submenu_open = RwSignal::new(false);
     let confirm_delete = RwSignal::new(false);
     let deleting = RwSignal::new(false);
+    let delete_error: RwSignal<Option<String>> = RwSignal::new(None);
     // Existence of [config, mods, resourcepacks, saves], fetched when the menu
     // opens so we only list folders that actually exist on disk.
     let subfolders: RwSignal<Vec<bool>> = RwSignal::new(vec![]);
@@ -163,13 +164,18 @@ pub fn InstanceCard(
     let on_confirm_delete = Callback::new(move |_: web_sys::MouseEvent| {
         let id = instance_id.get_value();
         deleting.set(true);
+        delete_error.set(None);
         leptos::task::spawn_local(async move {
+            // Keep the dialog open on failure (e.g. the instance is running) so
+            // the reason is visible; only close and refresh on success.
             match ipc::call::<_, ()>("delete_instance", IdArg { id }).await {
-                Ok(()) => refresh.update(|n| *n += 1),
-                Err(e) => log::error!("delete_instance failed: {e}"),
+                Ok(()) => {
+                    refresh.update(|n| *n += 1);
+                    confirm_delete.set(false);
+                }
+                Err(e) => delete_error.set(Some(e)),
             }
             deleting.set(false);
-            confirm_delete.set(false);
         });
     });
 
@@ -282,7 +288,7 @@ pub fn InstanceCard(
                 <div class=divider></div>
                 <button
                     class=item_danger
-                    on:click=move |_| { menu_open.set(false); confirm_delete.set(true); }
+                    on:click=move |_| { menu_open.set(false); delete_error.set(None); confirm_delete.set(true); }
                 >
                     <Icon icon=TRASH size="16px" weight=IconWeight::Regular />
                     <span>"Delete"</span>
@@ -302,12 +308,15 @@ pub fn InstanceCard(
                                 instance_name.get_value()
                             )}
                         </p>
+                        {move || delete_error.get().map(|e| view! {
+                            <p style="margin: 12px 0 0 0; color: #c0392b; font-size: 0.85rem;">{e}</p>
+                        })}
                     </div>
                     <DialogFooter>
                         <Button
                             variant=ButtonVariant::Secondary
                             disabled=Signal::derive(move || deleting.get())
-                            on_click=Callback::new(move |_| confirm_delete.set(false))
+                            on_click=Callback::new(move |_| { delete_error.set(None); confirm_delete.set(false); })
                         >
                             "Cancel"
                         </Button>
