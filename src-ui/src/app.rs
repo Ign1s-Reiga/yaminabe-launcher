@@ -212,7 +212,10 @@ pub fn InstantPlayButton(
             prop:disabled=move || disabled.get()
             on:click=move |_| {
                 if let Some(inst) = target.get_untracked() {
-                    navigate(&format!("/library/{}/play?mode=online", inst.id), Default::default());
+                    // A per-click nonce forces PlayPage to relaunch even when we
+                    // are already sitting on this instance's (stopped) play page.
+                    let nonce = js_sys::Date::now() as u64;
+                    navigate(&format!("/library/{}/play?mode=online&t={nonce}", inst.id), Default::default());
                 }
             }
         >
