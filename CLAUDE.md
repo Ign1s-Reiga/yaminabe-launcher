@@ -145,6 +145,8 @@ invoke("my_command", JsValue::from_serde(&args).unwrap()).await
 ## Git
 
 - The commit message title should follow Conventional Commits guidelines.
+  - Limit commit scopes to `ui`, `launch`, `auth`, `install`, and `shared`. Use the one that best applies.
+  - Do not use a scope if none of these apply.
 - The commit message description should be concise.
 - Include only information relevant to the code changes; omit anything else.
 - Please use `git` instead of `gh` for basic Git operations (i.e., everything you can do with the `git` command).

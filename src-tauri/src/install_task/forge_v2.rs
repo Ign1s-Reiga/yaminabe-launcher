@@ -14,24 +14,25 @@ use super::{installer_archive, maven_coord_to_path, version_manifest_path};
 #[derive(Deserialize)]
 struct InstallProfileV2 {
     minecraft: String,
-    path: String,
-    data: HashMap<String, SidedValue>,
+    // NeoForge omits this field entirely; only the empty-data shortcut needs it.
+    #[serde(default)]
+    path: Option<String>,
+    data: HashMap<String, HashMap<Side, String>>,
     processors: Vec<ProcessorSpec>,
     libraries: Vec<Library>,
 }
 
-#[derive(Deserialize)]
-struct SidedValue {
-    client: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    server: String,
+#[derive(Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+enum Side {
+    Client,
+    Server,
 }
 
 #[derive(Deserialize)]
 struct ProcessorSpec {
     #[serde(default)]
-    sides: Option<Vec<String>>,
+    sides: Option<Vec<Side>>,
     jar: String,
     #[serde(default)]
     classpath: Vec<String>,
@@ -120,13 +121,15 @@ pub async fn install(
     // binpatches in-memory, so delegate to the V1 path which knows how to
     // place the universal jar and write the manifest.
     if profile.data.is_empty() && profile.processors.is_empty() {
+        let path = profile.path.as_deref()
+            .ok_or_else(|| Error::Invalid("install_profile.json has empty data/processors but no `path` to locate the universal jar".to_string()))?;
         let universal = profile.libraries.iter()
-            .find(|lib| lib.name == profile.path)
-            .ok_or_else(|| Error::Invalid(format!("install_profile.libraries has no entry matching path {}", profile.path)))?;
+            .find(|lib| lib.name == path)
+            .ok_or_else(|| Error::Invalid(format!("install_profile.libraries has no entry matching path {path}")))?;
         let artifact = universal.downloads.as_ref().and_then(|d| d.artifact.as_ref())
-            .ok_or_else(|| Error::Invalid(format!("Universal library {} has no artifact downloads", profile.path)))?;
+            .ok_or_else(|| Error::Invalid(format!("Universal library {path} has no artifact downloads")))?;
         let artifact_path = artifact.path.as_deref()
-            .ok_or_else(|| Error::Invalid(format!("Universal library {} artifact has no path", profile.path)))?;
+            .ok_or_else(|| Error::Invalid(format!("Universal library {path} artifact has no path")))?;
 
         let embedded = format!("maven/{artifact_path}");
         let primary_jar_bytes = installer_archive::read_entry_bytes(&installer_path, &embedded)?;
@@ -135,7 +138,7 @@ pub async fn install(
         }
 
         let version_info: ClientManifest = serde_json::from_str(&version_json_text)?;
-        let v1_version_id = super::forge_v1::install_from_parsed(&version_info, &version_json_text, &profile.path, &primary_jar_bytes, client).await?;
+        let v1_version_id = super::forge_v1::install_from_parsed(&version_info, &version_json_text, path, &primary_jar_bytes, client).await?;
         info!("Installed {loader} via V1 delegation ({})", installer_path.display());
         return Ok(v1_version_id);
     }
@@ -193,7 +196,9 @@ pub async fn install(
     {
         let mut zip = installer_archive::open(&installer_path)?;
         for (key, val) in &profile.data {
-            data.insert(key.clone(), resolve_data_entry(&val.client, &mut zip, &extract_dir)?);
+            let client = val.get(&Side::Client)
+                .ok_or_else(|| Error::Invalid(format!("install_profile data entry {key} has no client value")))?;
+            data.insert(key.clone(), resolve_data_entry(client, &mut zip, &extract_dir)?);
         }
     }
 
@@ -210,7 +215,7 @@ pub async fn install(
     let total = profile.processors.len();
     for (idx, proc) in profile.processors.iter().enumerate() {
         if let Some(sides) = &proc.sides {
-            if !sides.iter().any(|s| s == "client") { continue; }
+            if !sides.contains(&Side::Client) { continue; }
         }
 
         let outputs: Vec<(PathBuf, String)> = proc.outputs.iter()
