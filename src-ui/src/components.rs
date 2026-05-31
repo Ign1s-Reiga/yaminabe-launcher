@@ -6,6 +6,7 @@ pub mod log_viewer;
 pub mod login_modal;
 pub mod open_in_file_manager;
 pub mod pagination;
+pub mod running_sidebar;
 pub mod result_card;
 pub mod ui;
 pub mod settings;

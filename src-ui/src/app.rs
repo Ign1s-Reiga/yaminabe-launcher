@@ -1,5 +1,6 @@
 use crate::components::{
     install_sidebar::{InstallJob, InstallSidebar},
+    running_sidebar::{RunningInstance, RunningSidebar, RunningSidebarOpen},
 };
 use crate::pages::{
     home::HomePage,
@@ -18,6 +19,7 @@ use leptos_router::hooks::{use_location, use_navigate};
 use leptos_router::path;
 use phosphor_leptos::{Icon, IconData, IconWeight, BOOKS, GEAR_SIX, HOUSE, MAGNIFYING_GLASS};
 use yaminabe_launcher_shared::datatypes::InstanceMeta;
+use yaminabe_launcher_shared::ipc::LogLine;
 
 styled!(MainViewWrapper, div, {
     height: 100vh;
@@ -81,6 +83,36 @@ pub fn App() -> impl IntoView {
         }
     });
 
+    // Global registry of launched instances so several can run at once and a
+    // launch survives navigating away from its play page. App-level listeners
+    // route per-instance log/lifecycle events into the matching entry.
+    let running_registry: RwSignal<Vec<RunningInstance>> = RwSignal::new(vec![]);
+    let running_open = RwSignal::new(false);
+    provide_context(running_registry);
+    provide_context(RunningSidebarOpen(running_open));
+
+    ipc::on_event::<LogLine, _>("instance-log", move |msg| {
+        running_registry.update(|list| {
+            if let Some(r) = list.iter_mut().find(|r| r.id == msg.instance_id) {
+                r.log_lines.push(msg.line);
+                if msg.done {
+                    r.running = false;
+                    r.process_started = false;
+                    if msg.error.is_some() {
+                        r.error = msg.error;
+                    }
+                }
+            }
+        });
+    });
+    ipc::on_event::<String, _>("instance-process-started", move |id| {
+        running_registry.update(|list| {
+            if let Some(r) = list.iter_mut().find(|r| r.id == id) {
+                r.process_started = true;
+            }
+        });
+    });
+
     view! {
         <Router>
             <MainViewWrapper>
@@ -107,6 +139,7 @@ pub fn App() -> impl IntoView {
                     <NavigationButton href="/search" icon=MAGNIFYING_GLASS label="Search"/>
                     <NavigationButton href="/settings" icon=GEAR_SIX label="Settings"/>
                 </MainViewNavbar>
+                <RunningSidebar registry=running_registry open=running_open />
             </MainViewWrapper>
         </Router>
     }
