@@ -42,7 +42,7 @@ pub async fn launch_instance(
 ) -> Result<(), Error> {
     let launch_mode = launch_mode.unwrap_or(LaunchMode::Online);
     let instance_location = {
-        let install_dir = state.settings.lock().unwrap().instance_install_dir.clone();
+        let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
         find_instance_dir(Path::new(&install_dir), &instance_id)?
             .to_string_lossy()
             .into_owned()
@@ -52,7 +52,7 @@ pub async fn launch_instance(
     ).ok().and_then(|s| serde_json::from_str(&s).ok());
 
     let (instance_jre_path, ram_mb, window_width, window_height) = {
-        let s = state.settings.lock().unwrap();
+        let s = state.settings.read().unwrap();
         let jre = instance_meta.as_ref()
             .and_then(|m| if m.jre_path.is_empty() { None } else { Some(m.jre_path.clone()) });
         let ram = instance_meta.as_ref().map(|m| if m.ram_mb > 0 { m.ram_mb } else { s.memory_mb }).unwrap_or(s.memory_mb);
@@ -99,6 +99,22 @@ pub async fn launch_instance(
             }).ok();
             return Err($e);
         }};
+    }
+
+    // Remember this as the most recently launched instance so the navbar's
+    // Instant-Play button can relaunch it across sessions. A write failure is
+    // non-fatal — it only costs the convenience shortcut.
+    {
+        let mut s = state.settings.write().unwrap();
+        s.last_played_instance_id = instance_id.clone();
+        match serde_json::to_string_pretty(&*s) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(crate::settings_path(), json) {
+                    log::warn!("failed to persist last_played_instance_id: {e}");
+                }
+            }
+            Err(e) => log::warn!("failed to serialize settings: {e}"),
+        }
     }
 
     // Hydrate the cloned record by reading its secret from the OS keyring.

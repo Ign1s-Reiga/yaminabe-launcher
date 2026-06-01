@@ -150,6 +150,10 @@ pub struct AppSettings {
     pub window_width: u32,
     #[serde(default)]
     pub window_height: u32,
+    /// Id of the most recently launched instance. Drives the navbar's
+    /// Instant-Play button so the user can relaunch without opening the library.
+    #[serde(default)]
+    pub last_played_instance_id: String,
 }
 
 impl Default for AppSettings {
@@ -161,6 +165,7 @@ impl Default for AppSettings {
             instance_install_dir: String::new(),
             window_width: 0,
             window_height: 0,
+            last_played_instance_id: String::new(),
         }
     }
 }

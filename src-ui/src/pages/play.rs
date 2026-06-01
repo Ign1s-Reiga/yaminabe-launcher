@@ -45,14 +45,16 @@ pub fn PlayPage() -> impl IntoView {
         })
     });
 
-    // Read `?mode=offline|online` once on mount; the query is set by the
-    // split Play button on the instance detail page.
+    // `?mode=offline|online` is set by the split Play button (detail page) and
+    // the navbar Instant-Play button. Kept reactive so a relaunch picks up the
+    // mode of the latest navigation rather than the one we first mounted with.
     let query = use_query_map();
-    let launch_mode = LaunchMode::from_query(
-        query.with_untracked(|q| q.get("mode")).as_deref(),
-    );
+    let launch_mode = Memo::new(move |_| {
+        LaunchMode::from_query(query.with(|q| q.get("mode")).as_deref())
+    });
 
     let instances_ctx = use_context::<RwSignal<Vec<InstanceMeta>>>().expect("instances context");
+    let last_played_ctx = use_context::<RwSignal<Option<String>>>();
     let instance: RwSignal<Option<InstanceMeta>> = RwSignal::new(None);
 
     Effect::new(move |_| {
@@ -88,21 +90,30 @@ pub fn PlayPage() -> impl IntoView {
         }
     });
 
-    let launched_instance_id: RwSignal<Option<String>> = RwSignal::new(None);
+    // Launch is keyed on (instance id, navigation nonce): a fresh `?t=` nonce
+    // from the navbar Instant-Play button relaunches the same instance even
+    // when its play page is already mounted (e.g. after it stopped/crashed).
+    let launch_key: RwSignal<Option<(String, String)>> = RwSignal::new(None);
     Effect::new(move |_| {
         let Some(inst) = instance.get() else {
             return;
         };
-        if launched_instance_id.get_untracked().as_deref() == Some(inst.id.as_str()) {
+        let nonce = query.with(|q| q.get("t")).unwrap_or_default();
+        let key = (inst.id.clone(), nonce);
+        if launch_key.get_untracked().as_ref() == Some(&key) {
             return;
         }
-        launched_instance_id.set(Some(inst.id.clone()));
+        launch_key.set(Some(key));
+        if let Some(lp) = last_played_ctx {
+            lp.set(Some(inst.id.clone()));
+        }
 
         running.set(true);
         process_started.set(false);
         log_lines.set(vec![]);
         error.set(None);
 
+        let mode = launch_mode.get_untracked();
         leptos::task::spawn_local(async move {
             // Per-line failures arrive via the `instance-log` event stream;
             // IPC-layer rejections don't, so push them into the same viewer.
@@ -112,7 +123,7 @@ pub fn PlayPage() -> impl IntoView {
                     instance_id: inst.id.clone(),
                     mc_version: inst.game_version.clone(),
                     mod_loader: inst.mod_loader.clone(),
-                    launch_mode,
+                    launch_mode: mode,
                 },
             )
             .await
@@ -141,7 +152,7 @@ fn PlayContent(
     running: RwSignal<bool>,
     process_started: RwSignal<bool>,
     error: RwSignal<Option<String>>,
-    launch_mode: LaunchMode,
+    launch_mode: Memo<LaunchMode>,
 ) -> impl IntoView {
     let navigate = use_navigate();
     let inst_name = instance.name.clone();
@@ -195,7 +206,7 @@ fn PlayContent(
 
             <h2 style="margin: 0 0 4px 0;">
                 {inst_name}
-                {match launch_mode {
+                {move || match launch_mode.get() {
                     LaunchMode::Online => " — Online Play",
                     LaunchMode::Offline => " — Offline Play",
                 }}
