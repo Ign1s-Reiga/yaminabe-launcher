@@ -74,6 +74,12 @@ pub fn PlayPage() -> impl IntoView {
         // instance; otherwise just view the existing (live or stopped) entry.
         if !is_running && (!has_entry || launch_intent) {
             start_launch(registry, &inst, launch_mode.get_untracked());
+            // Point the navbar Instant-Play button at what we just launched —
+            // the backend persists this too, but the in-session signal has no
+            // other refresh path.
+            if let Some(lp) = last_played_ctx {
+                lp.set(Some(inst.id.clone()));
+            }
             if let Some(open) = sidebar_open {
                 open.0.set(true);
             }
