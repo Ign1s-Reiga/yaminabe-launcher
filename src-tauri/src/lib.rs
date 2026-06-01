@@ -6,7 +6,7 @@ mod http_utils;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use tauri::{Emitter, Manager};
 use yaminabe_launcher_shared::datatypes::{AppSettings, JavaInstall};
@@ -42,7 +42,7 @@ pub fn emit_progress(app: &tauri::AppHandle, id: &str, name: &str, step: &str, d
 
 
 pub struct AppState {
-    pub settings: Mutex<AppSettings>,
+    pub settings: RwLock<AppSettings>,
     pub http_client: reqwest::Client,
     pub mc_versions: OnceLock<VersionManifest>,
     pub java_installs: Mutex<Vec<JavaInstall>>,
@@ -138,7 +138,7 @@ pub fn run() {
             let account_store: AccountStore = load_account_store();
 
             app.manage(AppState {
-                settings: Mutex::new(settings),
+                settings: RwLock::new(settings),
                 http_client: reqwest::Client::new(),
                 mc_versions: OnceLock::new(),
                 java_installs: Mutex::new(java_installs),

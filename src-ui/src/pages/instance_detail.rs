@@ -1,4 +1,6 @@
 use crate::components::open_in_file_manager::OpenInFileManager;
+use crate::components::running_sidebar::RunningRegistry;
+use crate::signal_ext::VecSignalExt;
 use crate::components::settings::{SaveState, SettingsProp, SettingsSection};
 use crate::components::ui::{Button, ButtonSize, ButtonVariant, SelectInput, SliderInput, TabBar, Textarea, input_class};
 use crate::ipc;
@@ -38,12 +40,7 @@ pub fn InstanceDetailPage() -> impl IntoView {
     });
 
     let instances_ctx = use_context::<RwSignal<Vec<InstanceMeta>>>().expect("instances context");
-    let instance: RwSignal<Option<InstanceMeta>> = RwSignal::new(None);
-
-    Effect::new(move |_| {
-        let id = id.get();
-        instance.set(instances_ctx.get().into_iter().find(|i| i.id == id));
-    });
+    let instance = Memo::new(move |_| instances_ctx.map_by_id(&id.get(), |i| i.clone()));
 
     view! {
         <Show when=move || instance.get().is_some()>
@@ -72,25 +69,33 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
 
     let instance_id = instance.id.clone();
     let instance_id_play = instance_id.clone();
-    let instance_id_save: RwSignal<String> = RwSignal::new(instance_id.clone());
+    let instance_id_save = StoredValue::new(instance_id.clone());
     let instance_id_open = instance_id.clone();
     let dropdown_open: RwSignal<bool> = RwSignal::new(false);
     let launch_mode: RwSignal<LaunchMode> = RwSignal::new(LaunchMode::Online);
-    let jre_path: RwSignal<String> = RwSignal::new(instance.jre_path.clone());
+    let jre_path = StoredValue::new(instance.jre_path.clone());
+
+    // Whether this instance is currently running, so the Play button can show
+    // "Running" and refuse to launch a second copy.
+    let registry = use_context::<RunningRegistry>().expect("running registry");
+    let instance_id_running = instance_id.clone();
+    let is_running = Signal::derive(move || {
+        registry.map_by_id(&instance_id_running, |r| r.status.is_active()).unwrap_or(false)
+    });
 
     let java_installs = LocalResource::new(|| async move {
         ipc::call_noargs::<Vec<JavaInstall>>("get_java_installs").await.unwrap_or_default()
     });
 
     let description_sig = RwSignal::new(instance.description.clone());
-    let jvm_args_init: RwSignal<String> = RwSignal::new(instance.jvm_args.clone());
+    let jvm_args_init = StoredValue::new(instance.jvm_args.clone());
 
     let on_settings_submit = move |ev: SubmitEvent| {
         let Some(data) = ipc::form_data_from_submit(&ev) else { return };
         let get = |k: &str| data.get(k).as_string().unwrap_or_default();
         let get_u32 = |k: &str| data.get(k).as_string().unwrap_or_default().parse::<u32>().unwrap_or(0);
         let args = SaveInstanceSettingsArgs {
-            id: instance_id_save.get_untracked(),
+            id: instance_id_save.get_value(),
             ram_mb: get("ram_mb").parse().unwrap_or(4096),
             jvm_args: get("jvm_args"),
             jre_path: get("jre_path"),
@@ -142,6 +147,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
             <SplitPlayButton
                 dropdown_open=dropdown_open
                 launch_mode=launch_mode
+                running=is_running
                 on_play=Callback::new(move |_| {
                     dropdown_open.set(false);
                     let mode = launch_mode.get_untracked();
@@ -186,7 +192,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
                     >
                         {move || {
                             let installs = java_installs.get().unwrap_or_default();
-                            let current = jre_path.get_untracked();
+                            let current = jre_path.get_value();
                             view! {
                                 <SelectInput name="jre_path">
                                     <option value="" selected={current.is_empty()}>"Recommended"</option>
@@ -218,7 +224,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
                     >
                         <Textarea
                             name="jvm_args"
-                            default_value=jvm_args_init.get_untracked()
+                            default_value=jvm_args_init.get_value()
                             placeholder="-XX:+UseG1GC -XX:MaxGCPauseMillis=50"
                         />
                     </SettingsProp>
@@ -275,6 +281,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
 fn SplitPlayButton(
     dropdown_open: RwSignal<bool>,
     launch_mode: RwSignal<LaunchMode>,
+    running: Signal<bool>,
     on_play: Callback<leptos::web_sys::MouseEvent>,
 ) -> impl IntoView {
     let wrapper = css! {
@@ -355,17 +362,23 @@ fn SplitPlayButton(
             <Button
                 variant=ButtonVariant::Primary
                 size=ButtonSize::Big
+                disabled=running
                 style="border-top-right-radius: 0; border-bottom-right-radius: 0;"
                 on_click=on_play
             >
-                {move || match launch_mode.get() {
-                    LaunchMode::Online => "▶  Play Online",
-                    LaunchMode::Offline => "▶  Play Offline",
+                {move || if running.get() {
+                    "●  Running".to_string()
+                } else {
+                    match launch_mode.get() {
+                        LaunchMode::Online => "▶  Play Online".to_string(),
+                        LaunchMode::Offline => "▶  Play Offline".to_string(),
+                    }
                 }}
             </Button>
             <Button
                 variant=ButtonVariant::Primary
                 size=ButtonSize::Big
+                disabled=running
                 style="border-top-left-radius: 0; border-bottom-left-radius: 0; \
                        padding-left: 10px; padding-right: 10px; \
                        border-left: 1px solid rgb(255 255 255 / 0.22);"

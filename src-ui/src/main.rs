@@ -3,6 +3,7 @@ pub mod pages;
 pub mod app;
 pub mod ipc;
 pub mod curseforge;
+pub mod signal_ext;
 
 use leptos::prelude::*;
 use crate::app::App;

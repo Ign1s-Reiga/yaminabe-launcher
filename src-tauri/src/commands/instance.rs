@@ -60,7 +60,7 @@ pub async fn create_instance(
     }
 
     step!("Preparing directories");
-    let instance_path = PathBuf::from(&state.settings.lock().unwrap().instance_install_dir).join(name.to_lowercase());
+    let instance_path = PathBuf::from(&state.settings.read().unwrap().instance_install_dir).join(name.to_lowercase());
     if instance_path.exists() {
         fail!(Error::Invalid(format!("folder '{}' already exists at this location", name.to_lowercase())));
     }
@@ -155,7 +155,7 @@ pub async fn create_instance(
 
 #[tauri::command]
 pub async fn get_instances(state: State<'_, AppState>) -> Result<Vec<InstanceMeta>, Error> {
-    let location = state.settings.lock().unwrap().instance_install_dir.clone();
+    let location = state.settings.read().unwrap().instance_install_dir.clone();
     if location.is_empty() {
         return Ok(vec![]);
     }
@@ -189,7 +189,7 @@ pub fn save_instance_settings(
     window_height: u32,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
-    let install_dir = state.settings.lock().unwrap().instance_install_dir.clone();
+    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
     let dir = find_instance_dir(Path::new(&install_dir), &id)?;
     let json_path = dir.join("instance.json");
     let content = std::fs::read_to_string(&json_path)?;
@@ -217,7 +217,7 @@ pub fn delete_instance(id: String, state: State<'_, AppState>) -> Result<(), Err
             "Cannot delete an instance while it is running. Stop it first.".to_string(),
         ));
     }
-    let install_dir = state.settings.lock().unwrap().instance_install_dir.clone();
+    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
     let dir = find_instance_dir(Path::new(&install_dir), &id)?;
     std::fs::remove_dir_all(&dir)?;
     info!("Deleted instance '{id}' at {}", dir.display());
