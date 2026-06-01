@@ -1,5 +1,5 @@
 use crate::components::open_in_file_manager::OpenInFileManager;
-use crate::components::running_sidebar::RunningRegistry;
+use crate::components::running_sidebar::{RegistryExt, RunningRegistry};
 use crate::components::settings::{SaveState, SettingsProp, SettingsSection};
 use crate::components::ui::{Button, ButtonSize, ButtonVariant, SelectInput, SliderInput, TabBar, Textarea, input_class};
 use crate::ipc;
@@ -39,11 +39,9 @@ pub fn InstanceDetailPage() -> impl IntoView {
     });
 
     let instances_ctx = use_context::<RwSignal<Vec<InstanceMeta>>>().expect("instances context");
-    let instance: RwSignal<Option<InstanceMeta>> = RwSignal::new(None);
-
-    Effect::new(move |_| {
+    let instance = Memo::new(move |_| {
         let id = id.get();
-        instance.set(instances_ctx.get().into_iter().find(|i| i.id == id));
+        instances_ctx.get().into_iter().find(|i| i.id == id)
     });
 
     view! {
@@ -67,7 +65,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
 
     let instance_id = instance.id.clone();
     let instance_id_play = instance_id.clone();
-    let instance_id_save: RwSignal<String> = RwSignal::new(instance_id.clone());
+    let instance_id_save = StoredValue::new(instance_id.clone());
     let instance_id_open = instance_id.clone();
     let dropdown_open: RwSignal<bool> = RwSignal::new(false);
     let launch_mode: RwSignal<LaunchMode> = RwSignal::new(LaunchMode::Online);
@@ -78,7 +76,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     let registry = use_context::<RunningRegistry>().expect("running registry");
     let instance_id_running = instance_id.clone();
     let is_running = Signal::derive(move || {
-        registry.with(|l| l.iter().any(|r| r.id == instance_id_running && r.running))
+        registry.map_instance(&instance_id_running, |r| r.status.is_active()).unwrap_or(false)
     });
 
     let java_installs = LocalResource::new(|| async move {
@@ -93,7 +91,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
         let get = |k: &str| data.get(k).as_string().unwrap_or_default();
         let get_u32 = |k: &str| data.get(k).as_string().unwrap_or_default().parse::<u32>().unwrap_or(0);
         let args = SaveInstanceSettingsArgs {
-            id: instance_id_save.get_untracked(),
+            id: instance_id_save.get_value(),
             ram_mb: get("ram_mb").parse().unwrap_or(4096),
             jvm_args: get("jvm_args"),
             jre_path: get("jre_path"),

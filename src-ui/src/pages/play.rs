@@ -1,6 +1,6 @@
 use crate::components::log_viewer::LogViewer;
 use crate::components::open_in_file_manager::OpenInFileManager;
-use crate::components::running_sidebar::{start_launch, stop_instance, RunningRegistry, RunningSidebarOpen};
+use crate::components::running_sidebar::{start_launch, stop_instance, RegistryExt, RunStatus, RunningRegistry, RunningSidebarOpen};
 use crate::components::ui::{Button, ButtonVariant};
 use bamboo_css_macro::css;
 use leptos::control_flow::Show;
@@ -40,11 +40,11 @@ pub fn PlayPage() -> impl IntoView {
     let last_played_ctx = use_context::<RwSignal<Option<String>>>();
     let registry = use_context::<RunningRegistry>().expect("running registry");
     let sidebar_open = use_context::<RunningSidebarOpen>();
-    let instance: RwSignal<Option<InstanceMeta>> = RwSignal::new(None);
-
-    Effect::new(move |_| {
+    // Derived directly from the instances context + route id — no separate
+    // signal or syncing effect needed.
+    let instance = Memo::new(move |_| {
         let id = id.get();
-        instance.set(instances_ctx.get().into_iter().find(|i| i.id == id));
+        instances_ctx.get().into_iter().find(|i| i.id == id)
     });
 
     // Decide per viewed instance whether to launch or just view. A `?mode=`
@@ -64,7 +64,7 @@ pub fn PlayPage() -> impl IntoView {
 
         let (has_entry, is_running) = registry.with_untracked(|list| {
             match list.iter().find(|r| r.id == inst.id) {
-                Some(r) => (true, r.running),
+                Some(r) => (true, r.status.is_active()),
                 None => (false, false),
             }
         });
@@ -87,23 +87,14 @@ pub fn PlayPage() -> impl IntoView {
     });
 
     // Per-instance view derived from the global registry so logs/status persist
-    // across navigation and stay live while this page is mounted. Each reads
-    // just the field it needs, so status changes don't clone the log buffer.
+    // across navigation and stay live while this page is mounted. `status` is a
+    // memo, so it only re-notifies on a real status change, not on every log
+    // line; the lookup itself lives in RegistryExt::map_instance.
+    let status = Memo::new(move |_| {
+        registry.map_instance(&id.get(), |r| r.status.clone()).unwrap_or(RunStatus::Stopped)
+    });
     let log_lines = Signal::derive(move || {
-        let id = id.get();
-        registry.with(|l| l.iter().find(|r| r.id == id).map(|r| r.log_lines.clone()).unwrap_or_default())
-    });
-    let running = Signal::derive(move || {
-        let id = id.get();
-        registry.with(|l| l.iter().find(|r| r.id == id).map(|r| r.running).unwrap_or(false))
-    });
-    let process_started = Signal::derive(move || {
-        let id = id.get();
-        registry.with(|l| l.iter().find(|r| r.id == id).map(|r| r.process_started).unwrap_or(false))
-    });
-    let error = Signal::derive(move || {
-        let id = id.get();
-        registry.with(|l| l.iter().find(|r| r.id == id).and_then(|r| r.error.clone()))
+        registry.map_instance(&id.get(), |r| r.log_lines.clone()).unwrap_or_default()
     });
 
     view! {
@@ -113,9 +104,7 @@ pub fn PlayPage() -> impl IntoView {
                     instance=inst
                     registry=registry
                     log_lines=log_lines
-                    running=running
-                    process_started=process_started
-                    error=error
+                    status=status
                     launch_mode=launch_mode
                 />
             })}
@@ -128,9 +117,7 @@ fn PlayContent(
     instance: InstanceMeta,
     registry: RunningRegistry,
     log_lines: Signal<Vec<String>>,
-    running: Signal<bool>,
-    process_started: Signal<bool>,
-    error: Signal<Option<String>>,
+    status: Memo<RunStatus>,
     launch_mode: Memo<LaunchMode>,
 ) -> impl IntoView {
     let navigate = use_navigate();
@@ -171,6 +158,12 @@ fn PlayContent(
         border-radius: 50%;
         background-color: #c0392b;
     };
+    let dot_preparing = css! {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background-color: #d4a017;
+    };
 
     view! {
         <div class=play_root>
@@ -191,31 +184,26 @@ fn PlayContent(
             </h2>
 
             <div class=status_row>
-                <Show
-                    when=move || error.get().is_some()
-                    fallback=move || view! {
-                        <Show
-                            when=move || running.get()
-                            fallback=move || view! {
-                                <div class=dot_stopped></div>
-                                <span style="opacity: 0.5;">"Stopped"</span>
-                            }
-                        >
-                            <div class=dot_running></div>
-                            <span>"Running"</span>
-                        </Show>
+                {move || {
+                    let s = status.get();
+                    let (dot, text_style) = match &s {
+                        RunStatus::Errored(_) => (dot_error, "color: #e74c3c;"),
+                        RunStatus::Running => (dot_running, ""),
+                        RunStatus::Preparing => (dot_preparing, ""),
+                        RunStatus::Stopped => (dot_stopped, "opacity: 0.5;"),
+                    };
+                    view! {
+                        <div class=dot></div>
+                        <span style=text_style>{s.label()}</span>
                     }
-                >
-                    <div class=dot_error></div>
-                    <span style="color: #e74c3c;">"Error"</span>
-                </Show>
+                }}
             </div>
 
             <LogViewer log_lines=log_lines>
                 <OpenInFileManager instance_id=open_instance_id />
                 <Button
                     variant=ButtonVariant::Danger
-                    disabled=Signal::derive(move || !process_started.get())
+                    disabled=Signal::derive(move || !status.get().is_stoppable())
                     on_click=Callback::new(move |_| stop_instance(registry, kill_instance_id.clone()))
                 >
                     "Stop"

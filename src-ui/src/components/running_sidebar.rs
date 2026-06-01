@@ -19,13 +19,59 @@ pub struct RunningInstance {
     pub name: String,
     pub mode: LaunchMode,
     pub log_lines: Vec<String>,
-    pub running: bool,
-    pub process_started: bool,
-    pub error: Option<String>,
+    pub status: RunStatus,
+}
+
+/// Lifecycle of a launched instance. A sum type so impossible combinations
+/// (e.g. "started but not running") can't be represented, and the label / dot
+/// mapping lives in one place instead of scattered boolean ladders.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum RunStatus {
+    /// Launch requested; libraries/assets resolving, process not yet spawned.
+    Preparing,
+    /// The Java process has spawned and is running.
+    Running,
+    /// The process exited (or never started) without an error.
+    Stopped,
+    /// The launch failed or the run ended with an error.
+    Errored(String),
+}
+
+impl RunStatus {
+    /// A launch is in flight (preparing or running) — don't start another.
+    pub fn is_active(&self) -> bool {
+        matches!(self, RunStatus::Preparing | RunStatus::Running)
+    }
+    /// The process has actually spawned, so it can be stopped.
+    pub fn is_stoppable(&self) -> bool {
+        matches!(self, RunStatus::Running)
+    }
+    /// Short status text for the UI.
+    pub fn label(&self) -> &'static str {
+        match self {
+            RunStatus::Preparing => "Preparing…",
+            RunStatus::Running => "Running",
+            RunStatus::Stopped => "Stopped",
+            RunStatus::Errored(_) => "Error",
+        }
+    }
 }
 
 /// Global registry of launched instances, provided via context by `App`.
 pub type RunningRegistry = RwSignal<Vec<RunningInstance>>;
+
+/// Convenience lookups over the registry so the `list.iter().find(id)` dance
+/// lives in one place rather than being copy-pasted at every read site.
+pub trait RegistryExt {
+    /// Map over the instance with `id` if present (tracks the registry).
+    fn map_instance<T>(&self, id: &str, f: impl FnOnce(&RunningInstance) -> T) -> Option<T>;
+}
+
+impl RegistryExt for RunningRegistry {
+    fn map_instance<T>(&self, id: &str, f: impl FnOnce(&RunningInstance) -> T) -> Option<T> {
+        self.with(|list| list.iter().find(|r| r.id == id).map(f))
+    }
+}
 
 /// Context wrapper for the Running sidebar's open/closed signal. Newtyped so it
 /// doesn't collide with other `RwSignal<bool>` values in the context map.
@@ -39,9 +85,7 @@ pub struct RunningSidebarOpen(pub RwSignal<bool>);
 struct RowView {
     id: String,
     name: String,
-    running: bool,
-    started: bool,
-    has_error: bool,
+    status: RunStatus,
 }
 
 #[derive(Serialize)]
@@ -67,7 +111,7 @@ pub fn start_launch(registry: RunningRegistry, inst: &InstanceMeta, mode: Launch
     // Never spawn a second copy of an instance that's already running. The
     // launch buttons disable themselves for running instances; this is the
     // backstop in case any caller reaches here anyway.
-    if registry.with_untracked(|list| list.iter().any(|r| r.id == inst.id && r.running)) {
+    if registry.with_untracked(|list| list.iter().any(|r| r.id == inst.id && r.status.is_active())) {
         return;
     }
     let entry = RunningInstance {
@@ -75,9 +119,7 @@ pub fn start_launch(registry: RunningRegistry, inst: &InstanceMeta, mode: Launch
         name: inst.name.clone(),
         mode,
         log_lines: vec![],
-        running: true,
-        process_started: false,
-        error: None,
+        status: RunStatus::Preparing,
     };
     registry.update(|list| {
         if let Some(existing) = list.iter_mut().find(|r| r.id == entry.id) {
@@ -98,10 +140,8 @@ pub fn start_launch(registry: RunningRegistry, inst: &InstanceMeta, mode: Launch
         if let Err(e) = ipc::call::<_, ()>("launch_instance", args).await {
             registry.update(|list| {
                 if let Some(r) = list.iter_mut().find(|r| r.id == id) {
-                    r.running = false;
-                    r.process_started = false;
                     r.log_lines.push(format!("[launch_instance failed] {e}"));
-                    r.error = Some(e);
+                    r.status = RunStatus::Errored(e);
                 }
             });
         }
@@ -315,7 +355,7 @@ pub fn RunningSidebar(registry: RunningRegistry, open: RwSignal<bool>) -> impl I
         padding: 32px 16px;
     };
 
-    let has_settled = Signal::derive(move || registry.with(|list| list.iter().any(|r| !r.running)));
+    let has_settled = Signal::derive(move || registry.with(|list| list.iter().any(|r| !r.status.is_active())));
 
     view! {
         <button
@@ -342,12 +382,10 @@ pub fn RunningSidebar(registry: RunningRegistry, open: RwSignal<bool>) -> impl I
                             list.iter().map(|r| RowView {
                                 id: r.id.clone(),
                                 name: r.name.clone(),
-                                running: r.running,
-                                started: r.process_started,
-                                has_error: r.error.is_some(),
+                                status: r.status.clone(),
                             }).collect::<Vec<_>>()
                         })
-                        key=|r| (r.id.clone(), r.running, r.started, r.has_error)
+                        key=|r| (r.id.clone(), r.status.clone())
                         children={
                             let navigate = navigate.clone();
                             move |r: RowView| {
@@ -355,25 +393,14 @@ pub fn RunningSidebar(registry: RunningRegistry, open: RwSignal<bool>) -> impl I
                                 let id_stop = r.id.clone();
                                 let id_dismiss = r.id.clone();
                                 let navigate = navigate.clone();
-                                let settled = !r.running;
-                                let can_stop = r.running && r.started;
-                                let status = if r.has_error {
-                                    "Error".to_string()
-                                } else if r.running && r.started {
-                                    "Running".to_string()
-                                } else if r.running {
-                                    "Preparing…".to_string()
-                                } else {
-                                    "Stopped".to_string()
-                                };
-                                let dot = if r.has_error {
-                                    dot_error
-                                } else if r.running && r.started {
-                                    dot_running
-                                } else if r.running {
-                                    dot_preparing
-                                } else {
-                                    dot_stopped
+                                let settled = !r.status.is_active();
+                                let can_stop = r.status.is_stoppable();
+                                let status = r.status.label();
+                                let dot = match &r.status {
+                                    RunStatus::Errored(_) => dot_error,
+                                    RunStatus::Running => dot_running,
+                                    RunStatus::Preparing => dot_preparing,
+                                    RunStatus::Stopped => dot_stopped,
                                 };
                                 view! {
                                     <div
@@ -423,7 +450,7 @@ pub fn RunningSidebar(registry: RunningRegistry, open: RwSignal<bool>) -> impl I
                 <PanelFooter>
                     <button
                         class=clear_btn
-                        on:click=move |_| registry.update(|list| list.retain(|r| r.running))
+                        on:click=move |_| registry.update(|list| list.retain(|r| r.status.is_active()))
                     >
                         "Clear stopped"
                     </button>

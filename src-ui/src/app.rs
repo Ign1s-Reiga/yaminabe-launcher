@@ -1,6 +1,6 @@
 use crate::components::{
     install_sidebar::{InstallJob, InstallSidebar},
-    running_sidebar::{RunningInstance, RunningRegistry, RunningSidebar, RunningSidebarOpen},
+    running_sidebar::{RunStatus, RunningInstance, RunningRegistry, RunningSidebar, RunningSidebarOpen},
 };
 use crate::pages::{
     home::HomePage,
@@ -109,11 +109,10 @@ pub fn App() -> impl IntoView {
             if let Some(r) = list.iter_mut().find(|r| r.id == msg.instance_id) {
                 r.log_lines.push(msg.line);
                 if msg.done {
-                    r.running = false;
-                    r.process_started = false;
-                    if msg.error.is_some() {
-                        r.error = msg.error;
-                    }
+                    r.status = match msg.error {
+                        Some(e) => RunStatus::Errored(e),
+                        None => RunStatus::Stopped,
+                    };
                 }
             }
         });
@@ -121,7 +120,11 @@ pub fn App() -> impl IntoView {
     ipc::on_event::<String, _>("instance-process-started", move |id| {
         running_registry.update(|list| {
             if let Some(r) = list.iter_mut().find(|r| r.id == id) {
-                r.process_started = true;
+                // Promote only from Preparing so a race can't resurrect a
+                // finished/errored entry.
+                if matches!(r.status, RunStatus::Preparing) {
+                    r.status = RunStatus::Running;
+                }
             }
         });
     });
@@ -214,7 +217,7 @@ pub fn InstantPlayButton(
     });
     let is_running = Signal::derive(move || {
         target.get()
-            .map(|i| registry.with(|l| l.iter().any(|r| r.id == i.id && r.running)))
+            .map(|i| registry.with(|l| l.iter().any(|r| r.id == i.id && r.status.is_active())))
             .unwrap_or(false)
     });
     // Inert when there's nothing to launch, or the target is already running —
