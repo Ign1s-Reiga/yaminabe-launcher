@@ -28,15 +28,16 @@ pub fn PlayPage() -> impl IntoView {
         })
     });
 
-    // `?mode=offline|online` (split Play button / defaults to Online), kept
-    // reactive so navigating straight from one instance's play page to
-    // another's picks up the new mode.
+    // `?mode=offline|online` is set by the split Play button (detail page) and
+    // the navbar Instant-Play button. Kept reactive so a relaunch picks up the
+    // mode of the latest navigation rather than the one we first mounted with.
     let query = use_query_map();
     let launch_mode = Memo::new(move |_| {
         LaunchMode::from_query(query.with(|q| q.get("mode")).as_deref())
     });
 
     let instances_ctx = use_context::<RwSignal<Vec<InstanceMeta>>>().expect("instances context");
+    let last_played_ctx = use_context::<RwSignal<Option<String>>>();
     let registry = use_context::<RunningRegistry>().expect("running registry");
     let sidebar_open = use_context::<RunningSidebarOpen>();
     let instance: RwSignal<Option<InstanceMeta>> = RwSignal::new(None);

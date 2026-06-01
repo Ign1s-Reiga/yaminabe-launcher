@@ -10,7 +10,7 @@ pub async fn search_curseforge_modpacks(
     index: u32,
     state: State<'_, AppState>,
 ) -> Result<ModpackSearchResults, Error> {
-    let api_key = state.settings.lock().unwrap().curseforge_api_key.clone();
+    let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
     curseforge::search_modpacks(&query, index, &state.http_client, &api_key).await
 }
 
@@ -19,7 +19,7 @@ pub async fn get_modpack_files(
     mod_id: u32,
     state: State<'_, AppState>,
 ) -> Result<Vec<ModpackVersionFile>, Error> {
-    let api_key = state.settings.lock().unwrap().curseforge_api_key.clone();
+    let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
     curseforge::get_modpack_files(mod_id, &state.http_client, &api_key).await
 }
 
@@ -38,7 +38,7 @@ pub async fn install_curseforge_modpack(
         .as_millis()
         .to_string();
 
-    let api_key = state.settings.lock().unwrap().curseforge_api_key.clone();
+    let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
 
     let result = curseforge::install_modpack(
         &app_handle, &id, &instance_name,
@@ -70,7 +70,7 @@ pub async fn download_mods(
             let ids: Vec<u32> = file_ids.iter()
                 .filter_map(|s| s.parse().ok())
                 .collect();
-            let api_key = state.settings.lock().unwrap().curseforge_api_key.clone();
+            let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
             curseforge::download_mods(ids, &instance_location, &api_key, &state.http_client).await
         }
         _ => modrinth::download_mods(&file_ids, &instance_location, &state.http_client).await,
