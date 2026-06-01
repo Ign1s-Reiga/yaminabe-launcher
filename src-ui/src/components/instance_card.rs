@@ -27,6 +27,17 @@ const FOLDERS: &[(&str, &str)] = &[
     ("saves", "Saves folder"),
 ];
 
+/// State of the delete-confirmation dialog. One value rather than three
+/// booleans/options, so impossible combinations (e.g. deleting while showing an
+/// error) can't be represented.
+#[derive(Clone, PartialEq)]
+enum DeleteDialog {
+    Closed,
+    Confirming,
+    Deleting,
+    Failed(String),
+}
+
 #[component]
 pub fn InstanceCard(
     instance: InstanceMeta,
@@ -40,12 +51,10 @@ pub fn InstanceCard(
     let refresh = use_context::<RwSignal<u32>>().expect("refresh context");
 
     // ── context-menu / dialog state ───────────────────────────────────────
-    let menu_open = RwSignal::new(false);
-    let menu_pos: RwSignal<(i32, i32)> = RwSignal::new((0, 0));
+    // `menu` is Some(cursor position) while the context menu is open.
+    let menu: RwSignal<Option<(i32, i32)>> = RwSignal::new(None);
     let submenu_open = RwSignal::new(false);
-    let confirm_delete = RwSignal::new(false);
-    let deleting = RwSignal::new(false);
-    let delete_error: RwSignal<Option<String>> = RwSignal::new(None);
+    let dialog = RwSignal::new(DeleteDialog::Closed);
     // Existence of [config, mods, resourcepacks, saves], fetched when the menu
     // opens so we only list folders that actually exist on disk.
     let subfolders: RwSignal<Vec<bool>> = RwSignal::new(vec![]);
@@ -163,19 +172,17 @@ pub fn InstanceCard(
 
     let on_confirm_delete = Callback::new(move |_: web_sys::MouseEvent| {
         let id = instance_id.get_value();
-        deleting.set(true);
-        delete_error.set(None);
+        dialog.set(DeleteDialog::Deleting);
         leptos::task::spawn_local(async move {
-            // Keep the dialog open on failure (e.g. the instance is running) so
-            // the reason is visible; only close and refresh on success.
+            // Close on success; on failure (e.g. the instance is running) move to
+            // Failed so the dialog stays open and shows the reason.
             match ipc::call::<_, ()>("delete_instance", IdArg { id }).await {
                 Ok(()) => {
                     refresh.update(|n| *n += 1);
-                    confirm_delete.set(false);
+                    dialog.set(DeleteDialog::Closed);
                 }
-                Err(e) => delete_error.set(Some(e)),
+                Err(e) => dialog.set(DeleteDialog::Failed(e)),
             }
-            deleting.set(false);
         });
     });
 
@@ -188,9 +195,8 @@ pub fn InstanceCard(
             on:contextmenu=move |ev: web_sys::MouseEvent| {
                 ev.prevent_default();
                 if pending { return; }
-                menu_pos.set((ev.client_x(), ev.client_y()));
+                menu.set(Some((ev.client_x(), ev.client_y())));
                 submenu_open.set(false);
-                menu_open.set(true);
                 let id = instance_id.get_value();
                 leptos::task::spawn_local(async move {
                     let res = ipc::call::<_, Vec<bool>>("get_instance_subfolders", IdArg { id })
@@ -208,23 +214,23 @@ pub fn InstanceCard(
             </CardBody>
         </div>
 
-        <Show when=move || menu_open.get()>
+        <Show when=move || menu.get().is_some()>
             <div
                 class=backdrop
-                on:mousedown=move |_| menu_open.set(false)
-                on:contextmenu=move |ev: web_sys::MouseEvent| { ev.prevent_default(); menu_open.set(false); }
+                on:mousedown=move |_| menu.set(None)
+                on:contextmenu=move |ev: web_sys::MouseEvent| { ev.prevent_default(); menu.set(None); }
             ></div>
             <div
                 class=menu_class
                 style=move || {
-                    let (x, y) = menu_pos.get();
+                    let (x, y) = menu.get().unwrap_or_default();
                     format!("position: fixed; top: {y}px; left: {x}px;")
                 }
             >
                 <button
                     class=item
                     on:click=move |_| {
-                        menu_open.set(false);
+                        menu.set(None);
                         navigate.with_value(|nav| nav(
                             &format!("/library/{}/play?mode=online", instance_id.get_value()),
                             Default::default(),
@@ -237,7 +243,7 @@ pub fn InstanceCard(
                 <button
                     class=item
                     on:click=move |_| {
-                        menu_open.set(false);
+                        menu.set(None);
                         navigate.with_value(|nav| nav(
                             &format!("/library/{}?tab=Settings", instance_id.get_value()),
                             Default::default(),
@@ -265,7 +271,7 @@ pub fn InstanceCard(
                                     <button
                                         class=item
                                         on:click=move |_| {
-                                            menu_open.set(false);
+                                            menu.set(None);
                                             let id = instance_id.get_value();
                                             let subfolder = subfolder.clone();
                                             leptos::task::spawn_local(async move {
@@ -288,7 +294,7 @@ pub fn InstanceCard(
                 <div class=divider></div>
                 <button
                     class=item_danger
-                    on:click=move |_| { menu_open.set(false); delete_error.set(None); confirm_delete.set(true); }
+                    on:click=move |_| { menu.set(None); dialog.set(DeleteDialog::Confirming); }
                 >
                     <Icon icon=TRASH size="16px" weight=IconWeight::Regular />
                     <span>"Delete"</span>
@@ -296,7 +302,7 @@ pub fn InstanceCard(
             </div>
         </Show>
 
-        <Show when=move || confirm_delete.get()>
+        <Show when=move || dialog.get() != DeleteDialog::Closed>
             <DialogOverlay>
                 <DialogBox>
                     <div>
@@ -308,21 +314,24 @@ pub fn InstanceCard(
                                 instance_name.get_value()
                             )}
                         </p>
-                        {move || delete_error.get().map(|e| view! {
-                            <p style="margin: 12px 0 0 0; color: #c0392b; font-size: 0.85rem;">{e}</p>
-                        })}
+                        {move || match dialog.get() {
+                            DeleteDialog::Failed(e) => Some(view! {
+                                <p style="margin: 12px 0 0 0; color: #c0392b; font-size: 0.85rem;">{e}</p>
+                            }),
+                            _ => None,
+                        }}
                     </div>
                     <DialogFooter>
                         <Button
                             variant=ButtonVariant::Secondary
-                            disabled=Signal::derive(move || deleting.get())
-                            on_click=Callback::new(move |_| { delete_error.set(None); confirm_delete.set(false); })
+                            disabled=Signal::derive(move || dialog.get() == DeleteDialog::Deleting)
+                            on_click=Callback::new(move |_| dialog.set(DeleteDialog::Closed))
                         >
                             "Cancel"
                         </Button>
                         <Button
                             variant=ButtonVariant::Danger
-                            disabled=Signal::derive(move || deleting.get())
+                            disabled=Signal::derive(move || dialog.get() == DeleteDialog::Deleting)
                             on_click=on_confirm_delete
                         >
                             "Delete"
