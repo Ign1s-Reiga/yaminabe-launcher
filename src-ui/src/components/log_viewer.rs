@@ -184,7 +184,7 @@ fn log_box_class() -> &'static str {
 /// above the log box — typically a `<Button>` or two (Stop, Open folder).
 #[component]
 pub fn LogViewer(
-    log_lines: RwSignal<Vec<String>>,
+    #[prop(into)] log_lines: Signal<Vec<String>>,
     children: Children,
 ) -> impl IntoView {
     let log_box_ref: NodeRef<html::Div> = NodeRef::new();

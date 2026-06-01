@@ -1,5 +1,6 @@
 use crate::components::{
     install_sidebar::{InstallJob, InstallSidebar},
+    running_sidebar::{RunStatus, RunningInstance, RunningRegistry, RunningSidebar, RunningSidebarOpen},
 };
 use crate::pages::{
     home::HomePage,
@@ -10,6 +11,7 @@ use crate::pages::{
     play::PlayPage,
 };
 use crate::ipc;
+use crate::signal_ext::VecSignalExt;
 use bamboo_css_macro::{css, cx, styled};
 use leptos::prelude::*;
 use leptos::{component, IntoView, view, web_sys};
@@ -18,6 +20,7 @@ use leptos_router::hooks::{use_location, use_navigate};
 use leptos_router::path;
 use phosphor_leptos::{Icon, IconData, IconWeight, BOOKS, GEAR_SIX, HOUSE, MAGNIFYING_GLASS, PLAY};
 use yaminabe_launcher_shared::datatypes::{AppSettings, InstanceMeta, LaunchMode};
+use yaminabe_launcher_shared::ipc::LogLine;
 
 styled!(MainViewWrapper, div, {
     height: 100vh;
@@ -94,6 +97,39 @@ pub fn App() -> impl IntoView {
         }
     });
 
+    // Global registry of launched instances so several can run at once and a
+    // launch survives navigating away from its play page. App-level listeners
+    // route per-instance log/lifecycle events into the matching entry.
+    let running_registry: RwSignal<Vec<RunningInstance>> = RwSignal::new(vec![]);
+    let running_open = RwSignal::new(false);
+    provide_context(running_registry);
+    provide_context(RunningSidebarOpen(running_open));
+
+    ipc::on_event::<LogLine, _>("instance-log", move |msg| {
+        running_registry.update(|list| {
+            if let Some(r) = list.iter_mut().find(|r| r.id == msg.instance_id) {
+                r.log_lines.push(msg.line);
+                if msg.done {
+                    r.status = match msg.error {
+                        Some(e) => RunStatus::Errored(e),
+                        None => RunStatus::Stopped,
+                    };
+                }
+            }
+        });
+    });
+    ipc::on_event::<String, _>("instance-process-started", move |id| {
+        running_registry.update(|list| {
+            if let Some(r) = list.iter_mut().find(|r| r.id == id) {
+                // Promote only from Preparing so a race can't resurrect a
+                // finished/errored entry.
+                if matches!(r.status, RunStatus::Preparing) {
+                    r.status = RunStatus::Running;
+                }
+            }
+        });
+    });
+
     view! {
         <Router>
             <MainViewWrapper>
@@ -120,6 +156,7 @@ pub fn App() -> impl IntoView {
                     <NavigationButton href="/search" icon=MAGNIFYING_GLASS label="Search"/>
                     <NavigationButton href="/settings" icon=GEAR_SIX label="Settings"/>
                 </MainViewNavbar>
+                <RunningSidebar registry=running_registry open=running_open />
             </MainViewWrapper>
         </Router>
     }
@@ -173,16 +210,26 @@ pub fn InstantPlayButton(
 ) -> impl IntoView {
     let navigate = use_navigate();
     let mode: RwSignal<LaunchMode> = RwSignal::new(LaunchMode::Online);
+    let registry = use_context::<RunningRegistry>().expect("running registry");
 
     let target = Signal::derive(move || {
         let id = last_played.get()?;
         instances.get().into_iter().find(|i| i.id == id)
     });
-    let disabled = Signal::derive(move || target.get().is_none());
-    let title = move || {
+    let is_running = Signal::derive(move || {
         target.get()
-            .map(|i| format!("Instant Play — {}", i.name))
-            .unwrap_or_else(|| "No recently played instance".to_string())
+            .and_then(|i| registry.map_by_id(&i.id, |r| r.status.is_active()))
+            .unwrap_or(false)
+    });
+    // Inert when there's nothing to launch, or the target is already running —
+    // we never start a second copy of the same instance.
+    let disabled = Signal::derive(move || target.get().is_none() || is_running.get());
+    let title = move || {
+        match target.get() {
+            Some(i) if is_running.get() => format!("{} is already running", i.name),
+            Some(i) => format!("Instant Play — {}", i.name),
+            None => "No recently played instance".to_string(),
+        }
     };
 
     // The wrapper has no fixed height — it stretches to the navbar like a
@@ -272,11 +319,15 @@ pub fn InstantPlayButton(
                 <div class=column style=content_style>
                     <div class=panel>
                         <Icon icon=PLAY size="32px" weight=IconWeight::Fill />
-                        <p class=label_class>"Online"</p>
+                        <p class=label_class>
+                            {move || if is_running.get() { "Running" } else { "Online" }}
+                        </p>
                     </div>
                     <div class=panel>
                         <Icon icon=PLAY size="32px" weight=IconWeight::Fill />
-                        <p class=label_class>"Offline"</p>
+                        <p class=label_class>
+                            {move || if is_running.get() { "Running" } else { "Offline" }}
+                        </p>
                     </div>
                 </div>
             </div>

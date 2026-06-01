@@ -1,35 +1,19 @@
 use crate::components::log_viewer::LogViewer;
 use crate::components::open_in_file_manager::OpenInFileManager;
+use crate::components::running_sidebar::{start_launch, stop_instance, RunStatus, RunningRegistry, RunningSidebarOpen};
+use crate::signal_ext::VecSignalExt;
 use crate::components::ui::{Button, ButtonVariant};
-use crate::ipc;
 use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{IntoView, component, view};
 use leptos_router::hooks::{use_navigate, use_params, use_query_map};
 use leptos_router::params::Params;
-use serde::Serialize;
-use yaminabe_launcher_shared::datatypes::{InstanceMeta, LaunchMode, ModLoader};
-use yaminabe_launcher_shared::ipc::LogLine;
+use yaminabe_launcher_shared::datatypes::{InstanceMeta, LaunchMode};
 
 #[derive(PartialEq, Clone, Params)]
 struct PlayParams {
     id: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LaunchArgs {
-    instance_id: String,
-    mc_version: String,
-    mod_loader: ModLoader,
-    launch_mode: LaunchMode,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct KillArgs {
-    instance_id: String,
 }
 
 #[component]
@@ -55,91 +39,72 @@ pub fn PlayPage() -> impl IntoView {
 
     let instances_ctx = use_context::<RwSignal<Vec<InstanceMeta>>>().expect("instances context");
     let last_played_ctx = use_context::<RwSignal<Option<String>>>();
-    let instance: RwSignal<Option<InstanceMeta>> = RwSignal::new(None);
+    let registry = use_context::<RunningRegistry>().expect("running registry");
+    let sidebar_open = use_context::<RunningSidebarOpen>();
+    // Derived directly from the instances context + route id — no separate
+    // signal or syncing effect needed.
+    let instance = Memo::new(move |_| instances_ctx.map_by_id(&id.get(), |i| i.clone()));
 
-    Effect::new(move |_| {
-        let id = id.get();
-        instance.set(instances_ctx.get().into_iter().find(|i| i.id == id));
-    });
-
-    let log_lines: RwSignal<Vec<String>> = RwSignal::new(vec![]);
-    let running: RwSignal<bool> = RwSignal::new(false);
-    // True only after the backend has spawned the Java process and registered
-    // its PID — Stop is gated on this so a click during version/asset
-    // preparation can't race kill_instance against an empty PID map.
-    let process_started: RwSignal<bool> = RwSignal::new(false);
-    let error: RwSignal<Option<String>> = RwSignal::new(None);
-
-    ipc::on_event::<LogLine, _>("instance-log", move |msg| {
-        if msg.instance_id != id.get_untracked() {
-            return;
-        }
-        log_lines.update(|v| v.push(msg.line.clone()));
-        if msg.done {
-            running.set(false);
-            process_started.set(false);
-            if msg.error.is_some() {
-                error.set(msg.error);
-            }
-        }
-    });
-
-    ipc::on_event::<String, _>("instance-process-started", move |started_id| {
-        if started_id == id.get_untracked() {
-            process_started.set(true);
-        }
-    });
-
-    // Launch is keyed on (instance id, navigation nonce): a fresh `?t=` nonce
-    // from the navbar Instant-Play button relaunches the same instance even
-    // when its play page is already mounted (e.g. after it stopped/crashed).
-    let launch_key: RwSignal<Option<(String, String)>> = RwSignal::new(None);
+    // Decide per viewed instance whether to launch or just view. A `?mode=`
+    // query marks a deliberate Play action (the detail page's Play button sets
+    // it); the Running sidebar navigates here without it, so clicking a stopped
+    // row inspects its retained logs instead of relaunching. Keyed on id so
+    // switching between two instances' play pages re-evaluates for the new one.
+    let launched_id: RwSignal<Option<String>> = RwSignal::new(None);
     Effect::new(move |_| {
         let Some(inst) = instance.get() else {
             return;
         };
-        let nonce = query.with(|q| q.get("t")).unwrap_or_default();
-        let key = (inst.id.clone(), nonce);
-        if launch_key.get_untracked().as_ref() == Some(&key) {
+        if launched_id.get_untracked().as_deref() == Some(inst.id.as_str()) {
             return;
         }
-        launch_key.set(Some(key));
-        if let Some(lp) = last_played_ctx {
-            lp.set(Some(inst.id.clone()));
-        }
+        launched_id.set(Some(inst.id.clone()));
 
-        running.set(true);
-        process_started.set(false);
-        log_lines.set(vec![]);
-        error.set(None);
-
-        let mode = launch_mode.get_untracked();
-        leptos::task::spawn_local(async move {
-            // Per-line failures arrive via the `instance-log` event stream;
-            // IPC-layer rejections don't, so push them into the same viewer.
-            if let Err(e) = ipc::call::<_, ()>(
-                "launch_instance",
-                LaunchArgs {
-                    instance_id: inst.id.clone(),
-                    mc_version: inst.game_version.clone(),
-                    mod_loader: inst.mod_loader.clone(),
-                    launch_mode: mode,
-                },
-            )
-            .await
-            {
-                log_lines.update(|v| v.push(format!("[launch_instance failed] {e}")));
-                running.set(false);
-                process_started.set(false);
-                error.set(Some(e));
+        let (has_entry, is_running) = registry.with_untracked(|list| {
+            match list.iter().find(|r| r.id == inst.id) {
+                Some(r) => (true, r.status.is_active()),
+                None => (false, false),
             }
         });
+        let launch_intent = query.with_untracked(|q| q.get("mode").is_some());
+
+        // Launch on a first-time open, or an explicit Play of a non-running
+        // instance; otherwise just view the existing (live or stopped) entry.
+        if !is_running && (!has_entry || launch_intent) {
+            start_launch(registry, &inst, launch_mode.get_untracked());
+            // Point the navbar Instant-Play button at what we just launched —
+            // the backend persists this too, but the in-session signal has no
+            // other refresh path.
+            if let Some(lp) = last_played_ctx {
+                lp.set(Some(inst.id.clone()));
+            }
+            if let Some(open) = sidebar_open {
+                open.0.set(true);
+            }
+        }
+    });
+
+    // Per-instance view derived from the global registry so logs/status persist
+    // across navigation and stay live while this page is mounted. `status` is a
+    // memo, so it only re-notifies on a real status change, not on every log
+    // line; the lookup itself lives in VecSignalExt::map_by_id.
+    let status = Memo::new(move |_| {
+        registry.map_by_id(&id.get(), |r| r.status.clone()).unwrap_or(RunStatus::Stopped)
+    });
+    let log_lines = Signal::derive(move || {
+        registry.map_by_id(&id.get(), |r| r.log_lines.clone()).unwrap_or_default()
     });
 
     view! {
         <Show when=move || instance.get().is_some()>
             {move || instance.get().map(|inst| view! {
-                <PlayContent instance=inst log_lines running process_started error launch_mode />
+                <PlayContent
+                    instance=inst
+                    registry=registry
+                    log_lines=log_lines
+                    status=status
+                    launch_mode=launch_mode
+                />
             })}
         </Show>
     }
@@ -148,10 +113,9 @@ pub fn PlayPage() -> impl IntoView {
 #[component]
 fn PlayContent(
     instance: InstanceMeta,
-    log_lines: RwSignal<Vec<String>>,
-    running: RwSignal<bool>,
-    process_started: RwSignal<bool>,
-    error: RwSignal<Option<String>>,
+    registry: RunningRegistry,
+    log_lines: Signal<Vec<String>>,
+    status: Memo<RunStatus>,
     launch_mode: Memo<LaunchMode>,
 ) -> impl IntoView {
     let navigate = use_navigate();
@@ -192,13 +156,18 @@ fn PlayContent(
         border-radius: 50%;
         background-color: #c0392b;
     };
+    let dot_preparing = css! {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background-color: #d4a017;
+    };
 
     view! {
         <div class=play_root>
             <Button
                 variant=ButtonVariant::Text
                 style="margin-bottom: 24px;"
-                disabled=Signal::derive(move || running.get())
                 on_click=Callback::new(move |_| navigate(&back_path, Default::default()))
             >
                 "← Back to Instance"
@@ -213,42 +182,27 @@ fn PlayContent(
             </h2>
 
             <div class=status_row>
-                <Show
-                    when=move || error.get().is_some()
-                    fallback=move || view! {
-                        <Show
-                            when=move || running.get()
-                            fallback=move || view! {
-                                <div class=dot_stopped></div>
-                                <span style="opacity: 0.5;">"Stopped"</span>
-                            }
-                        >
-                            <div class=dot_running></div>
-                            <span>"Running"</span>
-                        </Show>
+                {move || {
+                    let s = status.get();
+                    let (dot, text_style) = match &s {
+                        RunStatus::Errored(_) => (dot_error, "color: #e74c3c;"),
+                        RunStatus::Running => (dot_running, ""),
+                        RunStatus::Preparing => (dot_preparing, ""),
+                        RunStatus::Stopped => (dot_stopped, "opacity: 0.5;"),
+                    };
+                    view! {
+                        <div class=dot></div>
+                        <span style=text_style>{s.label()}</span>
                     }
-                >
-                    <div class=dot_error></div>
-                    <span style="color: #e74c3c;">"Error"</span>
-                </Show>
+                }}
             </div>
 
-            <LogViewer log_lines>
+            <LogViewer log_lines=log_lines>
                 <OpenInFileManager instance_id=open_instance_id />
                 <Button
                     variant=ButtonVariant::Danger
-                    disabled=Signal::derive(move || !process_started.get())
-                    on_click=Callback::new(move |_| {
-                        let id = kill_instance_id.clone();
-                        leptos::task::spawn_local(async move {
-                            if let Err(e) = ipc::call::<_, ()>(
-                                "kill_instance",
-                                KillArgs { instance_id: id },
-                            ).await {
-                                log_lines.update(|v| v.push(format!("[kill_instance failed] {e}")));
-                            }
-                        });
-                    })
+                    disabled=Signal::derive(move || !status.get().is_stoppable())
+                    on_click=Callback::new(move |_| stop_instance(registry, kill_instance_id.clone()))
                 >
                     "Stop"
                 </Button>
