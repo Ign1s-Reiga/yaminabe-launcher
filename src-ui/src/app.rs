@@ -11,6 +11,7 @@ use crate::pages::{
     play::PlayPage,
 };
 use crate::ipc;
+use crate::signal_ext::VecSignalExt;
 use bamboo_css_macro::{css, cx, styled};
 use leptos::prelude::*;
 use leptos::{component, IntoView, view, web_sys};
@@ -217,7 +218,7 @@ pub fn InstantPlayButton(
     });
     let is_running = Signal::derive(move || {
         target.get()
-            .map(|i| registry.with(|l| l.iter().any(|r| r.id == i.id && r.status.is_active())))
+            .and_then(|i| registry.map_by_id(&i.id, |r| r.status.is_active()))
             .unwrap_or(false)
     });
     // Inert when there's nothing to launch, or the target is already running —

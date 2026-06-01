@@ -6,6 +6,7 @@ use leptos_router::hooks::use_navigate;
 use serde::Serialize;
 use yaminabe_launcher_shared::datatypes::{InstanceMeta, LaunchMode, ModLoader};
 use crate::ipc;
+use crate::signal_ext::HasId;
 
 // ── Data model ────────────────────────────────────────────────────────────────
 
@@ -57,21 +58,14 @@ impl RunStatus {
     }
 }
 
-/// Global registry of launched instances, provided via context by `App`.
-pub type RunningRegistry = RwSignal<Vec<RunningInstance>>;
-
-/// Convenience lookups over the registry so the `list.iter().find(id)` dance
-/// lives in one place rather than being copy-pasted at every read site.
-pub trait RegistryExt {
-    /// Map over the instance with `id` if present (tracks the registry).
-    fn map_instance<T>(&self, id: &str, f: impl FnOnce(&RunningInstance) -> T) -> Option<T>;
-}
-
-impl RegistryExt for RunningRegistry {
-    fn map_instance<T>(&self, id: &str, f: impl FnOnce(&RunningInstance) -> T) -> Option<T> {
-        self.with(|list| list.iter().find(|r| r.id == id).map(f))
+impl HasId for RunningInstance {
+    fn id(&self) -> &str {
+        &self.id
     }
 }
+
+/// Global registry of launched instances, provided via context by `App`.
+pub type RunningRegistry = RwSignal<Vec<RunningInstance>>;
 
 /// Context wrapper for the Running sidebar's open/closed signal. Newtyped so it
 /// doesn't collide with other `RwSignal<bool>` values in the context map.

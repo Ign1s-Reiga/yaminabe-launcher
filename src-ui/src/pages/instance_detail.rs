@@ -1,5 +1,6 @@
 use crate::components::open_in_file_manager::OpenInFileManager;
-use crate::components::running_sidebar::{RegistryExt, RunningRegistry};
+use crate::components::running_sidebar::RunningRegistry;
+use crate::signal_ext::VecSignalExt;
 use crate::components::settings::{SaveState, SettingsProp, SettingsSection};
 use crate::components::ui::{Button, ButtonSize, ButtonVariant, SelectInput, SliderInput, TabBar, Textarea, input_class};
 use crate::ipc;
@@ -39,10 +40,7 @@ pub fn InstanceDetailPage() -> impl IntoView {
     });
 
     let instances_ctx = use_context::<RwSignal<Vec<InstanceMeta>>>().expect("instances context");
-    let instance = Memo::new(move |_| {
-        let id = id.get();
-        instances_ctx.get().into_iter().find(|i| i.id == id)
-    });
+    let instance = Memo::new(move |_| instances_ctx.map_by_id(&id.get(), |i| i.clone()));
 
     view! {
         <Show when=move || instance.get().is_some()>
@@ -76,7 +74,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     let registry = use_context::<RunningRegistry>().expect("running registry");
     let instance_id_running = instance_id.clone();
     let is_running = Signal::derive(move || {
-        registry.map_instance(&instance_id_running, |r| r.status.is_active()).unwrap_or(false)
+        registry.map_by_id(&instance_id_running, |r| r.status.is_active()).unwrap_or(false)
     });
 
     let java_installs = LocalResource::new(|| async move {

@@ -1,6 +1,7 @@
 use crate::components::log_viewer::LogViewer;
 use crate::components::open_in_file_manager::OpenInFileManager;
-use crate::components::running_sidebar::{start_launch, stop_instance, RegistryExt, RunStatus, RunningRegistry, RunningSidebarOpen};
+use crate::components::running_sidebar::{start_launch, stop_instance, RunStatus, RunningRegistry, RunningSidebarOpen};
+use crate::signal_ext::VecSignalExt;
 use crate::components::ui::{Button, ButtonVariant};
 use bamboo_css_macro::css;
 use leptos::control_flow::Show;
@@ -42,10 +43,7 @@ pub fn PlayPage() -> impl IntoView {
     let sidebar_open = use_context::<RunningSidebarOpen>();
     // Derived directly from the instances context + route id — no separate
     // signal or syncing effect needed.
-    let instance = Memo::new(move |_| {
-        let id = id.get();
-        instances_ctx.get().into_iter().find(|i| i.id == id)
-    });
+    let instance = Memo::new(move |_| instances_ctx.map_by_id(&id.get(), |i| i.clone()));
 
     // Decide per viewed instance whether to launch or just view. A `?mode=`
     // query marks a deliberate Play action (the detail page's Play button sets
@@ -89,12 +87,12 @@ pub fn PlayPage() -> impl IntoView {
     // Per-instance view derived from the global registry so logs/status persist
     // across navigation and stay live while this page is mounted. `status` is a
     // memo, so it only re-notifies on a real status change, not on every log
-    // line; the lookup itself lives in RegistryExt::map_instance.
+    // line; the lookup itself lives in VecSignalExt::map_by_id.
     let status = Memo::new(move |_| {
-        registry.map_instance(&id.get(), |r| r.status.clone()).unwrap_or(RunStatus::Stopped)
+        registry.map_by_id(&id.get(), |r| r.status.clone()).unwrap_or(RunStatus::Stopped)
     });
     let log_lines = Signal::derive(move || {
-        registry.map_instance(&id.get(), |r| r.log_lines.clone()).unwrap_or_default()
+        registry.map_by_id(&id.get(), |r| r.log_lines.clone()).unwrap_or_default()
     });
 
     view! {
