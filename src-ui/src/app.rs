@@ -1,6 +1,6 @@
 use crate::components::{
     install_sidebar::{InstallJob, InstallSidebar},
-    running_sidebar::{RunningInstance, RunningSidebar, RunningSidebarOpen},
+    running_sidebar::{RunningInstance, RunningRegistry, RunningSidebar, RunningSidebarOpen},
 };
 use crate::pages::{
     home::HomePage,
@@ -206,16 +206,26 @@ pub fn InstantPlayButton(
 ) -> impl IntoView {
     let navigate = use_navigate();
     let mode: RwSignal<LaunchMode> = RwSignal::new(LaunchMode::Online);
+    let registry = use_context::<RunningRegistry>().expect("running registry");
 
     let target = Signal::derive(move || {
         let id = last_played.get()?;
         instances.get().into_iter().find(|i| i.id == id)
     });
-    let disabled = Signal::derive(move || target.get().is_none());
-    let title = move || {
+    let is_running = Signal::derive(move || {
         target.get()
-            .map(|i| format!("Instant Play — {}", i.name))
-            .unwrap_or_else(|| "No recently played instance".to_string())
+            .map(|i| registry.with(|l| l.iter().any(|r| r.id == i.id && r.running)))
+            .unwrap_or(false)
+    });
+    // Inert when there's nothing to launch, or the target is already running —
+    // we never start a second copy of the same instance.
+    let disabled = Signal::derive(move || target.get().is_none() || is_running.get());
+    let title = move || {
+        match target.get() {
+            Some(i) if is_running.get() => format!("{} is already running", i.name),
+            Some(i) => format!("Instant Play — {}", i.name),
+            None => "No recently played instance".to_string(),
+        }
     };
 
     // The wrapper has no fixed height — it stretches to the navbar like a
@@ -305,11 +315,15 @@ pub fn InstantPlayButton(
                 <div class=column style=content_style>
                     <div class=panel>
                         <Icon icon=PLAY size="32px" weight=IconWeight::Fill />
-                        <p class=label_class>"Online"</p>
+                        <p class=label_class>
+                            {move || if is_running.get() { "Running" } else { "Online" }}
+                        </p>
                     </div>
                     <div class=panel>
                         <Icon icon=PLAY size="32px" weight=IconWeight::Fill />
-                        <p class=label_class>"Offline"</p>
+                        <p class=label_class>
+                            {move || if is_running.get() { "Running" } else { "Offline" }}
+                        </p>
                     </div>
                 </div>
             </div>

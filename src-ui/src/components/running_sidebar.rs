@@ -64,6 +64,12 @@ struct KillArgs {
 /// flow back through the app-level `instance-log` / `instance-process-started`
 /// listeners; only the synchronous IPC rejection is handled here.
 pub fn start_launch(registry: RunningRegistry, inst: &InstanceMeta, mode: LaunchMode) {
+    // Never spawn a second copy of an instance that's already running. The
+    // launch buttons disable themselves for running instances; this is the
+    // backstop in case any caller reaches here anyway.
+    if registry.with_untracked(|list| list.iter().any(|r| r.id == inst.id && r.running)) {
+        return;
+    }
     let entry = RunningInstance {
         id: inst.id.clone(),
         name: inst.name.clone(),

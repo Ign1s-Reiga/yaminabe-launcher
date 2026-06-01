@@ -1,4 +1,5 @@
 use crate::components::open_in_file_manager::OpenInFileManager;
+use crate::components::running_sidebar::RunningRegistry;
 use crate::components::settings::{SaveState, SettingsProp, SettingsSection};
 use crate::components::ui::{Button, ButtonSize, ButtonVariant, SelectInput, SliderInput, TabBar, Textarea, input_class};
 use crate::ipc;
@@ -72,6 +73,14 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     let launch_mode: RwSignal<LaunchMode> = RwSignal::new(LaunchMode::Online);
     let jre_path: RwSignal<String> = RwSignal::new(instance.jre_path.clone());
 
+    // Whether this instance is currently running, so the Play button can show
+    // "Running" and refuse to launch a second copy.
+    let registry = use_context::<RunningRegistry>().expect("running registry");
+    let instance_id_running = instance_id.clone();
+    let is_running = Signal::derive(move || {
+        registry.with(|l| l.iter().any(|r| r.id == instance_id_running && r.running))
+    });
+
     let java_installs = LocalResource::new(|| async move {
         ipc::call_noargs::<Vec<JavaInstall>>("get_java_installs").await.unwrap_or_default()
     });
@@ -136,6 +145,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
             <SplitPlayButton
                 dropdown_open=dropdown_open
                 launch_mode=launch_mode
+                running=is_running
                 on_play=Callback::new(move |_| {
                     dropdown_open.set(false);
                     let mode = launch_mode.get_untracked();
@@ -269,6 +279,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
 fn SplitPlayButton(
     dropdown_open: RwSignal<bool>,
     launch_mode: RwSignal<LaunchMode>,
+    running: Signal<bool>,
     on_play: Callback<leptos::web_sys::MouseEvent>,
 ) -> impl IntoView {
     let wrapper = css! {
@@ -349,17 +360,23 @@ fn SplitPlayButton(
             <Button
                 variant=ButtonVariant::Primary
                 size=ButtonSize::Big
+                disabled=running
                 style="border-top-right-radius: 0; border-bottom-right-radius: 0;"
                 on_click=on_play
             >
-                {move || match launch_mode.get() {
-                    LaunchMode::Online => "▶  Play Online",
-                    LaunchMode::Offline => "▶  Play Offline",
+                {move || if running.get() {
+                    "●  Running".to_string()
+                } else {
+                    match launch_mode.get() {
+                        LaunchMode::Online => "▶  Play Online".to_string(),
+                        LaunchMode::Offline => "▶  Play Offline".to_string(),
+                    }
                 }}
             </Button>
             <Button
                 variant=ButtonVariant::Primary
                 size=ButtonSize::Big
+                disabled=running
                 style="border-top-left-radius: 0; border-bottom-left-radius: 0; \
                        padding-left: 10px; padding-right: 10px; \
                        border-left: 1px solid rgb(255 255 255 / 0.22);"
