@@ -69,7 +69,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     let instance_id_open = instance_id.clone();
     let dropdown_open: RwSignal<bool> = RwSignal::new(false);
     let launch_mode: RwSignal<LaunchMode> = RwSignal::new(LaunchMode::Online);
-    let jre_path: RwSignal<String> = RwSignal::new(instance.jre_path.clone());
+    let jre_path = StoredValue::new(instance.jre_path.clone());
 
     // Whether this instance is currently running, so the Play button can show
     // "Running" and refuse to launch a second copy.
@@ -84,7 +84,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     });
 
     let description_sig = RwSignal::new(instance.description.clone());
-    let jvm_args_init: RwSignal<String> = RwSignal::new(instance.jvm_args.clone());
+    let jvm_args_init = StoredValue::new(instance.jvm_args.clone());
 
     let on_settings_submit = move |ev: SubmitEvent| {
         let Some(data) = ipc::form_data_from_submit(&ev) else { return };
@@ -188,7 +188,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
                     >
                         {move || {
                             let installs = java_installs.get().unwrap_or_default();
-                            let current = jre_path.get_untracked();
+                            let current = jre_path.get_value();
                             view! {
                                 <SelectInput name="jre_path">
                                     <option value="" selected={current.is_empty()}>"Recommended"</option>
@@ -220,7 +220,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
                     >
                         <Textarea
                             name="jvm_args"
-                            default_value=jvm_args_init.get_untracked()
+                            default_value=jvm_args_init.get_value()
                             placeholder="-XX:+UseG1GC -XX:MaxGCPauseMillis=50"
                         />
                     </SettingsProp>

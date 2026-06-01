@@ -16,18 +16,17 @@ struct GetSubfoldersArgs { id: String }
 pub fn OpenInFileManager(instance_id: String) -> impl IntoView {
     let (open_dropdown, set_open_dropdown) = signal(false);
 
-    let id_for_resource = instance_id.clone();
+    // The id never changes; StoredValue keeps it Copy for the closures below
+    // without the overhead (and reactivity) of an RwSignal.
+    let instance_id = StoredValue::new(instance_id);
     let existing = LocalResource::new(move || {
-        let id = id_for_resource.clone();
+        let id = instance_id.get_value();
         async move {
             ipc::call::<_, Vec<bool>>("get_instance_subfolders", GetSubfoldersArgs { id })
                 .await
                 .unwrap_or_default()
         }
     });
-
-    let id_root: RwSignal<String> = RwSignal::new(instance_id.clone());
-    let id_subs: RwSignal<String> = RwSignal::new(instance_id);
 
     let dropdown_wrap = css! {
         position: relative;
@@ -77,7 +76,7 @@ pub fn OpenInFileManager(instance_id: String) -> impl IntoView {
                         class=dropdown_item
                         on:click=move |_| {
                             set_open_dropdown.set(false);
-                            let id = id_root.get_untracked();
+                            let id = instance_id.get_value();
                             leptos::task::spawn_local(async move {
                                 if let Err(e) = ipc::call::<_, ()>("open_instance_subfolder",
                                     OpenSubfolderArgs { id, subfolder: String::new() }).await {
@@ -90,7 +89,7 @@ pub fn OpenInFileManager(instance_id: String) -> impl IntoView {
                     </button>
                     {move || {
                         let existing = existing.get().unwrap_or_default();
-                        let id_str = id_subs.get_untracked();
+                        let id_str = instance_id.get_value();
                         [("config", "Config folder"), ("mods", "Mods folder"),
                          ("resourcepacks", "Resourcepacks folder"), ("saves", "Saves folder")]
                             .iter()
