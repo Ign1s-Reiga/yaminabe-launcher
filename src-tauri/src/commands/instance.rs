@@ -3,7 +3,7 @@ use log::info;
 use tauri::State;
 use yaminabe_launcher_shared::datatypes::{ModLoader, InstanceMeta};
 use yaminabe_launcher_shared::error::Error;
-use crate::{emit_progress, libraries_dir, versions_dir, AppState};
+use crate::{emit_progress, libraries_dir, versions_dir, ActivityGuard, AppState, InstanceActivity};
 use crate::commands::java::download_java_runtime;
 use crate::install_task::{
     ensure_fabric, ensure_forge, ensure_neoforge, ensure_quilt, ensure_vanilla,
@@ -209,28 +209,19 @@ pub fn save_instance_settings(
 
 #[tauri::command]
 pub fn delete_instance(id: String, state: State<'_, AppState>) -> Result<(), Error> {
-    // Claim an exclusive slot under the same lock launch_instance uses, so the
-    // "is it busy?" check and the claim are atomic. A launch that hasn't started
-    // yet is then refused (it never resolves or uses the directory we're about
-    // to remove), and a launch already in flight makes us refuse here. The slot
-    // — not the lock — is held across the removal and freed on every path, so we
-    // don't block other instances' launch bookkeeping during the file I/O.
-    {
-        let mut active = state.active_launches.lock().unwrap();
-        if active.contains_key(&id) {
-            return Err(Error::Invalid(
-                "Cannot delete an instance while it is launching or running. Stop it first.".to_string(),
-            ));
-        }
-        active.insert(id.clone(), None);
-    }
-    let result = (|| -> Result<(), Error> {
-        let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
-        let dir = find_instance_dir(Path::new(&install_dir), &id)?;
-        std::fs::remove_dir_all(&dir)?;
-        info!("Deleted instance '{id}' at {}", dir.display());
-        Ok(())
-    })();
-    state.active_launches.lock().unwrap().remove(&id);
-    result
+    // Claim a Deleting slot atomically (refusing if a launch/delete is already
+    // in flight) and hold it across the removal via the guard, so a launch can't
+    // start and resolve the directory we're removing. The guard frees the slot —
+    // not the lock — on every exit path, so the file I/O doesn't block other
+    // instances' bookkeeping.
+    let Some(_activity) = ActivityGuard::claim(&state.instance_activity, &id, InstanceActivity::Deleting) else {
+        return Err(Error::Invalid(
+            "Cannot delete an instance while it is launching or running. Stop it first.".to_string(),
+        ));
+    };
+    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
+    let dir = find_instance_dir(Path::new(&install_dir), &id)?;
+    std::fs::remove_dir_all(&dir)?;
+    info!("Deleted instance '{id}' at {}", dir.display());
+    Ok(())
 }

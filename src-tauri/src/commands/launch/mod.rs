@@ -3,16 +3,14 @@ mod assets;
 mod classpath;
 mod manifest;
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use log::info;
 use tauri::{Emitter, State};
 use yaminabe_launcher_shared::datatypes::{InstanceMeta, LaunchMode, ModLoader};
 use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::ipc::LogLine;
-use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, AppState};
+use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, ActivityGuard, AppState, InstanceActivity};
 use crate::commands::auth::{
     hydrate_account, persist_account, refresh_account_tokens, MinecraftAccount,
     MinecraftAccountRecord,
@@ -27,19 +25,6 @@ use self::args::{
 use self::assets::download_assets;
 use self::classpath::{build_classpath, extract_natives, find_main_class_jar, jar_contains_class};
 use self::manifest::{load_manifest, merge_manifest};
-
-/// Clears an instance's entry from `active_launches` when dropped, so every exit
-/// path out of `launch_instance` (success, `fail!`, `?`) unregisters the launch.
-struct LaunchGuard {
-    map: Arc<Mutex<HashMap<String, Option<u32>>>>,
-    id: String,
-}
-
-impl Drop for LaunchGuard {
-    fn drop(&mut self) {
-        self.map.lock().unwrap().remove(&self.id);
-    }
-}
 
 #[tauri::command]
 pub async fn launch_instance(
@@ -58,22 +43,18 @@ pub async fn launch_instance(
     let launch_mode = launch_mode.unwrap_or(LaunchMode::Online);
 
     // Claim this id for the whole launch lifecycle (PID filled in once the
-    // process spawns) so delete_instance refuses during prep too. Refuse if a
-    // launch is already in flight for this id: a stale or duplicate IPC call
+    // process spawns) so delete_instance refuses during prep too. `claim` fails
+    // if a launch/delete is already in flight: a stale or duplicate IPC call
     // (e.g. after a WebView reload, whose registry no longer remembers the live
-    // process) must not overwrite the existing entry and orphan its process.
-    // The guard clears only our own entry, and only once we've claimed it.
-    let active_launches = state.active_launches.clone();
-    {
-        let mut map = active_launches.lock().unwrap();
-        if map.contains_key(&instance_id) {
-            return Err(Error::Invalid(format!(
-                "Instance '{instance_id}' is already launching or running."
-            )));
-        }
-        map.insert(instance_id.clone(), None);
-    }
-    let _launch_guard = LaunchGuard { map: active_launches, id: instance_id.clone() };
+    // process) must not disturb the existing entry. The guard frees only our own
+    // claim, and only on the paths that reach here after claiming it.
+    let Some(_activity) = ActivityGuard::claim(
+        &state.instance_activity, &instance_id, InstanceActivity::Preparing,
+    ) else {
+        return Err(Error::Invalid(format!(
+            "Instance '{instance_id}' is already launching or running."
+        )));
+    };
 
     let instance_location = {
         let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
@@ -433,10 +414,10 @@ pub async fn launch_instance(
         Err(e) => fail!(Error::ChildProcess(format!("spawning Java process: {e}"))),
     };
     if let Some(pid) = child.id() {
-        state.active_launches.lock().unwrap().insert(instance_id.clone(), Some(pid));
+        state.instance_activity.lock().unwrap().insert(instance_id.clone(), InstanceActivity::Running(pid));
         // Frontend gates its Stop control on this event — without it, a click
         // during the preparation phase would reach kill_instance before a PID
-        // is recorded (the active_launches entry still holds None).
+        // is recorded (the entry is still InstanceActivity::Preparing).
         app_handle.emit("instance-process-started", &instance_id).ok();
     }
 
@@ -526,8 +507,12 @@ pub async fn kill_instance(
     instance_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    // `flatten` skips a still-preparing launch (entry present, PID still None).
-    let pid = state.active_launches.lock().unwrap().get(&instance_id).copied().flatten();
+    // Only a spawned (Running) launch has a killable PID; a still-preparing or
+    // being-deleted entry has none.
+    let pid = match state.instance_activity.lock().unwrap().get(&instance_id) {
+        Some(InstanceActivity::Running(pid)) => Some(*pid),
+        _ => None,
+    };
     let Some(pid) = pid else {
         return Err(Error::NotExists(format!("running instance '{instance_id}'")));
     };
