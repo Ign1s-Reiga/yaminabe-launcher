@@ -23,7 +23,7 @@ use crate::commands::modfile::{
 use crate::commands::minecraft::{
     fetch_minecraft_versions, get_minecraft_versions, get_modloader_versions, VersionManifest,
 };
-use crate::commands::instance::{create_instance, get_instances, save_instance_settings};
+use crate::commands::instance::{create_instance, delete_instance, get_instances, save_instance_settings};
 use crate::commands::launch::{kill_instance, launch_instance};
 use crate::commands::java::{detect_java_installs, get_java_installs};
 use crate::commands::settings::{get_instance_subfolders, get_settings, open_instance_subfolder, pick_folder, save_settings};
@@ -41,15 +41,58 @@ pub fn emit_progress(app: &tauri::AppHandle, id: &str, name: &str, step: &str, d
 }
 
 
+/// What an instance id is currently busy with. Its presence in
+/// [`AppState::instance_activity`] makes launching, a second launch, and
+/// deletion mutually exclusive.
+pub enum InstanceActivity {
+    /// A launch is in flight but its process hasn't spawned yet.
+    Preparing,
+    /// A launch's process is running with this OS PID.
+    Running(u32),
+    /// A delete is removing the instance directory.
+    Deleting,
+}
+
+/// Map of instance id → its in-flight exclusive activity.
+pub type InstanceActivityMap = Arc<Mutex<HashMap<String, InstanceActivity>>>;
+
+/// RAII claim on an instance id's activity slot. [`ActivityGuard::claim`] inserts
+/// it under the lock (failing if already busy) and the guard frees it on drop,
+/// covering every exit path out of launch/delete (success, `?`, early return).
+pub struct ActivityGuard {
+    map: InstanceActivityMap,
+    id: String,
+}
+
+impl ActivityGuard {
+    /// Atomically claim `id` for `activity` if it isn't already occupied.
+    /// Returns `None` — leaving the map untouched — when the id is already busy.
+    pub fn claim(map: &InstanceActivityMap, id: &str, activity: InstanceActivity) -> Option<Self> {
+        let mut guarded = map.lock().unwrap();
+        if guarded.contains_key(id) {
+            return None;
+        }
+        guarded.insert(id.to_string(), activity);
+        Some(Self { map: map.clone(), id: id.to_string() })
+    }
+}
+
+impl Drop for ActivityGuard {
+    fn drop(&mut self) {
+        self.map.lock().unwrap().remove(&self.id);
+    }
+}
+
 pub struct AppState {
     pub settings: RwLock<AppSettings>,
     pub http_client: reqwest::Client,
     pub mc_versions: OnceLock<VersionManifest>,
     pub java_installs: Mutex<Vec<JavaInstall>>,
-    /// Maps `instance_id` to the OS PID of the currently spawned Java process.
-    /// Populated by `launch_instance` after spawn and cleared when the child
-    /// exits; read by `kill_instance` to issue a TerminateProcess.
-    pub running_children: Mutex<HashMap<String, u32>>,
+    /// In-flight exclusive activity per instance id. `launch_instance` and
+    /// `delete_instance` claim a slot via `ActivityGuard` under this lock, so
+    /// launching, a second launch, and deletion are mutually exclusive;
+    /// `kill_instance` reads the `Running` PID.
+    pub instance_activity: InstanceActivityMap,
     /// Persisted Microsoft accounts plus the currently selected UUID. Backed
     /// by `accounts.json`.
     pub account_store: Mutex<AccountStore>,
@@ -142,7 +185,7 @@ pub fn run() {
                 http_client: reqwest::Client::new(),
                 mc_versions: OnceLock::new(),
                 java_installs: Mutex::new(java_installs),
-                running_children: Mutex::new(HashMap::new()),
+                instance_activity: Arc::new(Mutex::new(HashMap::new())),
                 account_store: Mutex::new(account_store),
                 ms_login_cancel: Arc::new(AtomicBool::new(false)),
             });
@@ -180,6 +223,7 @@ pub fn run() {
             create_instance,
             get_instances,
             save_instance_settings,
+            delete_instance,
             get_minecraft_versions,
             get_modloader_versions,
             get_java_installs,

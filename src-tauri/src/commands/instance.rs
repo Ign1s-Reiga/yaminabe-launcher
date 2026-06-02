@@ -3,7 +3,7 @@ use log::info;
 use tauri::State;
 use yaminabe_launcher_shared::datatypes::{ModLoader, InstanceMeta};
 use yaminabe_launcher_shared::error::Error;
-use crate::{emit_progress, libraries_dir, versions_dir, AppState};
+use crate::{emit_progress, libraries_dir, versions_dir, ActivityGuard, AppState, InstanceActivity};
 use crate::commands::java::download_java_runtime;
 use crate::install_task::{
     ensure_fabric, ensure_forge, ensure_neoforge, ensure_quilt, ensure_vanilla,
@@ -204,5 +204,24 @@ pub fn save_instance_settings(
 
     let json = serde_json::to_string_pretty(&meta)?;
     std::fs::write(&json_path, json)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_instance(id: String, state: State<'_, AppState>) -> Result<(), Error> {
+    // Claim a Deleting slot atomically (refusing if a launch/delete is already
+    // in flight) and hold it across the removal via the guard, so a launch can't
+    // start and resolve the directory we're removing. The guard frees the slot —
+    // not the lock — on every exit path, so the file I/O doesn't block other
+    // instances' bookkeeping.
+    let Some(_activity) = ActivityGuard::claim(&state.instance_activity, &id, InstanceActivity::Deleting) else {
+        return Err(Error::Invalid(
+            "Cannot delete an instance while it is launching or running. Stop it first.".to_string(),
+        ));
+    };
+    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
+    let dir = find_instance_dir(Path::new(&install_dir), &id)?;
+    std::fs::remove_dir_all(&dir)?;
+    info!("Deleted instance '{id}' at {}", dir.display());
     Ok(())
 }

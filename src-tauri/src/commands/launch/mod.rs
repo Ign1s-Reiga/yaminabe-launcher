@@ -10,7 +10,7 @@ use tauri::{Emitter, State};
 use yaminabe_launcher_shared::datatypes::{InstanceMeta, LaunchMode, ModLoader};
 use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::ipc::LogLine;
-use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, AppState};
+use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, ActivityGuard, AppState, InstanceActivity};
 use crate::commands::auth::{
     hydrate_account, persist_account, refresh_account_tokens, MinecraftAccount,
     MinecraftAccountRecord,
@@ -41,6 +41,21 @@ pub async fn launch_instance(
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
     let launch_mode = launch_mode.unwrap_or(LaunchMode::Online);
+
+    // Claim this id for the whole launch lifecycle (PID filled in once the
+    // process spawns) so delete_instance refuses during prep too. `claim` fails
+    // if a launch/delete is already in flight: a stale or duplicate IPC call
+    // (e.g. after a WebView reload, whose registry no longer remembers the live
+    // process) must not disturb the existing entry. The guard frees only our own
+    // claim, and only on the paths that reach here after claiming it.
+    let Some(_activity) = ActivityGuard::claim(
+        &state.instance_activity, &instance_id, InstanceActivity::Preparing,
+    ) else {
+        return Err(Error::Invalid(format!(
+            "Instance '{instance_id}' is already launching or running."
+        )));
+    };
+
     let instance_location = {
         let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
         find_instance_dir(Path::new(&install_dir), &instance_id)?
@@ -399,10 +414,10 @@ pub async fn launch_instance(
         Err(e) => fail!(Error::ChildProcess(format!("spawning Java process: {e}"))),
     };
     if let Some(pid) = child.id() {
-        state.running_children.lock().unwrap().insert(instance_id.clone(), pid);
+        state.instance_activity.lock().unwrap().insert(instance_id.clone(), InstanceActivity::Running(pid));
         // Frontend gates its Stop control on this event — without it, a click
-        // during the preparation phase would race kill_instance against the
-        // not-yet-populated `running_children` map.
+        // during the preparation phase would reach kill_instance before a PID
+        // is recorded (the entry is still InstanceActivity::Preparing).
         app_handle.emit("instance-process-started", &instance_id).ok();
     }
 
@@ -449,7 +464,8 @@ pub async fn launch_instance(
     let t2 = tokio::spawn(drain(stderr, app_handle.clone(), instance_id.clone(), true));
 
     let status = child.wait().await?;
-    state.running_children.lock().unwrap().remove(&instance_id);
+    // Removal is handled by `_launch_guard` on return, covering this and every
+    // earlier exit path.
     t1.await.ok();
     t2.await.ok();
 
@@ -491,7 +507,12 @@ pub async fn kill_instance(
     instance_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let pid = state.running_children.lock().unwrap().get(&instance_id).copied();
+    // Only a spawned (Running) launch has a killable PID; a still-preparing or
+    // being-deleted entry has none.
+    let pid = match state.instance_activity.lock().unwrap().get(&instance_id) {
+        Some(InstanceActivity::Running(pid)) => Some(*pid),
+        _ => None,
+    };
     let Some(pid) = pid else {
         return Err(Error::NotExists(format!("running instance '{instance_id}'")));
     };

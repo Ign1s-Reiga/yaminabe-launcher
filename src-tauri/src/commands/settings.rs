@@ -29,15 +29,19 @@ pub async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
     rx.await.ok().flatten()
 }
 
+/// Names of the well-known subfolders that actually exist for this instance —
+/// the single source of truth for the list (the UI renders the instance root
+/// plus whatever this returns). Extend the array here to offer more folders.
 #[tauri::command]
-pub fn get_instance_subfolders(id: String, state: State<'_, AppState>) -> Vec<bool> {
+pub fn get_instance_subfolders(id: String, state: State<'_, AppState>) -> Vec<String> {
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
     let Ok(dir) = find_instance_dir(Path::new(&install_dir), &id) else {
-        return vec![false; 4];
+        return Vec::new();
     };
     ["config", "mods", "resourcepacks", "saves"]
-        .iter()
-        .map(|s| dir.join(s).exists())
+        .into_iter()
+        .filter(|s| dir.join(s).exists())
+        .map(String::from)
         .collect()
 }
 

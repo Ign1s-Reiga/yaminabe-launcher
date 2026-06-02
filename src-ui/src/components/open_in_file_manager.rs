@@ -12,6 +12,17 @@ struct OpenSubfolderArgs { id: String, subfolder: String }
 #[derive(Serialize)]
 struct GetSubfoldersArgs { id: String }
 
+/// Human label for a subfolder name: `""` (the instance root) → "Instance
+/// folder", `"config"` → "Config folder", and so on. The folder set itself is
+/// owned by the backend's `get_instance_subfolders`; this only renders names.
+pub fn folder_label(name: &str) -> String {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) => format!("{}{} folder", first.to_uppercase(), chars.as_str()),
+        None => "Instance folder".to_string(),
+    }
+}
+
 #[component]
 pub fn OpenInFileManager(instance_id: String) -> impl IntoView {
     let (open_dropdown, set_open_dropdown) = signal(false);
@@ -22,7 +33,7 @@ pub fn OpenInFileManager(instance_id: String) -> impl IntoView {
     let existing = LocalResource::new(move || {
         let id = instance_id.get_value();
         async move {
-            ipc::call::<_, Vec<bool>>("get_instance_subfolders", GetSubfoldersArgs { id })
+            ipc::call::<_, Vec<String>>("get_instance_subfolders", GetSubfoldersArgs { id })
                 .await
                 .unwrap_or_default()
         }
@@ -72,48 +83,28 @@ pub fn OpenInFileManager(instance_id: String) -> impl IntoView {
             </Button>
             <Show when=move || open_dropdown.get()>
                 <div class=dropdown_list>
-                    <button
-                        class=dropdown_item
-                        on:click=move |_| {
-                            set_open_dropdown.set(false);
-                            let id = instance_id.get_value();
-                            leptos::task::spawn_local(async move {
-                                if let Err(e) = ipc::call::<_, ()>("open_instance_subfolder",
-                                    OpenSubfolderArgs { id, subfolder: String::new() }).await {
-                                    log::error!("open_instance_subfolder (root) failed: {e}");
-                                }
-                            });
-                        }
-                    >
-                        "Instance folder"
-                    </button>
+                    // Instance root (always) followed by whatever subfolders exist.
                     {move || {
-                        let existing = existing.get().unwrap_or_default();
-                        let id_str = instance_id.get_value();
-                        [("config", "Config folder"), ("mods", "Mods folder"),
-                         ("resourcepacks", "Resourcepacks folder"), ("saves", "Saves folder")]
-                            .iter()
-                            .enumerate()
-                            .filter(|(i, _)| existing.get(*i).copied().unwrap_or(false))
-                            .map(|(_, (sub, label))| {
-                                let id = id_str.clone();
-                                let subfolder = sub.to_string();
+                        std::iter::once(String::new())
+                            .chain(existing.get().unwrap_or_default())
+                            .map(|subfolder| {
+                                let label = folder_label(&subfolder);
                                 view! {
                                     <button
                                         class=dropdown_item
                                         on:click=move |_| {
                                             set_open_dropdown.set(false);
-                                            let id = id.clone();
-                                            let sf = subfolder.clone();
+                                            let id = instance_id.get_value();
+                                            let subfolder = subfolder.clone();
                                             leptos::task::spawn_local(async move {
                                                 if let Err(e) = ipc::call::<_, ()>("open_instance_subfolder",
-                                                    OpenSubfolderArgs { id, subfolder: sf }).await {
+                                                    OpenSubfolderArgs { id, subfolder }).await {
                                                     log::error!("open_instance_subfolder failed: {e}");
                                                 }
                                             });
                                         }
                                     >
-                                        {*label}
+                                        {label}
                                     </button>
                                 }
                             })
