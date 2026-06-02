@@ -1,7 +1,6 @@
 use std::io::Read;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
 
 use log::info;
 use serde::Deserialize;
@@ -350,7 +349,6 @@ pub async fn download_mods(
     }
 
     let mods_dir = PathBuf::from(instance_location).join("mods");
-    std::fs::create_dir_all(&mods_dir)?;
 
     let mut file_entries: Vec<ModFilesEntry> = Vec::new();
     for chunk in file_ids.chunks(50) {
@@ -368,36 +366,15 @@ pub async fn download_mods(
         file_entries.extend(data.data);
     }
 
-    let client = client.clone();
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(3));
-    let mut handles: Vec<tokio::task::JoinHandle<Result<(), Error>>> = Vec::new();
-
-    for entry in file_entries {
-        let Some(url) = entry.download_url else {
-            info!("Skipping {} (distribution restricted)", entry.file_name);
-            continue;
-        };
-        let client = client.clone();
-        let mods_dir = mods_dir.clone();
-        let sem = Arc::clone(&semaphore);
-        let file_name = entry.file_name.clone();
-        handles.push(tokio::spawn(async move {
-            let _permit = sem.acquire_owned().await
-                .map_err(|e| Error::ChildProcess(format!("semaphore acquire: {e}")))?;
-            let resp = client.get(&url).send().await?;
-            if !resp.status().is_success() {
-                return Err(Error::HttpRequestRejected(resp.status().as_u16(), url));
+    let files: Vec<(String, String)> = file_entries.into_iter().filter_map(|entry| {
+        match entry.download_url {
+            Some(url) => Some((url, entry.file_name)),
+            None => {
+                info!("Skipping {} (distribution restricted)", entry.file_name);
+                None
             }
-            let bytes = resp.bytes().await.map_err(Error::InvalidResponse)?;
-            std::fs::write(mods_dir.join(&file_name), &bytes)?;
-            info!("Downloaded {file_name}");
-            Ok(())
-        }));
-    }
+        }
+    }).collect();
 
-    for handle in handles {
-        handle.await.map_err(|e| Error::ChildProcess(format!("download task panicked: {e}")))??;
-    }
-
-    Ok(())
+    super::download_files(client, files, &mods_dir).await
 }
