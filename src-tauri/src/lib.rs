@@ -46,10 +46,11 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub mc_versions: OnceLock<VersionManifest>,
     pub java_installs: Mutex<Vec<JavaInstall>>,
-    /// Maps `instance_id` to the OS PID of the currently spawned Java process.
-    /// Populated by `launch_instance` after spawn and cleared when the child
-    /// exits; read by `kill_instance` to issue a TerminateProcess.
-    pub running_children: Mutex<HashMap<String, u32>>,
+    /// Active launches, each mapped to its spawned process PID once it exists
+    /// (`None` during the pre-spawn prep phase). An entry is present for the
+    /// whole `launch_instance` lifecycle, so `kill_instance` can read the PID
+    /// and `delete_instance` can refuse while an id is present (prep or running).
+    pub active_launches: Arc<Mutex<HashMap<String, Option<u32>>>>,
     /// Persisted Microsoft accounts plus the currently selected UUID. Backed
     /// by `accounts.json`.
     pub account_store: Mutex<AccountStore>,
@@ -142,7 +143,7 @@ pub fn run() {
                 http_client: reqwest::Client::new(),
                 mc_versions: OnceLock::new(),
                 java_installs: Mutex::new(java_installs),
-                running_children: Mutex::new(HashMap::new()),
+                active_launches: Arc::new(Mutex::new(HashMap::new())),
                 account_store: Mutex::new(account_store),
                 ms_login_cancel: Arc::new(AtomicBool::new(false)),
             });

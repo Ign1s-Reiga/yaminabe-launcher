@@ -3,7 +3,9 @@ mod assets;
 mod classpath;
 mod manifest;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use log::info;
 use tauri::{Emitter, State};
@@ -26,6 +28,19 @@ use self::assets::download_assets;
 use self::classpath::{build_classpath, extract_natives, find_main_class_jar, jar_contains_class};
 use self::manifest::{load_manifest, merge_manifest};
 
+/// Clears an instance's entry from `active_launches` when dropped, so every exit
+/// path out of `launch_instance` (success, `fail!`, `?`) unregisters the launch.
+struct LaunchGuard {
+    map: Arc<Mutex<HashMap<String, Option<u32>>>>,
+    id: String,
+}
+
+impl Drop for LaunchGuard {
+    fn drop(&mut self) {
+        self.map.lock().unwrap().remove(&self.id);
+    }
+}
+
 #[tauri::command]
 pub async fn launch_instance(
     app_handle: tauri::AppHandle,
@@ -41,6 +56,14 @@ pub async fn launch_instance(
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
     let launch_mode = launch_mode.unwrap_or(LaunchMode::Online);
+
+    // Register this launch up front (PID filled in once the process spawns) so
+    // delete_instance refuses for the whole lifecycle, including the pre-spawn
+    // prep phase. The guard clears it on every exit path.
+    let active_launches = state.active_launches.clone();
+    active_launches.lock().unwrap().insert(instance_id.clone(), None);
+    let _launch_guard = LaunchGuard { map: active_launches, id: instance_id.clone() };
+
     let instance_location = {
         let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
         find_instance_dir(Path::new(&install_dir), &instance_id)?
@@ -399,10 +422,10 @@ pub async fn launch_instance(
         Err(e) => fail!(Error::ChildProcess(format!("spawning Java process: {e}"))),
     };
     if let Some(pid) = child.id() {
-        state.running_children.lock().unwrap().insert(instance_id.clone(), pid);
+        state.active_launches.lock().unwrap().insert(instance_id.clone(), Some(pid));
         // Frontend gates its Stop control on this event — without it, a click
-        // during the preparation phase would race kill_instance against the
-        // not-yet-populated `running_children` map.
+        // during the preparation phase would reach kill_instance before a PID
+        // is recorded (the active_launches entry still holds None).
         app_handle.emit("instance-process-started", &instance_id).ok();
     }
 
@@ -449,7 +472,8 @@ pub async fn launch_instance(
     let t2 = tokio::spawn(drain(stderr, app_handle.clone(), instance_id.clone(), true));
 
     let status = child.wait().await?;
-    state.running_children.lock().unwrap().remove(&instance_id);
+    // Removal is handled by `_launch_guard` on return, covering this and every
+    // earlier exit path.
     t1.await.ok();
     t2.await.ok();
 
@@ -491,7 +515,8 @@ pub async fn kill_instance(
     instance_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let pid = state.running_children.lock().unwrap().get(&instance_id).copied();
+    // `flatten` skips a still-preparing launch (entry present, PID still None).
+    let pid = state.active_launches.lock().unwrap().get(&instance_id).copied().flatten();
     let Some(pid) = pid else {
         return Err(Error::NotExists(format!("running instance '{instance_id}'")));
     };
