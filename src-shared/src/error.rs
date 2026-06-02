@@ -22,7 +22,7 @@ pub enum Error {
     #[error("Server rejected request: {0} {1}")]
     HttpRequestRejected(u16, String),
     /// Server returned invalid response.
-    #[error("Unexpected or malformed data: {0}")]
+    #[error("Malformed server response: {0}")]
     InvalidResponse(reqwest::Error),
     /// Checksum validation is failed.
     #[error("SHA1 mismatch for {resource}: expected {sha1}, got {hex}")]
