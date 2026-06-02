@@ -57,11 +57,22 @@ pub async fn launch_instance(
 ) -> Result<(), Error> {
     let launch_mode = launch_mode.unwrap_or(LaunchMode::Online);
 
-    // Register this launch up front (PID filled in once the process spawns) so
-    // delete_instance refuses for the whole lifecycle, including the pre-spawn
-    // prep phase. The guard clears it on every exit path.
+    // Claim this id for the whole launch lifecycle (PID filled in once the
+    // process spawns) so delete_instance refuses during prep too. Refuse if a
+    // launch is already in flight for this id: a stale or duplicate IPC call
+    // (e.g. after a WebView reload, whose registry no longer remembers the live
+    // process) must not overwrite the existing entry and orphan its process.
+    // The guard clears only our own entry, and only once we've claimed it.
     let active_launches = state.active_launches.clone();
-    active_launches.lock().unwrap().insert(instance_id.clone(), None);
+    {
+        let mut map = active_launches.lock().unwrap();
+        if map.contains_key(&instance_id) {
+            return Err(Error::Invalid(format!(
+                "Instance '{instance_id}' is already launching or running."
+            )));
+        }
+        map.insert(instance_id.clone(), None);
+    }
     let _launch_guard = LaunchGuard { map: active_launches, id: instance_id.clone() };
 
     let instance_location = {
