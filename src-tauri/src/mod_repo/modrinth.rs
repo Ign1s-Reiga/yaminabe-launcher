@@ -2,7 +2,23 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use log::info;
+use serde::Deserialize;
 use yaminabe_launcher_shared::error::Error;
+use crate::http_utils::fetch_json;
+
+#[derive(Deserialize)]
+struct ModrinthVersion {
+    #[serde(default)]
+    files: Vec<ModrinthFile>,
+}
+
+#[derive(Deserialize)]
+struct ModrinthFile {
+    url: String,
+    filename: String,
+    #[serde(default)]
+    primary: bool,
+}
 
 pub async fn download_mods(
     version_ids: &[String],
@@ -17,25 +33,20 @@ pub async fn download_mods(
     std::fs::create_dir_all(&mods_dir)?;
 
     let ids_json = serde_json::to_string(version_ids)?;
-    let versions: serde_json::Value = client
-        .get("https://api.modrinth.com/v2/versions")
+    let versions = fetch_json(client, "https://api.modrinth.com/v2/versions")
         .query(&[("ids", ids_json.as_str())])
-        .send().await?
-        .json().await
-        .map_err(|e| Error::InvalidResponse(e))?;
+        .send::<Vec<ModrinthVersion>>()
+        .await?;
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(3));
     let mut handles: Vec<tokio::task::JoinHandle<Result<(), Error>>> = Vec::new();
 
-    for version in versions.as_array().unwrap_or(&vec![]) {
-        let files = version["files"].as_array();
-        let file = files.and_then(|f| {
-            f.iter().find(|e| e["primary"].as_bool() == Some(true)).or_else(|| f.first())
-        });
+    for version in versions {
+        // Prefer the primary file, falling back to the first listed.
+        let file = version.files.iter().find(|f| f.primary).or_else(|| version.files.first());
         let Some(file) = file else { continue };
-
-        let url      = file["url"].as_str().unwrap_or_default().to_string();
-        let filename = file["filename"].as_str().unwrap_or_default().to_string();
+        let url = file.url.clone();
+        let filename = file.filename.clone();
         if url.is_empty() || filename.is_empty() { continue }
 
         let client   = client.clone();
