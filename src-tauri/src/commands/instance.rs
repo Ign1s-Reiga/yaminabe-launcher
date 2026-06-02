@@ -209,18 +209,28 @@ pub fn save_instance_settings(
 
 #[tauri::command]
 pub fn delete_instance(id: String, state: State<'_, AppState>) -> Result<(), Error> {
-    // Refuse for the whole launch lifecycle, including the pre-spawn prep phase:
-    // the working directory / ${game_directory} is resolved at launch start, so
-    // removing it mid-prep would break the in-flight launch (and on Windows it
-    // can fail on locked files once the process is live).
-    if state.active_launches.lock().unwrap().contains_key(&id) {
-        return Err(Error::Invalid(
-            "Cannot delete an instance while it is launching or running. Stop it first.".to_string(),
-        ));
+    // Claim an exclusive slot under the same lock launch_instance uses, so the
+    // "is it busy?" check and the claim are atomic. A launch that hasn't started
+    // yet is then refused (it never resolves or uses the directory we're about
+    // to remove), and a launch already in flight makes us refuse here. The slot
+    // — not the lock — is held across the removal and freed on every path, so we
+    // don't block other instances' launch bookkeeping during the file I/O.
+    {
+        let mut active = state.active_launches.lock().unwrap();
+        if active.contains_key(&id) {
+            return Err(Error::Invalid(
+                "Cannot delete an instance while it is launching or running. Stop it first.".to_string(),
+            ));
+        }
+        active.insert(id.clone(), None);
     }
-    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
-    let dir = find_instance_dir(Path::new(&install_dir), &id)?;
-    std::fs::remove_dir_all(&dir)?;
-    info!("Deleted instance '{id}' at {}", dir.display());
-    Ok(())
+    let result = (|| -> Result<(), Error> {
+        let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
+        let dir = find_instance_dir(Path::new(&install_dir), &id)?;
+        std::fs::remove_dir_all(&dir)?;
+        info!("Deleted instance '{id}' at {}", dir.display());
+        Ok(())
+    })();
+    state.active_launches.lock().unwrap().remove(&id);
+    result
 }

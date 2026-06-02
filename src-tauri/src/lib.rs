@@ -46,10 +46,12 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub mc_versions: OnceLock<VersionManifest>,
     pub java_installs: Mutex<Vec<JavaInstall>>,
-    /// Active launches, each mapped to its spawned process PID once it exists
-    /// (`None` during the pre-spawn prep phase). An entry is present for the
-    /// whole `launch_instance` lifecycle, so `kill_instance` can read the PID
-    /// and `delete_instance` can refuse while an id is present (prep or running).
+    /// Ids occupied by an exclusive operation, mapped to a running process's PID
+    /// when one exists (`None` while a launch is still preparing, or while a
+    /// `delete_instance` holds the slot during directory removal). Both
+    /// `launch_instance` and `delete_instance` check-and-claim under this one
+    /// lock, so launching, a second launch, and deletion are mutually exclusive;
+    /// `kill_instance` reads the PID.
     pub active_launches: Arc<Mutex<HashMap<String, Option<u32>>>>,
     /// Persisted Microsoft accounts plus the currently selected UUID. Backed
     /// by `accounts.json`.
