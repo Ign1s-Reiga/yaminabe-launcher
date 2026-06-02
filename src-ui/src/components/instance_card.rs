@@ -6,8 +6,10 @@ use leptos_router::hooks::use_navigate;
 use phosphor_leptos::{Icon, IconWeight, FOLDER_OPEN, GEAR_SIX, PLAY, TRASH};
 use serde::Serialize;
 use yaminabe_launcher_shared::datatypes::InstanceMeta;
+use crate::components::running_sidebar::RunningRegistry;
 use crate::components::ui::{Button, ButtonVariant, DialogBox, DialogFooter, DialogOverlay};
 use crate::ipc;
+use crate::signal_ext::VecSignalExt;
 
 #[derive(Serialize)]
 struct IdArg { id: String }
@@ -49,6 +51,12 @@ pub fn InstanceCard(
     let instance_id = StoredValue::new(instance.id.clone());
     let instance_name = StoredValue::new(instance.name.clone());
     let refresh = use_context::<RwSignal<u32>>().expect("refresh context");
+    let registry = use_context::<RunningRegistry>().expect("running registry");
+    // Whether this instance is currently launching/running, so the menu's Play
+    // item reads "Running" and is disabled rather than offering a second launch.
+    let is_running = Signal::derive(move || {
+        registry.map_by_id(&instance_id.get_value(), |r| r.status.is_active()).unwrap_or(false)
+    });
 
     // ── context-menu / dialog state ───────────────────────────────────────
     // `menu` is Some(cursor position) while the context menu is open.
@@ -122,6 +130,8 @@ pub fn InstanceCard(
         box-sizing: border-box;
         transition: background-color 0.12s ease;
         &:hover { background-color: var(--secondary-color); }
+        &:disabled { opacity: 0.45; cursor: not-allowed; }
+        &:disabled:hover { background-color: transparent; }
     };
     let item_danger = css! {
         display: flex;
@@ -229,6 +239,7 @@ pub fn InstanceCard(
             >
                 <button
                     class=item
+                    prop:disabled=move || is_running.get()
                     on:click=move |_| {
                         menu.set(None);
                         navigate.with_value(|nav| nav(
@@ -238,7 +249,7 @@ pub fn InstanceCard(
                     }
                 >
                     <Icon icon=PLAY size="16px" weight=IconWeight::Fill />
-                    <span>"Play"</span>
+                    <span>{move || if is_running.get() { "Running" } else { "Play" }}</span>
                 </button>
                 <button
                     class=item
