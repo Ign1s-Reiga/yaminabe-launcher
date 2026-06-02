@@ -14,6 +14,10 @@ use leptos_router::params::Params;
 use serde::Serialize;
 use yaminabe_launcher_shared::datatypes::{InstanceMeta, JavaInstall, LaunchMode};
 
+/// Detail-page tabs, in order; the first is the default. Single source for both
+/// the TabBar and the `?tab=` deep-link validation.
+const TABS: [&str; 3] = ["Description", "Mods", "Settings"];
+
 #[derive(Params, PartialEq, Clone)]
 struct InstanceParams {
     id: Option<String>,
@@ -57,8 +61,8 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     // context-menu "Settings" entry); fall back to Description otherwise.
     let initial_tab = use_query_map()
         .with_untracked(|q| q.get("tab"))
-        .filter(|t| ["Description", "Mods", "Settings"].contains(&t.as_str()))
-        .unwrap_or_else(|| "Description".to_string());
+        .filter(|t| TABS.contains(&t.as_str()))
+        .unwrap_or_else(|| TABS[0].to_string());
     let active_tab = RwSignal::new(initial_tab);
     let save_state: RwSignal<SaveState> = RwSignal::new(SaveState::Idle);
 
@@ -160,7 +164,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
         </InstanceDetailHeader>
 
         <TabBar
-            tabs=Signal::derive(|| vec!["Description".to_string(), "Mods".to_string(), "Settings".to_string()])
+            tabs=Signal::derive(|| TABS.iter().map(|s| s.to_string()).collect::<Vec<_>>())
             active=active_tab
             attr:class=css! { margin-bottom: 28px; }
         />
