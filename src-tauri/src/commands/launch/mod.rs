@@ -12,7 +12,7 @@ use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::ipc::LogLine;
 use yaminabe_launcher_shared::version_manifest::ClientManifest;
 use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, ActivityGuard, AppState, InstanceActivity};
-use crate::commands::auth::{
+use crate::auth::{
     hydrate_account, persist_account, refresh_account_tokens, MinecraftAccount,
     MinecraftAccountRecord,
 };

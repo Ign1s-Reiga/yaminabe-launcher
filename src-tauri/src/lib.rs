@@ -1,3 +1,4 @@
+mod auth;
 mod commands;
 mod install_task;
 mod mod_repo;
@@ -12,9 +13,10 @@ use tauri::{Emitter, Manager};
 use yaminabe_launcher_shared::datatypes::{AppSettings, JavaInstall};
 use yaminabe_launcher_shared::error::InitializationError;
 use yaminabe_launcher_shared::ipc::InstallProgress;
+use crate::auth::{load_account_store, AccountStore};
 use crate::commands::auth::{
-    cancel_microsoft_login, get_accounts, get_selected_account, load_account_store,
-    remove_account, set_selected_account, start_microsoft_login, AccountStore,
+    cancel_microsoft_login, get_accounts, get_selected_account,
+    remove_account, set_selected_account, start_microsoft_login,
 };
 use crate::commands::modfile::{
     download_mods, get_modpack_files, install_curseforge_modpack,

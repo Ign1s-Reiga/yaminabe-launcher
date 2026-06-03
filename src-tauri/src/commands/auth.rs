@@ -1,13 +1,3 @@
-mod flow;
-mod model;
-mod store;
-
-// Preserve the pre-split public paths (`commands::auth::…`) that lib.rs and
-// launch/mod.rs import.
-pub use flow::refresh_account_tokens;
-pub use model::{AccountStore, MinecraftAccount, MinecraftAccountRecord};
-pub use store::{hydrate_account, load_account_store, persist_account};
-
 use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime};
 
@@ -19,9 +9,9 @@ use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::ipc::{MsLoginPrompt, MsLoginResult};
 use crate::AppState;
 
-use flow::{finalize_minecraft_login, make_qr_svg, poll_token, request_device_code, require_client_id};
-use model::{format_uuid_dashed, now_epoch_seconds, MinecraftAccountSecret};
-use store::{delete_secret, write_secret};
+use crate::auth::flow::{finalize_minecraft_login, make_qr_svg, poll_token, request_device_code, require_client_id};
+use crate::auth::model::{format_uuid_dashed, now_epoch_seconds, MinecraftAccount, MinecraftAccountRecord, MinecraftAccountSecret};
+use crate::auth::store::{delete_secret, write_secret};
 
 const EVT_PROMPT: &str = "ms-login-prompt";
 const EVT_RESULT: &str = "ms-login-result";
