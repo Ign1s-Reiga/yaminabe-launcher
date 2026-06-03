@@ -30,12 +30,13 @@ impl FromStr for ModLoader {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
+        match s.to_ascii_lowercase().as_str() {
+            "vanilla" => Ok(ModLoader::Vanilla),
             "forge" => Ok(ModLoader::Forge),
             "fabric" => Ok(ModLoader::Fabric),
             "quilt" => Ok(ModLoader::Quilt),
             "neoforge" => Ok(ModLoader::NeoForge),
-            _ => Err(Error::Invalid(s.to_string())), // TODO: Use error kind match better with this case.
+            other => Err(Error::Unsupported(format!("mod loader '{other}'"))),
         }
     }
 }
