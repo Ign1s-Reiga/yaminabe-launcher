@@ -1,5 +1,6 @@
 use crate::components::open_in_file_manager::OpenInFileManager;
 use crate::components::running_sidebar::RunningRegistry;
+use crate::components::upgrade_modal::UpgradeModpackModal;
 use crate::signal_ext::VecSignalExt;
 use crate::components::settings::{SaveState, SettingsProp, SettingsSection};
 use crate::components::ui::{Button, ButtonSize, ButtonVariant, SelectInput, SliderInput, TabBar, Textarea, input_class};
@@ -67,6 +68,10 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     let save_state: RwSignal<SaveState> = RwSignal::new(SaveState::Idle);
 
     let is_managed = instance.origin.is_managed();
+    // `(project_id, file_id)` when this is a CurseForge instance, enabling the
+    // modpack Upgrade action in the read-only Mods tab.
+    let cf_origin = instance.origin.curseforge_ids();
+    let show_upgrade: RwSignal<bool> = RwSignal::new(false);
     let header_bg = format!("background-color: {}", &instance.mod_loader.get_modloader_color());
     let instance_name = instance.name.clone();
     let category_label = if instance.category.is_empty() { "Default".to_string() } else { instance.category.clone() };
@@ -76,6 +81,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     let instance_id_play = instance_id.clone();
     let instance_id_save = StoredValue::new(instance_id.clone());
     let instance_id_open = instance_id.clone();
+    let instance_id_upgrade = StoredValue::new(instance_id.clone());
     let dropdown_open: RwSignal<bool> = RwSignal::new(false);
     let launch_mode: RwSignal<LaunchMode> = RwSignal::new(LaunchMode::Online);
     let jre_path = StoredValue::new(instance.jre_path.clone());
@@ -208,6 +214,16 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
                         <p class=managed_notice_body>
                             "This instance was installed from a modpack, so its mod list is managed automatically and can't be edited here."
                         </p>
+                        {cf_origin.map(|_| view! {
+                            <div style="margin-top: 14px;">
+                                <Button
+                                    variant=ButtonVariant::Primary
+                                    on_click=Callback::new(move |_| show_upgrade.set(true))
+                                >
+                                    "Upgrade modpack…"
+                                </Button>
+                            </div>
+                        })}
                     </div>
                 }.into_any()
             } else {
@@ -302,6 +318,18 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
                     </SettingsProp>
                 </SettingsSection>
             </form>
+        </Show>
+
+        // ── Modpack upgrade modal (CurseForge instances only) ─────────────────
+        <Show when=move || show_upgrade.get() fallback=|| ()>
+            {cf_origin.map(|(project_id, file_id)| view! {
+                <UpgradeModpackModal
+                    instance_id=instance_id_upgrade.get_value()
+                    project_id=project_id
+                    current_file_id=file_id
+                    on_close=Callback::new(move |_: ()| show_upgrade.set(false))
+                />
+            })}
         </Show>
     }
 }

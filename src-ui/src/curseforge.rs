@@ -66,6 +66,24 @@ pub async fn call_install(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct UpgradeArgs {
+    instance_id: String,
+    download_url: String,
+    project_id: u32,
+    file_id: u32,
+}
+
+pub async fn call_upgrade(
+    instance_id: String,
+    project_id: u32,
+    file_id: u32,
+    download_url: String,
+) -> Result<(), String> {
+    ipc::call("upgrade_curseforge_modpack", UpgradeArgs { instance_id, download_url, project_id, file_id }).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DownloadModsArgs {
     file_ids: Vec<String>,
     instance_location: String,

@@ -1,5 +1,6 @@
+use std::collections::HashSet;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use log::info;
@@ -202,6 +203,145 @@ pub async fn get_modpack_files(
     Ok(versions)
 }
 
+fn read_manifest<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+) -> Result<(CurseForgeModpackManifest, String), Error> {
+    let mut file = archive.by_name("manifest.json")
+        .map_err(|_| Error::Invalid("modpack zip is missing manifest.json".to_string()))?;
+    let mut content = String::new();
+    file.read_to_string(&mut content)?;
+    let manifest = serde_json::from_str(&content)?;
+    Ok((manifest, content))
+}
+
+/// Resolve the modpack's primary mod loader and its version. CurseForge
+/// manifest loader ids are `{name}-{version}` (e.g. `neoforge-21.1.228`).
+fn resolve_loader(manifest: &CurseForgeModpackManifest) -> Result<(ModLoader, Option<String>), Error> {
+    let mod_loader_id = manifest.minecraft.mod_loaders.iter()
+        .find(|l| l.primary)
+        .or_else(|| manifest.minecraft.mod_loaders.first())
+        .map(|l| l.id.to_ascii_lowercase())
+        .unwrap_or("vanilla".to_string());
+    let (loader_name, loader_version) = mod_loader_id.split_once('-')
+        .map(|(n, v)| (n, Some(v.to_string())))
+        .unwrap_or((mod_loader_id.as_str(), None));
+    Ok((ModLoader::from_str(loader_name)?, loader_version))
+}
+
+fn manifest_file_ids(manifest: &CurseForgeModpackManifest) -> Vec<u32> {
+    manifest.files.iter().filter(|f| f.required).map(|f| f.file_id).collect()
+}
+
+/// Required mod file ids recorded in an instance's persisted `manifest.json`.
+/// Returns an empty list when the file is missing or unreadable, so the upgrade
+/// diff safely degrades to "download everything, remove nothing".
+fn installed_manifest_file_ids(instance_path: &Path) -> Vec<u32> {
+    std::fs::read_to_string(instance_path.join("manifest.json")).ok()
+        .and_then(|c| serde_json::from_str::<CurseForgeModpackManifest>(&c).ok())
+        .map(|m| manifest_file_ids(&m))
+        .unwrap_or_default()
+}
+
+/// Ensure the vanilla client and (if any) the mod loader for `mc_version` are
+/// installed, returning the `versions/<id>` the launch path should use. Shared
+/// by install and upgrade.
+async fn ensure_game_and_loader(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    mc_version: &str,
+    mod_loader: &ModLoader,
+    loader_version: &Option<String>,
+    state: &State<'_, AppState>,
+) -> Result<String, Error> {
+    let http_client = &state.http_client;
+    emit_progress(app_handle, id, instance_name, &format!("Installing Minecraft {mc_version}"), false, None);
+    let vanilla_version_id = ensure_vanilla(mc_version, state).await?;
+
+    let require_loader_version = || loader_version.as_deref()
+        .ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")));
+    let loader_version_id = match mod_loader {
+        ModLoader::Fabric => {
+            emit_progress(app_handle, id, instance_name, "Installing Fabric", false, None);
+            Some(ensure_fabric(mc_version, require_loader_version()?, http_client).await?)
+        }
+        ModLoader::Quilt => {
+            emit_progress(app_handle, id, instance_name, "Installing Quilt", false, None);
+            Some(ensure_quilt(mc_version, require_loader_version()?, http_client).await?)
+        }
+        ModLoader::Forge => {
+            emit_progress(app_handle, id, instance_name, "Installing Forge", false, None);
+            Some(ensure_forge(mc_version, require_loader_version()?, http_client).await?)
+        }
+        ModLoader::NeoForge => {
+            emit_progress(app_handle, id, instance_name, "Installing NeoForge", false, None);
+            Some(ensure_neoforge(mc_version, require_loader_version()?, http_client).await?)
+        }
+        ModLoader::Vanilla => None,
+    };
+    // The loader's own version manifest takes precedence; Vanilla instances
+    // fall back to the bare MC id.
+    Ok(loader_version_id.unwrap_or(vanilla_version_id))
+}
+
+/// Extract the modpack's `overrides/` tree into `instance_path`, overwriting
+/// any file the pack ships and leaving everything else (user saves, configs,
+/// manually-added mods) untouched.
+fn extract_overrides<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    overrides_prefix: &str,
+    instance_path: &Path,
+) -> Result<(), Error> {
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)
+            .map_err(|e| Error::Invalid(format!("reading zip entry at index {i}: {e}")))?;
+
+        let entry_name = file.name().to_string();
+        let Some(rel) = entry_name.strip_prefix(overrides_prefix) else { continue };
+        if rel.is_empty() { continue }
+
+        let dest = rel.split('/')
+            .filter(|c| !c.is_empty() && *c != "..")
+            .fold(instance_path.to_path_buf(), |p, c| p.join(c));
+
+        if entry_name.ends_with('/') {
+            std::fs::create_dir_all(&dest)?;
+        } else {
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut out = std::fs::File::create(&dest)?;
+            std::io::copy(&mut file, &mut out)?;
+        }
+    }
+    Ok(())
+}
+
+/// Resolve CurseForge file metadata (download url + filename) for a set of file
+/// ids, batching at the API's 50-per-request limit.
+async fn fetch_file_entries(
+    file_ids: &[u32],
+    api_key: &str,
+    client: &reqwest::Client,
+) -> Result<Vec<ModFilesEntry>, Error> {
+    let mut entries = Vec::new();
+    for chunk in file_ids.chunks(50) {
+        let body = serde_json::json!({ "fileIds": chunk });
+        let resp = client
+            .post("https://api.curseforge.com/v1/mods/files")
+            .header("x-api-key", api_key)
+            .json(&body)
+            .send().await?;
+        if !resp.status().is_success() {
+            return Err(Error::HttpRequestRejected(resp.status().as_u16(), "https://api.curseforge.com/v1/mods/files".to_string()));
+        }
+        let data = resp.json::<CurseForgeArrayResponse<ModFilesEntry>>().await
+            .map_err(Error::InvalidResponse)?;
+        entries.extend(data.data);
+    }
+    Ok(entries)
+}
+
 pub async fn install_modpack(
     app_handle: &tauri::AppHandle,
     id: &str,
@@ -216,110 +356,36 @@ pub async fn install_modpack(
     let http_client = &state.http_client;
     emit_progress(app_handle, id, instance_name, "Downloading modpack", false, None);
 
-    let resp = http_client
-        .get(&download_url)
-        .send().await?;
-
+    let resp = http_client.get(&download_url).send().await?;
     if !resp.status().is_success() {
         return Err(Error::HttpRequestRejected(resp.status().as_u16(), download_url));
     }
-
-    let zip_bytes = resp.bytes().await
-        .map_err(Error::InvalidResponse)?.to_vec();
-
-    let cursor = std::io::Cursor::new(zip_bytes);
-    let mut archive = zip::ZipArchive::new(cursor)
+    let zip_bytes = resp.bytes().await.map_err(Error::InvalidResponse)?.to_vec();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes))
         .map_err(|e| Error::Invalid(format!("modpack zip is invalid: {e}")))?;
 
-    let manifest: CurseForgeModpackManifest = {
-        let mut file = archive.by_name("manifest.json")
-            .map_err(|_| Error::Invalid("modpack zip is missing manifest.json".to_string()))?;
-        let mut content = String::new();
-        file.read_to_string(&mut content)?;
-        serde_json::from_str(&content)?
-    };
-
+    let (manifest, manifest_raw) = read_manifest(&mut archive)?;
     let mc_version = manifest.minecraft.version.clone();
-    let mod_loader_id = manifest.minecraft.mod_loaders.iter()
-        .find(|l| l.primary)
-        .or_else(|| manifest.minecraft.mod_loaders.first())
-        .map(|l| l.id.to_ascii_lowercase())
-        .unwrap_or("vanilla".to_string());
-    let file_ids: Vec<u32> = manifest.files.iter()
-        .filter(|f| f.required)
-        .map(|f| f.file_id)
-        .collect();
+    let (mod_loader, loader_version) = resolve_loader(&manifest)?;
+    let file_ids = manifest_file_ids(&manifest);
 
-    // CurseForge manifest mod-loader ids are `{name}-{version}` (e.g.
-    // `neoforge-21.1.228`); split before resolving the enum.
-    let (loader_name, loader_version) = mod_loader_id.split_once('-')
-        .map(|(n, v)| (n, Some(v.to_string())))
-        .unwrap_or((mod_loader_id.as_str(), None));
-    let mod_loader = ModLoader::from_str(loader_name)?;
-
-    emit_progress(app_handle, id, instance_name, &format!("Installing Minecraft {mc_version}"), false, None);
-    let vanilla_version_id = ensure_vanilla(&mc_version, state).await?;
-
-    let require_loader_version = || loader_version.as_deref()
-        .ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")));
-    let loader_version_id = match &mod_loader {
-        ModLoader::Fabric => {
-            emit_progress(app_handle, id, instance_name, "Installing Fabric", false, None);
-            Some(ensure_fabric(&mc_version, require_loader_version()?, http_client).await?)
-        }
-        ModLoader::Quilt => {
-            emit_progress(app_handle, id, instance_name, "Installing Quilt", false, None);
-            Some(ensure_quilt(&mc_version, require_loader_version()?, http_client).await?)
-        }
-        ModLoader::Forge => {
-            emit_progress(app_handle, id, instance_name, "Installing Forge", false, None);
-            Some(ensure_forge(&mc_version, require_loader_version()?, http_client).await?)
-        }
-        ModLoader::NeoForge => {
-            emit_progress(app_handle, id, instance_name, "Installing NeoForge", false, None);
-            Some(ensure_neoforge(&mc_version, require_loader_version()?, http_client).await?)
-        }
-        ModLoader::Vanilla => None,
-    };
-
-    // The loader's own version manifest takes precedence; Vanilla instances
-    // fall back to the bare MC id.
-    let version_id = loader_version_id.unwrap_or(vanilla_version_id);
+    let version_id = ensure_game_and_loader(
+        app_handle, id, instance_name, &mc_version, &mod_loader, &loader_version, state,
+    ).await?;
 
     let instance_path = PathBuf::from(&instance_location).join(instance_name.to_lowercase());
     std::fs::create_dir_all(&instance_path)?;
 
-    let overrides_prefix = format!("{}/", manifest.overrides.trim_end_matches('/'));
-
     emit_progress(app_handle, id, instance_name, "Extracting files", false, None);
-
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i)
-            .map_err(|e| Error::Invalid(format!("reading zip entry at index {i}: {e}")))?;
-
-        let entry_name = file.name().to_string();
-        let Some(rel) = entry_name.strip_prefix(&overrides_prefix) else { continue };
-        if rel.is_empty() { continue }
-
-        let dest = rel.split('/')
-            .filter(|c| !c.is_empty() && *c != "..")
-            .fold(instance_path.clone(), |p, c| p.join(c));
-
-        if entry_name.ends_with('/') {
-            std::fs::create_dir_all(&dest)?;
-        } else {
-            if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let mut out = std::fs::File::create(&dest)?;
-            std::io::copy(&mut file, &mut out)?;
-        }
-    }
+    let overrides_prefix = format!("{}/", manifest.overrides.trim_end_matches('/'));
+    extract_overrides(&mut archive, &overrides_prefix, &instance_path)?;
 
     emit_progress(app_handle, id, instance_name, "Downloading mods", false, None);
     download_mods(file_ids, instance_path.to_str().unwrap_or_default(), api_key, http_client).await?;
 
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
+    // Persist the modpack manifest so a later upgrade can diff the mod list.
+    std::fs::write(instance_path.join("manifest.json"), &manifest_raw)?;
 
     let meta = InstanceMeta {
         name: instance_name.to_string(),
@@ -330,13 +396,90 @@ pub async fn install_modpack(
         origin,
         ..InstanceMeta::default()
     };
-
     std::fs::write(
         instance_path.join("instance.json"),
         serde_json::to_string_pretty(&meta).unwrap(),
     )?;
 
     info!("Installed '{}' (MC {}, {}) → {}", instance_name, mc_version, mod_loader, instance_path.display());
+    Ok(())
+}
+
+/// Upgrade an existing CurseForge instance to a newer modpack file: re-ensure
+/// the (possibly changed) game + loader, overlay the new `overrides/`, diff the
+/// mod list against the instance's recorded manifest — downloading only new
+/// mods and removing only mods the pack dropped — then update `instance.json`.
+/// User-added files (saves, screenshots, manual mods) are never touched.
+pub async fn upgrade_modpack(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    instance_path: PathBuf,
+    download_url: String,
+    project_id: u32,
+    new_file_id: u32,
+    api_key: &str,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
+    let http_client = &state.http_client;
+    emit_progress(app_handle, id, instance_name, "Downloading modpack", false, None);
+
+    let resp = http_client.get(&download_url).send().await?;
+    if !resp.status().is_success() {
+        return Err(Error::HttpRequestRejected(resp.status().as_u16(), download_url));
+    }
+    let zip_bytes = resp.bytes().await.map_err(Error::InvalidResponse)?.to_vec();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes))
+        .map_err(|e| Error::Invalid(format!("modpack zip is invalid: {e}")))?;
+
+    let (manifest, manifest_raw) = read_manifest(&mut archive)?;
+    let mc_version = manifest.minecraft.version.clone();
+    let (mod_loader, loader_version) = resolve_loader(&manifest)?;
+
+    let version_id = ensure_game_and_loader(
+        app_handle, id, instance_name, &mc_version, &mod_loader, &loader_version, state,
+    ).await?;
+
+    emit_progress(app_handle, id, instance_name, "Extracting files", false, None);
+    let overrides_prefix = format!("{}/", manifest.overrides.trim_end_matches('/'));
+    extract_overrides(&mut archive, &overrides_prefix, &instance_path)?;
+
+    // Diff the mod list by file id: download additions, remove drops, skip
+    // unchanged files already on disk.
+    emit_progress(app_handle, id, instance_name, "Updating mods", false, None);
+    let old_ids = installed_manifest_file_ids(&instance_path);
+    let new_ids = manifest_file_ids(&manifest);
+    let old_set: HashSet<u32> = old_ids.iter().copied().collect();
+    let new_set: HashSet<u32> = new_ids.iter().copied().collect();
+    let to_remove: Vec<u32> = old_ids.iter().copied().filter(|fid| !new_set.contains(fid)).collect();
+    let to_add: Vec<u32> = new_ids.iter().copied().filter(|fid| !old_set.contains(fid)).collect();
+
+    if !to_remove.is_empty() {
+        let mods_dir = instance_path.join("mods");
+        for entry in fetch_file_entries(&to_remove, api_key, http_client).await? {
+            let path = mods_dir.join(&entry.file_name);
+            if path.exists() {
+                if let Err(e) = std::fs::remove_file(&path) {
+                    log::warn!("failed to remove old mod {}: {e}", entry.file_name);
+                }
+            }
+        }
+    }
+    download_mods(to_add, instance_path.to_str().unwrap_or_default(), api_key, http_client).await?;
+
+    emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
+    std::fs::write(instance_path.join("manifest.json"), &manifest_raw)?;
+
+    let meta_path = instance_path.join("instance.json");
+    let mut meta: InstanceMeta = serde_json::from_str(&std::fs::read_to_string(&meta_path)?)?;
+    meta.game_version = mc_version.clone();
+    meta.mod_loader = mod_loader.clone();
+    meta.mod_loader_version = loader_version;
+    meta.version_id = version_id;
+    meta.origin = InstanceOrigin::CurseForge { project_id, file_id: new_file_id };
+    std::fs::write(&meta_path, serde_json::to_string_pretty(&meta)?)?;
+
+    info!("Upgraded '{}' to file {} (MC {}, {})", instance_name, new_file_id, mc_version, mod_loader);
     Ok(())
 }
 
@@ -351,32 +494,16 @@ pub async fn download_mods(
     }
 
     let mods_dir = PathBuf::from(instance_location).join("mods");
-
-    let mut file_entries: Vec<ModFilesEntry> = Vec::new();
-    for chunk in file_ids.chunks(50) {
-        let body = serde_json::json!({ "fileIds": chunk });
-        let resp = client
-            .post("https://api.curseforge.com/v1/mods/files")
-            .header("x-api-key", api_key)
-            .json(&body)
-            .send().await?;
-        if !resp.status().is_success() {
-            return Err(Error::HttpRequestRejected(resp.status().as_u16(), "https://api.curseforge.com/v1/mods/files".to_string()));
-        }
-        let data = resp.json::<CurseForgeArrayResponse<ModFilesEntry>>().await
-            .map_err(Error::InvalidResponse)?;
-        file_entries.extend(data.data);
-    }
-
-    let files: Vec<(String, String)> = file_entries.into_iter().filter_map(|entry| {
-        match entry.download_url {
+    let files: Vec<(String, String)> = fetch_file_entries(&file_ids, api_key, client).await?
+        .into_iter()
+        .filter_map(|entry| match entry.download_url {
             Some(url) => Some((url, entry.file_name)),
             None => {
                 info!("Skipping {} (distribution restricted)", entry.file_name);
                 None
             }
-        }
-    }).collect();
+        })
+        .collect();
 
     super::download_files(client, files, &mods_dir).await
 }

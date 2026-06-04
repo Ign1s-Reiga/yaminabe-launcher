@@ -69,6 +69,15 @@ impl InstanceOrigin {
     pub fn is_managed(&self) -> bool {
         !matches!(self, InstanceOrigin::Manual)
     }
+
+    /// The `(project_id, file_id)` of a CurseForge-installed instance, used to
+    /// drive the modpack upgrade flow. `None` for any other origin.
+    pub fn curseforge_ids(&self) -> Option<(u32, u32)> {
+        match self {
+            InstanceOrigin::CurseForge { project_id, file_id } => Some((*project_id, *file_id)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

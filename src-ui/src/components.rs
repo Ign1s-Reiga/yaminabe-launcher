@@ -10,3 +10,4 @@ pub mod running_sidebar;
 pub mod result_card;
 pub mod ui;
 pub mod settings;
+pub mod upgrade_modal;

@@ -20,7 +20,7 @@ use crate::commands::auth::{
 };
 use crate::commands::modfile::{
     download_mods, get_modpack_files, install_curseforge_modpack,
-    search_curseforge_modpacks,
+    search_curseforge_modpacks, upgrade_curseforge_modpack,
 };
 use crate::commands::minecraft::{
     fetch_minecraft_versions, get_minecraft_versions, get_modloader_versions, VersionManifest,
@@ -221,6 +221,7 @@ pub fn run() {
             search_curseforge_modpacks,
             get_modpack_files,
             install_curseforge_modpack,
+            upgrade_curseforge_modpack,
             download_mods,
             create_instance,
             get_instances,
