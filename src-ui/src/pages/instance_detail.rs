@@ -77,11 +77,10 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     let category_label = if instance.category.is_empty() { "Default".to_string() } else { instance.category.clone() };
     let meta_text = format!("MC {}  ·  {}  ·  {}", instance.game_version, instance.mod_loader, category_label);
 
-    let instance_id = instance.id.clone();
-    let instance_id_play = instance_id.clone();
-    let instance_id_save = StoredValue::new(instance_id.clone());
-    let instance_id_open = instance_id.clone();
-    let instance_id_upgrade = StoredValue::new(instance_id.clone());
+    // One owned copy of the id; `StoredValue` is `Copy`, so it threads into
+    // every closure and view below via `get_value()` / `with_value()` without
+    // a fresh `clone()` per use site.
+    let instance_id = StoredValue::new(instance.id.clone());
     let dropdown_open: RwSignal<bool> = RwSignal::new(false);
     let launch_mode: RwSignal<LaunchMode> = RwSignal::new(LaunchMode::Online);
     let jre_path = StoredValue::new(instance.jre_path.clone());
@@ -89,9 +88,8 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     // Whether this instance is currently running, so the Play button can show
     // "Running" and refuse to launch a second copy.
     let registry = use_context::<RunningRegistry>().expect("running registry");
-    let instance_id_running = instance_id.clone();
     let is_running = Signal::derive(move || {
-        registry.map_by_id(&instance_id_running, |r| r.status.is_active()).unwrap_or(false)
+        instance_id.with_value(|id| registry.map_by_id(id, |r| r.status.is_active())).unwrap_or(false)
     });
 
     let java_installs = LocalResource::new(|| async move {
@@ -106,7 +104,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
         let get = |k: &str| data.get(k).as_string().unwrap_or_default();
         let get_u32 = |k: &str| data.get(k).as_string().unwrap_or_default().parse::<u32>().unwrap_or(0);
         let args = SaveInstanceSettingsArgs {
-            id: instance_id_save.get_value(),
+            id: instance_id.get_value(),
             ram_mb: get("ram_mb").parse().unwrap_or(4096),
             jvm_args: get("jvm_args"),
             jre_path: get("jre_path"),
@@ -171,7 +169,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
 
         <div class=header_strip style=header_bg></div>
         <InstanceDetailHeader instance_name=instance_name meta_text=meta_text>
-            <OpenInFileManager instance_id=instance_id_open />
+            <OpenInFileManager instance_id=instance_id.get_value() />
             <SplitPlayButton
                 dropdown_open=dropdown_open
                 launch_mode=launch_mode
@@ -180,7 +178,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
                     dropdown_open.set(false);
                     let mode = launch_mode.get_untracked();
                     navigate_play(
-                        &format!("/library/{}/play?mode={}", instance_id_play, mode.as_str()),
+                        &format!("/library/{}/play?mode={}", instance_id.get_value(), mode.as_str()),
                         Default::default(),
                     );
                 })
@@ -324,7 +322,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
         <Show when=move || show_upgrade.get() fallback=|| ()>
             {cf_origin.map(|(project_id, file_id)| view! {
                 <UpgradeModpackModal
-                    instance_id=instance_id_upgrade.get_value()
+                    instance_id=instance_id.get_value()
                     project_id=project_id
                     current_file_id=file_id
                     on_close=Callback::new(move |_: ()| show_upgrade.set(false))
