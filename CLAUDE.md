@@ -144,6 +144,8 @@ invoke("my_command", JsValue::from_serde(&args).unwrap()).await
 
 ## Git
 
+- Create a dedicated branch for each issue/feature before making any changes; never commit issue work directly to `main`. Work on two issues lives on two separate branches.
+  - Name branches `<type>/<branch-name>`, where `<type>` is the Conventional Commits type (`feat`, `fix`, `refactor`, `perf`, `docs`, …) — e.g. `feat/instance-origin`.
 - The commit message title should follow Conventional Commits guidelines.
   - Limit commit scopes to `ui`, `launch`, `auth`, `install`, and `shared`. Use the one that best applies.
   - Do not use a scope if none of these apply.
