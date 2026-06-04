@@ -66,6 +66,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     let active_tab = RwSignal::new(initial_tab);
     let save_state: RwSignal<SaveState> = RwSignal::new(SaveState::Idle);
 
+    let is_managed = instance.origin.is_managed();
     let header_bg = format!("background-color: {}", &instance.mod_loader.get_modloader_color());
     let instance_name = instance.name.clone();
     let category_label = if instance.category.is_empty() { "Default".to_string() } else { instance.category.clone() };
@@ -135,6 +136,23 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
         opacity: 0.45;
         font-size: 0.9rem;
     };
+    let managed_notice = css! {
+        max-width: 640px;
+        padding: 16px 18px;
+        border: 1px solid var(--secondary-color);
+        border-radius: 10px;
+        background-color: var(--secondary-color);
+    };
+    let managed_notice_title = css! {
+        font-weight: 600;
+        margin: 0 0 6px 0;
+    };
+    let managed_notice_body = css! {
+        margin: 0;
+        font-size: 0.875rem;
+        opacity: 0.7;
+        line-height: 1.6;
+    };
 
     view! {
         <Button
@@ -183,7 +201,18 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
 
         // ── Mods tab ──────────────────────────────────────────────────────────
         <Show when=move || active_tab.get() == "Mods">
-            <p style="opacity: 0.45; font-size: 0.9rem;">"No mods installed."</p>
+            {if is_managed {
+                view! {
+                    <div class=managed_notice>
+                        <p class=managed_notice_title>"Managed by a modpack"</p>
+                        <p class=managed_notice_body>
+                            "This instance was installed from a modpack, so its mod list is managed automatically and can't be edited here."
+                        </p>
+                    </div>
+                }.into_any()
+            } else {
+                view! { <p style="opacity: 0.45; font-size: 0.9rem;">"No mods installed."</p> }.into_any()
+            }}
         </Show>
 
         // ── Settings tab ──────────────────────────────────────────────────────

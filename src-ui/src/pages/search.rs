@@ -140,8 +140,10 @@ pub fn SearchPage() -> impl IntoView {
         let version_id: u32 = data.get("version").as_string().unwrap_or_default().parse().unwrap_or(0);
         let Some(ver) = state.versions.into_iter().find(|v| v.id == version_id) else { return };
         let download_url = ver.download_url.clone();
+        let project_id = ver.mod_id;
+        let file_id = ver.id;
 
-        let Some(args) = InstallArgs::from_form_data(install_dir, download_url, &data) else { return };
+        let Some(args) = InstallArgs::from_form_data(install_dir, download_url, project_id, file_id, &data) else { return };
         install.set(None);
 
         leptos::task::spawn_local(async move {

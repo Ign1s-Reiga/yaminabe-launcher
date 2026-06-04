@@ -5,7 +5,7 @@ use std::str::FromStr;
 use log::info;
 use serde::Deserialize;
 use tauri::State;
-use yaminabe_launcher_shared::datatypes::{InstanceMeta, ModLoader, ModpackInfo, ModpackSearchResults, ModpackVersionFile};
+use yaminabe_launcher_shared::datatypes::{InstanceMeta, InstanceOrigin, ModLoader, ModpackInfo, ModpackSearchResults, ModpackVersionFile};
 use yaminabe_launcher_shared::error::Error;
 use crate::{emit_progress, AppState};
 use crate::http_utils::fetch_json;
@@ -209,6 +209,7 @@ pub async fn install_modpack(
     download_url: String,
     instance_location: String,
     _category: String,
+    origin: InstanceOrigin,
     api_key: &str,
     state: &State<'_, AppState>,
 ) -> Result<(), Error> {
@@ -326,6 +327,7 @@ pub async fn install_modpack(
         mod_loader: mod_loader.clone(),
         mod_loader_version: loader_version,
         version_id,
+        origin,
         ..InstanceMeta::default()
     };
 

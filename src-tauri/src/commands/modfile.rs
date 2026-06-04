@@ -1,5 +1,5 @@
 use tauri::State;
-use yaminabe_launcher_shared::datatypes::{ModpackSearchResults, ModpackVersionFile};
+use yaminabe_launcher_shared::datatypes::{InstanceOrigin, ModpackSearchResults, ModpackVersionFile};
 use yaminabe_launcher_shared::error::Error;
 use crate::{emit_progress, AppState};
 use crate::mod_repo::{curseforge, modrinth};
@@ -30,6 +30,8 @@ pub async fn install_curseforge_modpack(
     instance_name: String,
     install_dir: String,
     category: String,
+    project_id: u32,
+    file_id: u32,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
     let id = std::time::SystemTime::now()
@@ -39,10 +41,11 @@ pub async fn install_curseforge_modpack(
         .to_string();
 
     let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
+    let origin = InstanceOrigin::CurseForge { project_id, file_id };
 
     let result = curseforge::install_modpack(
         &app_handle, &id, &instance_name,
-        download_url, install_dir, category,
+        download_url, install_dir, category, origin,
         &api_key, &state,
     ).await;
 

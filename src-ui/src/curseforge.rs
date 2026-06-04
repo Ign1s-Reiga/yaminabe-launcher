@@ -32,10 +32,18 @@ pub struct InstallArgs {
     instance_name: String,
     install_dir: String,
     category: String,
+    project_id: u32,
+    file_id: u32,
 }
 
 impl InstallArgs {
-    pub fn from_form_data(install_dir: String, download_url: String, data: &web_sys::FormData) -> Option<Self> {
+    pub fn from_form_data(
+        install_dir: String,
+        download_url: String,
+        project_id: u32,
+        file_id: u32,
+        data: &web_sys::FormData,
+    ) -> Option<Self> {
         let get = |k: &str| data.get(k).as_string().unwrap_or_default();
         let instance_name = get("instance_name");
         if instance_name.trim().is_empty() { return None; }
@@ -44,6 +52,8 @@ impl InstallArgs {
             instance_name,
             install_dir,
             category: get("category"),
+            project_id,
+            file_id,
         })
     }
 }

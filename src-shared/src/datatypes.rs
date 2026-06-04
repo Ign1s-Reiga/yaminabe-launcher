@@ -53,6 +53,24 @@ impl ModLoader {
     }
 }
 
+/// Where an instance came from. Gates per-origin rules — e.g. a
+/// modpack-managed instance has a read-only mod list. Extensible to other
+/// sources (Modrinth, local zip, …) later.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub enum InstanceOrigin {
+    #[default]
+    Manual,
+    CurseForge { project_id: u32, file_id: u32 },
+}
+
+impl InstanceOrigin {
+    /// Whether the instance's contents are managed by an external source and
+    /// should therefore be treated as read-only in the UI.
+    pub fn is_managed(&self) -> bool {
+        !matches!(self, InstanceOrigin::Manual)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstanceMeta {
@@ -78,6 +96,10 @@ pub struct InstanceMeta {
     pub window_width: u32,
     #[serde(default)]
     pub window_height: u32,
+    /// Where this instance came from. Defaults to `Manual` so existing
+    /// `instance.json` files without the field keep loading.
+    #[serde(default)]
+    pub origin: InstanceOrigin,
 }
 
 impl Default for InstanceMeta {
@@ -107,6 +129,7 @@ impl Default for InstanceMeta {
             description: String::new(),
             window_width: 0,
             window_height: 0,
+            origin: InstanceOrigin::Manual,
         }
     }
 }

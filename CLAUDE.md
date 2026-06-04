@@ -142,7 +142,7 @@ async fn my_command(arg: &str) -> String { ... }
 invoke("my_command", JsValue::from_serde(&args).unwrap()).await
 ```
 
-## Git
+## Git / GitHub Strategy
 
 - Create a dedicated branch for each issue/feature before making any changes; never commit issue work directly to `main`. Work on two issues lives on two separate branches.
   - Name branches `<type>/<branch-name>`, where `<type>` is the Conventional Commits type (`feat`, `fix`, `refactor`, `perf`, `docs`, …) — e.g. `feat/instance-origin`.
@@ -152,4 +152,6 @@ invoke("my_command", JsValue::from_serde(&args).unwrap()).await
   - Do not apply scopes to the type in the PR title.
 - The commit message description should be concise.
 - Include only information relevant to the code changes; omit anything else.
+- Reference the issue (e.g. `Closes #28`) in the PR description, not in commit messages.
 - Please use `git` instead of `gh` for basic Git operations (i.e., everything you can do with the `git` command).
+- Write a detailed description when opening a new Pull Request.
