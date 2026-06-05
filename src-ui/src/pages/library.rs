@@ -1,4 +1,4 @@
-use crate::components::create_modal::CreateInstanceModal;
+use crate::components::modal::create_modal::CreateInstanceModal;
 use crate::components::instance_card::InstanceCard;
 use crate::components::ui::*;
 use bamboo_css_macro::css;

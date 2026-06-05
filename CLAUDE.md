@@ -83,17 +83,20 @@ src-ui/src/
 ├── components.rs / components/
 │   ├── ui.rs / ui/          # Atomic UI primitives (Button, Modal, Input, TabBar,
 │   │                        # Segmented, Skeletons)
-│   ├── create_modal/        # 3-step "create instance" wizard
-│   │   ├── mod.rs           # Shell + `WizardState` (Copy bundle of RwSignals) +
-│   │   │                    # step routing + per-loader version prefetch
-│   │   ├── step_method.rs   # Step 1 — pick creation method
-│   │   ├── step_basics.rs   # Step 2 — name + MC version + category
-│   │   └── step_loader.rs   # Step 3 — mod loader + loader version
 │   ├── activity_dock.rs     # Bottom-right floating dock (collapsible) listing
 │   │                        # install jobs + running instances; also owns the
 │   │                        # running-instance data model (RunStatus, registry,
 │   │                        # start_launch / stop_instance) and InstallJob alias
-│   ├── install_modpack_modal.rs
+│   ├── modal/               # Modal dialogs, grouped under one module
+│   │   ├── create_modal/    # 3-step "create instance" wizard
+│   │   │   ├── mod.rs       # Shell + `WizardState` (Copy bundle of RwSignals) +
+│   │   │   │                # step routing + per-loader version prefetch
+│   │   │   ├── step_method.rs  # Step 1 — pick creation method
+│   │   │   ├── step_basics.rs  # Step 2 — name + MC version + category
+│   │   │   └── step_loader.rs  # Step 3 — mod loader + loader version
+│   │   ├── install_modpack_modal.rs  # CurseForge modpack install flow
+│   │   ├── login_modal.rs   # Microsoft device-code login dialog
+│   │   └── upgrade_modal.rs # CurseForge modpack upgrade flow
 │   ├── instance_card.rs
 │   ├── log_viewer.rs        # Dark sticky-tail log box used by `play.rs`. Tail mode
 │   │                        # only disengages on *upward* scrolls (downward events

@@ -1,7 +1,7 @@
 use crate::components::mod_manager::ModManager;
 use crate::components::open_in_file_manager::OpenInFileManager;
 use crate::components::activity_dock::RunningRegistry;
-use crate::components::upgrade_modal::UpgradeModpackModal;
+use crate::components::modal::upgrade_modal::UpgradeModpackModal;
 use crate::signal_ext::VecSignalExt;
 use crate::components::settings::{SaveState, SettingsProp, SettingsSection};
 use crate::components::ui::{Button, ButtonSize, ButtonVariant, SelectInput, SliderInput, TabBar, Textarea, input_class};

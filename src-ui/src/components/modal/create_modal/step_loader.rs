@@ -1,4 +1,4 @@
-use crate::components::create_modal::{step_subtitle_class, WizardState};
+use crate::components::modal::create_modal::{step_subtitle_class, WizardState};
 use crate::components::ui::*;
 use bamboo_css_macro::css;
 use leptos::control_flow::Show;

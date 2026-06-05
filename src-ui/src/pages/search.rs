@@ -4,7 +4,7 @@ use leptos::prelude::*;
 use leptos::{component, IntoView, view, web_sys};
 use wasm_bindgen::JsCast;
 use yaminabe_launcher_shared::datatypes::{AppSettings, ModpackInfo};
-use crate::components::install_modpack_modal::{InstallModpackModal, InstallState};
+use crate::components::modal::install_modpack_modal::{InstallModpackModal, InstallState};
 use crate::components::pagination::Pagination;
 use crate::components::result_card::ResultCard;
 use crate::components::ui::*;
