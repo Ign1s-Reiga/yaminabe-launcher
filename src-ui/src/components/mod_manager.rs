@@ -21,14 +21,15 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-/// Mods tab body for a manually-created, non-Vanilla instance: lists the files
-/// in `mods/` (so hand-dropped jars also show) with a Remove action, plus an
-/// Add-mod search flow filtered to the instance's MC version + loader.
+/// Mods tab body for a non-Vanilla instance: lists the files in `mods/` (so
+/// hand-dropped jars also show). Manual instances can add/remove mods; managed
+/// modpack instances render the same list read-only.
 #[component]
 pub fn ModManager(
     instance_id: String,
     game_version: String,
     mod_loader: ModLoader,
+    #[prop(optional)] read_only: bool,
 ) -> impl IntoView {
     let instance_id = StoredValue::new(instance_id);
     let game_version = StoredValue::new(game_version);
@@ -49,6 +50,19 @@ pub fn ModManager(
         gap: 16px;
         margin-bottom: 16px;
     };
+    let list = css! {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    };
+    let list_read_only = css! {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        opacity: 0.45;
+        pointer-events: none;
+        user-select: none;
+    };
     let hint = css! {
         font-size: 0.85rem;
         opacity: 0.6;
@@ -60,7 +74,6 @@ pub fn ModManager(
         padding: 10px 14px;
         border: 1px solid var(--secondary-color);
         border-radius: 8px;
-        margin-bottom: 8px;
     };
     let mod_name = css! {
         flex: 1;
@@ -92,34 +105,46 @@ pub fn ModManager(
 
     view! {
         <div class=header>
-            <span class=hint>"Add or remove mods for this instance."</span>
-            <Button variant=ButtonVariant::Primary on_click=Callback::new(move |_| show_add.set(true))>
-                "Add mod"
-            </Button>
+            <span class=hint>
+                {if read_only {
+                    "Mods installed by this modpack."
+                } else {
+                    "Add or remove mods for this instance."
+                }}
+            </span>
+            {(!read_only).then(move || view! {
+                <Button variant=ButtonVariant::Primary on_click=Callback::new(move |_| show_add.set(true))>
+                    "Add mod"
+                </Button>
+            })}
         </div>
 
-        {move || match mods.get() {
-            None => view! { <p class=empty>"Loading…"</p> }.into_any(),
-            Some(list) if list.is_empty() => view! { <p class=empty>"No mods installed."</p> }.into_any(),
-            Some(list) => list.into_iter().map(|m| {
-                let name = m.file_name.clone();
-                let name_for_remove = m.file_name.clone();
-                view! {
-                    <div class=row>
-                        <span class=mod_name>{name}</span>
-                        <span class=mod_size>{format_size(m.size)}</span>
-                        <Button
-                            variant=ButtonVariant::Danger
-                            on_click=Callback::new(move |_| on_remove(name_for_remove.clone()))
-                        >
-                            "Remove"
-                        </Button>
-                    </div>
-                }
-            }).collect_view().into_any(),
-        }}
+        <div class=if read_only { list_read_only } else { list }>
+            {move || match mods.get() {
+                None => view! { <p class=empty>"Loading…"</p> }.into_any(),
+                Some(list) if list.is_empty() => view! { <p class=empty>"No mods installed."</p> }.into_any(),
+                Some(list) => list.into_iter().map(|m| {
+                    let name = m.file_name.clone();
+                    let name_for_remove = m.file_name.clone();
+                    view! {
+                        <div class=row>
+                            <span class=mod_name>{name}</span>
+                            <span class=mod_size>{format_size(m.size)}</span>
+                            {(!read_only).then(move || view! {
+                                <Button
+                                    variant=ButtonVariant::Danger
+                                    on_click=Callback::new(move |_| on_remove(name_for_remove.clone()))
+                                >
+                                    "Remove"
+                                </Button>
+                            })}
+                        </div>
+                    }
+                }).collect_view().into_any(),
+            }}
+        </div>
 
-        <Show when=move || show_add.get()>
+        <Show when=move || !read_only && show_add.get()>
             <AddModModal
                 instance_id=instance_id.get_value()
                 game_version=game_version.get_value()

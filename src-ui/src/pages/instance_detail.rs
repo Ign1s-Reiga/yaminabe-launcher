@@ -198,6 +198,16 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
                         can_upgrade=cf_origin.is_some()
                         on_upgrade=Callback::new(move |_| show_upgrade.set(true))
                     />
+                    {(!is_vanilla).then(move || view! {
+                        <div style="margin-top: 20px;">
+                            <ModManager
+                                instance_id=instance_id.get_value()
+                                game_version=mods_game_version.get_value()
+                                mod_loader=mods_loader.get_value()
+                                read_only=true
+                            />
+                        </div>
+                    })}
                 }.into_any()
             } else if is_vanilla {
                 view! { <p style="opacity: 0.45; font-size: 0.9rem;">"No mods installed."</p> }.into_any()
@@ -498,4 +508,3 @@ fn InstanceDetailHeader(
         </div>
     }
 }
-
