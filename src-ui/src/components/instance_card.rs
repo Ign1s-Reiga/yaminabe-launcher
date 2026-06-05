@@ -2,6 +2,7 @@ use bamboo_css_macro::{css, styled};
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, view, web_sys, IntoView};
+use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use phosphor_leptos::{Icon, IconWeight, FOLDER_OPEN, GEAR_SIX, PLAY, TRASH};
 use serde::Serialize;
@@ -57,6 +58,9 @@ pub fn InstanceCard(
     let subfolders: RwSignal<Vec<String>> = RwSignal::new(vec![]);
 
     let card_wrapper = css! {
+        display: block;
+        text-decoration: none;
+        color: inherit;
         background-color: var(--secondary-color);
         border-radius: 12px;
         overflow: hidden;
@@ -68,6 +72,9 @@ pub fn InstanceCard(
         }
     };
     let card_wrapper_pending = css! {
+        display: block;
+        text-decoration: none;
+        color: inherit;
         background-color: var(--secondary-color);
         border-radius: 12px;
         overflow: hidden;
@@ -186,11 +193,9 @@ pub fn InstanceCard(
     });
 
     view! {
-        <div
-            class=if pending { card_wrapper_pending } else { card_wrapper }
-            on:click=move |_| navigate.with_value(|nav| {
-                nav(&format!("/library/{}", instance_id.get_value()), Default::default())
-            })
+        <A
+            href=format!("/library/{}", instance_id.get_value())
+            attr:class=if pending { card_wrapper_pending } else { card_wrapper }
             on:contextmenu=move |ev: web_sys::MouseEvent| {
                 ev.prevent_default();
                 if pending { return; }
@@ -211,7 +216,7 @@ pub fn InstanceCard(
                 <span class=meta_style>{mc_version}</span>
                 <span class=meta_style>{mod_loader.to_string()}</span>
             </CardBody>
-        </div>
+        </A>
 
         <Show when=move || menu.get().is_some()>
             <div

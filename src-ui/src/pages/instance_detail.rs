@@ -56,8 +56,7 @@ pub fn InstanceDetailPage() -> impl IntoView {
 
 #[component]
 fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
-    let navigate = use_navigate();
-    let navigate_play = navigate.clone();
+    let navigate = StoredValue::new(use_navigate());
     // Allow deep-linking to a tab via `?tab=` (used by the library card's
     // context-menu "Settings" entry); fall back to Description otherwise.
     let initial_tab = use_query_map()
@@ -76,10 +75,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     let instance_name = instance.name.clone();
     let category_label = if instance.category.is_empty() { "Default".to_string() } else { instance.category.clone() };
     let meta_text = format!("MC {}  ·  {}  ·  {}", instance.game_version, instance.mod_loader, category_label);
-
-    // One owned copy of the id; `StoredValue` is `Copy`, so it threads into
-    // every closure and view below via `get_value()` / `with_value()` without
-    // a fresh `clone()` per use site.
+    
     let instance_id = StoredValue::new(instance.id.clone());
     let dropdown_open: RwSignal<bool> = RwSignal::new(false);
     let launch_mode: RwSignal<LaunchMode> = RwSignal::new(LaunchMode::Online);
@@ -162,7 +158,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
         <Button
             variant=ButtonVariant::Text
             style="margin-bottom: 24px;"
-            on_click=Callback::new(move |_| navigate("/library", Default::default()))
+            on_click=Callback::new(move |_| navigate.with_value(|nav| nav("/library", Default::default())))
         >
             "← Back to Library"
         </Button>
@@ -177,10 +173,10 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
                 on_play=Callback::new(move |_| {
                     dropdown_open.set(false);
                     let mode = launch_mode.get_untracked();
-                    navigate_play(
+                    navigate.with_value(|nav| nav(
                         &format!("/library/{}/play?mode={}", instance_id.get_value(), mode.as_str()),
                         Default::default(),
-                    );
+                    ));
                 })
             />
         </InstanceDetailHeader>
