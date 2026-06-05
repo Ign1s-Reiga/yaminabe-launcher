@@ -1,6 +1,6 @@
 use crate::components::mod_manager::ModManager;
 use crate::components::open_in_file_manager::OpenInFileManager;
-use crate::components::running_sidebar::RunningRegistry;
+use crate::components::activity_dock::RunningRegistry;
 use crate::components::upgrade_modal::UpgradeModpackModal;
 use crate::signal_ext::VecSignalExt;
 use crate::components::settings::{SaveState, SettingsProp, SettingsSection};

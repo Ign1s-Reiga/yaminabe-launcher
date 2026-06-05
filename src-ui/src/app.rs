@@ -1,6 +1,5 @@
-use crate::components::{
-    install_sidebar::{InstallJob, InstallSidebar},
-    running_sidebar::{RunStatus, RunningInstance, RunningRegistry, RunningSidebar, RunningSidebarOpen},
+use crate::components::activity_dock::{
+    ActivityDock, ActivityDockOpen, InstallJob, RunStatus, RunningInstance, RunningRegistry,
 };
 use crate::pages::{
     home::HomePage,
@@ -78,13 +77,24 @@ pub fn App() -> impl IntoView {
     });
 
     let install_jobs: RwSignal<Vec<InstallJob>> = RwSignal::new(vec![]);
-    let sidebar_open: RwSignal<bool> = RwSignal::new(false);
+
+    // Global registry of launched instances so several can run at once and a
+    // launch survives navigating away from its play page. App-level listeners
+    // route per-instance log/lifecycle events into the matching entry.
+    let running_registry: RwSignal<Vec<RunningInstance>> = RwSignal::new(vec![]);
+    provide_context(running_registry);
+
+    // Shared expanded/collapsed state for the bottom-right activity dock. Auto-
+    // expanded when a new install begins (below) or a launch starts (PlayPage).
+    let dock_expanded = RwSignal::new(false);
+    provide_context(ActivityDockOpen(dock_expanded));
 
     ipc::on_event::<InstallJob, _>("instance-install-progress", move |job| {
-        if !job.done && job.error.is_none() {
-            sidebar_open.set(true);
-        }
         let job_succeeded = job.done && job.error.is_none();
+        let is_new = install_jobs.with_untracked(|list| !list.iter().any(|j| j.id == job.id));
+        if is_new && !job.done && job.error.is_none() {
+            dock_expanded.set(true);
+        }
         install_jobs.update(|list| {
             if let Some(existing) = list.iter_mut().find(|j| j.id == job.id) {
                 *existing = job;
@@ -96,14 +106,6 @@ pub fn App() -> impl IntoView {
             refresh.update(|n| *n += 1);
         }
     });
-
-    // Global registry of launched instances so several can run at once and a
-    // launch survives navigating away from its play page. App-level listeners
-    // route per-instance log/lifecycle events into the matching entry.
-    let running_registry: RwSignal<Vec<RunningInstance>> = RwSignal::new(vec![]);
-    let running_open = RwSignal::new(false);
-    provide_context(running_registry);
-    provide_context(RunningSidebarOpen(running_open));
 
     ipc::on_event::<LogLine, _>("instance-log", move |msg| {
         running_registry.update(|list| {
@@ -136,14 +138,8 @@ pub fn App() -> impl IntoView {
                 <MainView>
                     <Routes fallback=|| "Page not found.">
                         <Route path=path!("") view=HomePage />
-                        <Route path=path!("library") view=move || view! {
-                            <LibraryPage />
-                            <InstallSidebar jobs=install_jobs open=sidebar_open />
-                        }/>
-                        <Route path=path!("library/:id") view=move || view! {
-                            <InstanceDetailPage />
-                            <InstallSidebar jobs=install_jobs open=sidebar_open />
-                        }/>
+                        <Route path=path!("library") view=LibraryPage />
+                        <Route path=path!("library/:id") view=InstanceDetailPage />
                         <Route path=path!("library/:id/play") view=PlayPage />
                         <Route path=path!("search") view=SearchPage />
                         <Route path=path!("settings") view=SettingsPage />
@@ -156,7 +152,7 @@ pub fn App() -> impl IntoView {
                     <NavigationButton href="/search" icon=MAGNIFYING_GLASS label="Search"/>
                     <NavigationButton href="/settings" icon=GEAR_SIX label="Settings"/>
                 </MainViewNavbar>
-                <RunningSidebar registry=running_registry open=running_open />
+                <ActivityDock jobs=install_jobs registry=running_registry expanded=dock_expanded />
             </MainViewWrapper>
         </Router>
     }

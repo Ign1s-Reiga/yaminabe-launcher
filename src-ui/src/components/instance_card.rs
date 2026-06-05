@@ -8,7 +8,7 @@ use phosphor_leptos::{Icon, IconWeight, FOLDER_OPEN, GEAR_SIX, PLAY, TRASH};
 use serde::Serialize;
 use yaminabe_launcher_shared::datatypes::InstanceMeta;
 use crate::components::open_in_file_manager::folder_label;
-use crate::components::running_sidebar::RunningRegistry;
+use crate::components::activity_dock::RunningRegistry;
 use crate::components::ui::{Button, ButtonVariant, DialogBox, DialogFooter, DialogOverlay};
 use crate::ipc;
 use crate::signal_ext::VecSignalExt;

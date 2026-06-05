@@ -1,6 +1,6 @@
 use crate::components::log_viewer::LogViewer;
 use crate::components::open_in_file_manager::OpenInFileManager;
-use crate::components::running_sidebar::{start_launch, stop_instance, RunStatus, RunningRegistry, RunningSidebarOpen};
+use crate::components::activity_dock::{start_launch, stop_instance, ActivityDockOpen, RunStatus, RunningRegistry};
 use crate::signal_ext::VecSignalExt;
 use crate::components::ui::{Button, ButtonVariant};
 use bamboo_css_macro::css;
@@ -40,7 +40,7 @@ pub fn PlayPage() -> impl IntoView {
     let instances_ctx = use_context::<RwSignal<Vec<InstanceMeta>>>().expect("instances context");
     let last_played_ctx = use_context::<RwSignal<Option<String>>>();
     let registry = use_context::<RunningRegistry>().expect("running registry");
-    let sidebar_open = use_context::<RunningSidebarOpen>();
+    let dock_open = use_context::<ActivityDockOpen>();
     // Derived directly from the instances context + route id — no separate
     // signal or syncing effect needed.
     let instance = Memo::new(move |_| instances_ctx.map_by_id(&id.get(), |i| i.clone()));
@@ -78,7 +78,7 @@ pub fn PlayPage() -> impl IntoView {
             if let Some(lp) = last_played_ctx {
                 lp.set(Some(inst.id.clone()));
             }
-            if let Some(open) = sidebar_open {
+            if let Some(open) = dock_open {
                 open.0.set(true);
             }
         }

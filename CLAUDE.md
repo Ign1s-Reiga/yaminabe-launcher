@@ -89,8 +89,11 @@ src-ui/src/
 │   │   ├── step_method.rs   # Step 1 — pick creation method
 │   │   ├── step_basics.rs   # Step 2 — name + MC version + category
 │   │   └── step_loader.rs   # Step 3 — mod loader + loader version
+│   ├── activity_dock.rs     # Bottom-right floating dock (collapsible) listing
+│   │                        # install jobs + running instances; also owns the
+│   │                        # running-instance data model (RunStatus, registry,
+│   │                        # start_launch / stop_instance) and InstallJob alias
 │   ├── install_modpack_modal.rs
-│   ├── install_sidebar.rs   # Slide-in panel showing per-instance install progress
 │   ├── instance_card.rs
 │   ├── log_viewer.rs        # Dark sticky-tail log box used by `play.rs`. Tail mode
 │   │                        # only disengages on *upward* scrolls (downward events
