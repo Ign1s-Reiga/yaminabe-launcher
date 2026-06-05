@@ -16,7 +16,7 @@ Follow these rules to minimize unnecessary context usage and avoid scanning the 
 | Concern      | Library                                                                            |
 |--------------|------------------------------------------------------------------------------------|
 | UI framework | Leptos 0.8 (CSR)                                                                   |
-| Icons        | phosphor-leptos                                                                    |
+| Icons        | phosphor-leptos (see docs/phosphor-leptos.md)                                      |
 | CSS-in-Rust  | `bamboo-css-macro` (local crate at `../../bamboo-css/`), `styled!` macro           |
 | Global theme | `src-ui/styles.css` (CSS custom properties, light/dark via `prefers-color-scheme`) |
 | Tauri IPC    | `wasm-bindgen` + `wasm-bindgen-futures`                                            |
