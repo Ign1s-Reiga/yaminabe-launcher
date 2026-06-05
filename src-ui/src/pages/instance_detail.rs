@@ -1,6 +1,7 @@
 use crate::components::mod_manager::ModManager;
 use crate::components::open_in_file_manager::OpenInFileManager;
 use crate::components::activity_dock::RunningRegistry;
+use crate::components::card::managed_notice_card::ManagedNoticeCard;
 use crate::components::modal::upgrade_modal::UpgradeModpackModal;
 use crate::signal_ext::VecSignalExt;
 use crate::components::settings::{SaveState, SettingsProp, SettingsSection};
@@ -143,23 +144,6 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
         opacity: 0.45;
         font-size: 0.9rem;
     };
-    let managed_notice = css! {
-        max-width: 640px;
-        padding: 16px 18px;
-        border: 1px solid var(--secondary-color);
-        border-radius: 10px;
-        background-color: var(--secondary-color);
-    };
-    let managed_notice_title = css! {
-        font-weight: 600;
-        margin: 0 0 6px 0;
-    };
-    let managed_notice_body = css! {
-        margin: 0;
-        font-size: 0.875rem;
-        opacity: 0.7;
-        line-height: 1.6;
-    };
 
     view! {
         <Button
@@ -210,22 +194,10 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
         <Show when=move || active_tab.get() == "Mods">
             {if is_managed {
                 view! {
-                    <div class=managed_notice>
-                        <p class=managed_notice_title>"Managed by a modpack"</p>
-                        <p class=managed_notice_body>
-                            "This instance was installed from a modpack, so its mod list is managed automatically and can't be edited here."
-                        </p>
-                        {cf_origin.map(|_| view! {
-                            <div style="margin-top: 14px;">
-                                <Button
-                                    variant=ButtonVariant::Primary
-                                    on_click=Callback::new(move |_| show_upgrade.set(true))
-                                >
-                                    "Upgrade modpack…"
-                                </Button>
-                            </div>
-                        })}
-                    </div>
+                    <ManagedNoticeCard
+                        can_upgrade=cf_origin.is_some()
+                        on_upgrade=Callback::new(move |_| show_upgrade.set(true))
+                    />
                 }.into_any()
             } else if is_vanilla {
                 view! { <p style="opacity: 0.45; font-size: 0.9rem;">"No mods installed."</p> }.into_any()

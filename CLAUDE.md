@@ -87,6 +87,11 @@ src-ui/src/
 │   │                        # install jobs + running instances; also owns the
 │   │                        # running-instance data model (RunStatus, registry,
 │   │                        # start_launch / stop_instance) and InstallJob alias
+│   ├── card/                # Card components, grouped under one module
+│   │   ├── instance_card.rs        # Library grid card for one instance
+│   │   ├── managed_notice_card.rs  # Read-only "managed by a modpack" notice
+│   │   │                           # for the Mods tab (with upgrade action)
+│   │   └── result_card.rs          # CurseForge modpack search-result card
 │   ├── modal/               # Modal dialogs, grouped under one module
 │   │   ├── create_modal/    # 3-step "create instance" wizard
 │   │   │   ├── mod.rs       # Shell + `WizardState` (Copy bundle of RwSignals) +
@@ -97,7 +102,6 @@ src-ui/src/
 │   │   ├── install_modpack_modal.rs  # CurseForge modpack install flow
 │   │   ├── login_modal.rs   # Microsoft device-code login dialog
 │   │   └── upgrade_modal.rs # CurseForge modpack upgrade flow
-│   ├── instance_card.rs
 │   ├── log_viewer.rs        # Dark sticky-tail log box used by `play.rs`. Tail mode
 │   │                        # only disengages on *upward* scrolls (downward events
 │   │                        # during log bursts are racey); text selection pauses
@@ -105,7 +109,6 @@ src-ui/src/
 │   ├── open_in_file_manager.rs
 │   ├── pagination.rs        # Numeric pager with first/last/current ± 1 visible,
 │   │                        # ellipsis gaps elsewhere
-│   ├── result_card.rs       # CurseForge modpack search-result card
 │   └── settings.rs          # SettingsSection / SettingsProp / SaveState scaffolding
 └── styles.css               # Global CSS variables + font stacks
 ```

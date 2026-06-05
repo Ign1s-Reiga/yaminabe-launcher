@@ -1,10 +1,9 @@
 pub mod activity_dock;
-pub mod instance_card;
 pub mod log_viewer;
 pub mod mod_manager;
 pub mod modal;
 pub mod open_in_file_manager;
 pub mod pagination;
-pub mod result_card;
 pub mod ui;
 pub mod settings;
+pub mod card;
