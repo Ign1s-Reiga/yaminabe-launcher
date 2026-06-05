@@ -1,7 +1,7 @@
 use crate::ipc;
 use leptos::web_sys;
 use serde::Serialize;
-use yaminabe_launcher_shared::datatypes::{GameVersion, LoaderVersion, ModpackSearchResults, ModpackVersionFile};
+use yaminabe_launcher_shared::datatypes::{GameVersion, LoaderVersion, ModFileEntry, ModLoader, ModpackSearchResults, ModpackVersionFile};
 
 // ── IPC ───────────────────────────────────────────────────────────────────────
 
@@ -96,6 +96,58 @@ pub async fn call_download_mods(
     source: Option<String>,
 ) -> Result<(), String> {
     ipc::call("download_mods", DownloadModsArgs { file_ids, instance_location, source }).await
+}
+
+// ── Manual mod management (issue #29) ───────────────────────────────────────────
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchModsArgs {
+    query: String,
+    mc_version: String,
+    mod_loader: ModLoader,
+    index: u32,
+}
+
+pub async fn call_search_mods(
+    query: String,
+    mc_version: String,
+    mod_loader: ModLoader,
+    index: u32,
+) -> Result<ModpackSearchResults, String> {
+    ipc::call("search_curseforge_mods", SearchModsArgs { query, mc_version, mod_loader, index }).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallModArgs {
+    instance_id: String,
+    project_id: u32,
+}
+
+pub async fn call_install_mod(instance_id: String, project_id: u32) -> Result<(), String> {
+    ipc::call("install_curseforge_mod", InstallModArgs { instance_id, project_id }).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstanceIdArg {
+    instance_id: String,
+}
+
+pub async fn call_list_mods(instance_id: String) -> Result<Vec<ModFileEntry>, String> {
+    ipc::call("list_instance_mods", InstanceIdArg { instance_id }).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteModArgs {
+    instance_id: String,
+    file_name: String,
+}
+
+pub async fn call_delete_mod(instance_id: String, file_name: String) -> Result<(), String> {
+    ipc::call("delete_instance_mod", DeleteModArgs { instance_id, file_name }).await
 }
 
 pub async fn call_get_minecraft_versions() -> Result<Vec<GameVersion>, String> {

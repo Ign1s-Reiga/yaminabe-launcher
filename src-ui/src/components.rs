@@ -4,6 +4,7 @@ pub mod install_modpack_modal;
 pub mod install_sidebar;
 pub mod log_viewer;
 pub mod login_modal;
+pub mod mod_manager;
 pub mod open_in_file_manager;
 pub mod pagination;
 pub mod running_sidebar;

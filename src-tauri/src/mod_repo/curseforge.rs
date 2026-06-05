@@ -110,32 +110,19 @@ struct CfManifestLoader {
 
 // ── Platform implementations ──────────────────────────────────────────────────
 
-pub async fn search_modpacks(
-    query: &str,
-    index: u32,
-    http_client: &reqwest::Client,
-    api_key: &str,
-) -> Result<ModpackSearchResults, Error> {
-    if query.trim().is_empty() {
-        return Ok(ModpackSearchResults { items: vec![], total: 0 });
+/// CurseForge `modLoaderType` query value for a mod loader. `0` (Any) for
+/// Vanilla, which has no loader-specific mods.
+fn mod_loader_type(mod_loader: &ModLoader) -> &'static str {
+    match mod_loader {
+        ModLoader::Forge => "1",
+        ModLoader::Fabric => "4",
+        ModLoader::Quilt => "5",
+        ModLoader::NeoForge => "6",
+        ModLoader::Vanilla => "0",
     }
+}
 
-    let index_str = index.to_string();
-
-    let body = fetch_json(http_client, "https://api.curseforge.com/v1/mods/search")
-        .header("x-api-key", api_key)
-        .query(&[
-            ("gameId", "432"),
-            ("classId", "4471"),
-            ("searchFilter", query),
-            ("sortField", "2"),
-            ("pageSize", "50"),
-            ("sortOrder", "desc"),
-            ("index", index_str.as_str()),
-        ])
-        .send::<CurseForgePaginatedResponse<SearchModsEntry>>()
-        .await?;
-
+fn to_search_results(body: CurseForgePaginatedResponse<SearchModsEntry>) -> ModpackSearchResults {
     let total = body.pagination.total_count;
     let items: Vec<ModpackInfo> = body.data.into_iter().map(|m| {
         let mut versions: Vec<String> = m.latest_files_indexes.iter()
@@ -163,7 +150,103 @@ pub async fn search_modpacks(
         }
     }).collect();
 
-    Ok(ModpackSearchResults { items, total })
+    ModpackSearchResults { items, total }
+}
+
+pub async fn search_modpacks(
+    query: &str,
+    index: u32,
+    http_client: &reqwest::Client,
+    api_key: &str,
+) -> Result<ModpackSearchResults, Error> {
+    if query.trim().is_empty() {
+        return Ok(ModpackSearchResults { items: vec![], total: 0 });
+    }
+
+    let index_str = index.to_string();
+
+    let body = fetch_json(http_client, "https://api.curseforge.com/v1/mods/search")
+        .header("x-api-key", api_key)
+        .query(&[
+            ("gameId", "432"),
+            ("classId", "4471"),
+            ("searchFilter", query),
+            ("sortField", "2"),
+            ("pageSize", "50"),
+            ("sortOrder", "desc"),
+            ("index", index_str.as_str()),
+        ])
+        .send::<CurseForgePaginatedResponse<SearchModsEntry>>()
+        .await?;
+
+    Ok(to_search_results(body))
+}
+
+/// Search CurseForge mods (classId 6) pre-filtered to a Minecraft version and
+/// mod loader, so only files compatible with the instance are offered.
+pub async fn search_mods(
+    query: &str,
+    index: u32,
+    mc_version: &str,
+    mod_loader: &ModLoader,
+    http_client: &reqwest::Client,
+    api_key: &str,
+) -> Result<ModpackSearchResults, Error> {
+    if query.trim().is_empty() {
+        return Ok(ModpackSearchResults { items: vec![], total: 0 });
+    }
+
+    let index_str = index.to_string();
+
+    let body = fetch_json(http_client, "https://api.curseforge.com/v1/mods/search")
+        .header("x-api-key", api_key)
+        .query(&[
+            ("gameId", "432"),
+            ("classId", "6"),
+            ("searchFilter", query),
+            ("gameVersion", mc_version),
+            ("modLoaderType", mod_loader_type(mod_loader)),
+            ("sortField", "2"),
+            ("pageSize", "50"),
+            ("sortOrder", "desc"),
+            ("index", index_str.as_str()),
+        ])
+        .send::<CurseForgePaginatedResponse<SearchModsEntry>>()
+        .await?;
+
+    Ok(to_search_results(body))
+}
+
+/// Download the newest file of `project_id` that is compatible with the given
+/// Minecraft version + mod loader into the instance's `mods/` directory.
+pub async fn install_mod(
+    instance_path: &Path,
+    project_id: u32,
+    mc_version: &str,
+    mod_loader: &ModLoader,
+    api_key: &str,
+    client: &reqwest::Client,
+) -> Result<(), Error> {
+    let entries = fetch_json(client, &format!("https://api.curseforge.com/v1/mods/{project_id}/files"))
+        .header("x-api-key", api_key)
+        .query(&[
+            ("gameVersion", mc_version),
+            ("modLoaderType", mod_loader_type(mod_loader)),
+            ("pageSize", "50"),
+        ])
+        .send::<CurseForgeArrayResponse<ModFilesEntry>>()
+        .await?
+        .data;
+
+    // Newest downloadable file wins (CurseForge ids increase over time).
+    let file = entries.into_iter()
+        .filter(|f| f.download_url.is_some())
+        .max_by_key(|f| f.id)
+        .ok_or_else(|| Error::NotExists(format!("compatible file for mod {project_id}")))?;
+
+    let mods_dir = instance_path.join("mods");
+    let url = file.download_url.unwrap_or_default();
+    super::download_files(client, vec![(url, file.file_name)], &mods_dir).await
 }
 
 pub async fn get_modpack_files(

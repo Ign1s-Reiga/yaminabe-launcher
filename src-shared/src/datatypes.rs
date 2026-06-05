@@ -171,6 +171,16 @@ pub struct ModpackVersionFile {
     pub display_name: String,
 }
 
+/// One file present in an instance's `mods/` directory, listed for the manual
+/// mod manager (issue #29). Reflects the actual file on disk, so mods dropped in
+/// by hand also appear.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModFileEntry {
+    pub file_name: String,
+    pub size: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {

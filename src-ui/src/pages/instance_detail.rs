@@ -1,3 +1,4 @@
+use crate::components::mod_manager::ModManager;
 use crate::components::open_in_file_manager::OpenInFileManager;
 use crate::components::running_sidebar::RunningRegistry;
 use crate::components::upgrade_modal::UpgradeModpackModal;
@@ -13,7 +14,7 @@ use leptos::{component, view, IntoView};
 use leptos_router::hooks::{use_navigate, use_params, use_query_map};
 use leptos_router::params::Params;
 use serde::Serialize;
-use yaminabe_launcher_shared::datatypes::{InstanceMeta, JavaInstall, LaunchMode};
+use yaminabe_launcher_shared::datatypes::{InstanceMeta, JavaInstall, LaunchMode, ModLoader};
 
 /// Detail-page tabs, in order; the first is the default. Single source for both
 /// the TabBar and the `?tab=` deep-link validation.
@@ -71,6 +72,12 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     // modpack Upgrade action in the read-only Mods tab.
     let cf_origin = instance.origin.curseforge_ids();
     let show_upgrade: RwSignal<bool> = RwSignal::new(false);
+    // Manual + non-Vanilla instances get the add/remove mod manager (#29);
+    // Vanilla just shows an empty state. StoredValue so the Mods-tab `<Show>`
+    // children closure can reuse them across re-renders.
+    let is_vanilla = instance.mod_loader == ModLoader::Vanilla;
+    let mods_game_version = StoredValue::new(instance.game_version.clone());
+    let mods_loader = StoredValue::new(instance.mod_loader.clone());
     let header_bg = format!("background-color: {}", &instance.mod_loader.get_modloader_color());
     let instance_name = instance.name.clone();
     let category_label = if instance.category.is_empty() { "Default".to_string() } else { instance.category.clone() };
@@ -220,8 +227,16 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
                         })}
                     </div>
                 }.into_any()
-            } else {
+            } else if is_vanilla {
                 view! { <p style="opacity: 0.45; font-size: 0.9rem;">"No mods installed."</p> }.into_any()
+            } else {
+                view! {
+                    <ModManager
+                        instance_id=instance_id.get_value()
+                        game_version=mods_game_version.get_value()
+                        mod_loader=mods_loader.get_value()
+                    />
+                }.into_any()
             }}
         </Show>
 

@@ -19,8 +19,9 @@ use crate::commands::auth::{
     remove_account, set_selected_account, start_microsoft_login,
 };
 use crate::commands::modfile::{
-    download_mods, get_modpack_files, install_curseforge_modpack,
-    search_curseforge_modpacks, upgrade_curseforge_modpack,
+    delete_instance_mod, download_mods, get_modpack_files, install_curseforge_mod,
+    install_curseforge_modpack, list_instance_mods, search_curseforge_modpacks,
+    search_curseforge_mods, upgrade_curseforge_modpack,
 };
 use crate::commands::minecraft::{
     fetch_minecraft_versions, get_minecraft_versions, get_modloader_versions, VersionManifest,
@@ -222,6 +223,10 @@ pub fn run() {
             get_modpack_files,
             install_curseforge_modpack,
             upgrade_curseforge_modpack,
+            search_curseforge_mods,
+            install_curseforge_mod,
+            list_instance_mods,
+            delete_instance_mod,
             download_mods,
             create_instance,
             get_instances,
