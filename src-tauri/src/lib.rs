@@ -46,7 +46,7 @@ pub fn emit_progress(app: &tauri::AppHandle, id: &str, name: &str, step: &str, d
 
 /// What an instance id is currently busy with. Its presence in
 /// [`AppState::instance_activity`] makes launching, a second launch, and
-/// deletion mutually exclusive.
+/// deletion, and upgrades mutually exclusive.
 pub enum InstanceActivity {
     /// A launch is in flight but its process hasn't spawned yet.
     Preparing,
@@ -54,6 +54,8 @@ pub enum InstanceActivity {
     Running(u32),
     /// A delete is removing the instance directory.
     Deleting,
+    /// A modpack upgrade is rewriting instance files.
+    Upgrading,
 }
 
 /// Map of instance id → its in-flight exclusive activity.
@@ -61,7 +63,7 @@ pub type InstanceActivityMap = Arc<Mutex<HashMap<String, InstanceActivity>>>;
 
 /// RAII claim on an instance id's activity slot. [`ActivityGuard::claim`] inserts
 /// it under the lock (failing if already busy) and the guard frees it on drop,
-/// covering every exit path out of launch/delete (success, `?`, early return).
+/// covering every exit path out of guarded commands (success, `?`, early return).
 pub struct ActivityGuard {
     map: InstanceActivityMap,
     id: String,
@@ -91,10 +93,9 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub mc_versions: OnceLock<VersionManifest>,
     pub java_installs: Mutex<Vec<JavaInstall>>,
-    /// In-flight exclusive activity per instance id. `launch_instance` and
-    /// `delete_instance` claim a slot via `ActivityGuard` under this lock, so
-    /// launching, a second launch, and deletion are mutually exclusive;
-    /// `kill_instance` reads the `Running` PID.
+    /// In-flight exclusive activity per instance id. Launch, delete, and
+    /// upgrade commands claim a slot via `ActivityGuard` under this lock, so
+    /// they are mutually exclusive; `kill_instance` reads the `Running` PID.
     pub instance_activity: InstanceActivityMap,
     /// Persisted Microsoft accounts plus the currently selected UUID. Backed
     /// by `accounts.json`.

@@ -66,16 +66,14 @@ pub async fn launch_instance(
 
     // Claim this id for the whole launch lifecycle (PID filled in once the
     // process spawns) so delete_instance refuses during prep too. `claim` fails
-    // if a launch/delete is already in flight: a stale or duplicate IPC call
-    // (e.g. after a WebView reload, whose registry no longer remembers the live
-    // process) must not disturb the existing entry. The guard frees only our own
-    // claim, and only on the paths that reach here after claiming it.
+    // if another exclusive instance activity is already in flight: a stale or
+    // duplicate IPC call (e.g. after a WebView reload, whose registry no longer
+    // remembers the live process) must not disturb the existing entry. The guard
+    // frees only our own claim, and only on paths that reach here after claiming it.
     let Some(_activity) = ActivityGuard::claim(
         &state.instance_activity, &instance_id, InstanceActivity::Preparing,
     ) else {
-        return Err(Error::Invalid(format!(
-            "Instance '{instance_id}' is already launching or running."
-        )));
+        return Err(Error::Busy(format!("instance '{instance_id}' is already busy")));
     };
 
     let instance_location = {

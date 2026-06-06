@@ -209,15 +209,11 @@ pub fn save_instance_settings(
 
 #[tauri::command]
 pub fn delete_instance(id: String, state: State<'_, AppState>) -> Result<(), Error> {
-    // Claim a Deleting slot atomically (refusing if a launch/delete is already
-    // in flight) and hold it across the removal via the guard, so a launch can't
-    // start and resolve the directory we're removing. The guard frees the slot —
-    // not the lock — on every exit path, so the file I/O doesn't block other
-    // instances' bookkeeping.
+    // Claim a Deleting slot atomically and hold it across removal, so a launch
+    // or upgrade can't touch the directory while it is being removed. The guard
+    // frees the slot, not the lock, so file I/O doesn't block other instances.
     let Some(_activity) = ActivityGuard::claim(&state.instance_activity, &id, InstanceActivity::Deleting) else {
-        return Err(Error::Invalid(
-            "Cannot delete an instance while it is launching or running. Stop it first.".to_string(),
-        ));
+        return Err(Error::Busy(format!("instance '{id}' is already busy")));
     };
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
     let dir = find_instance_dir(Path::new(&install_dir), &id)?;

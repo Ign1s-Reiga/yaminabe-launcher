@@ -37,6 +37,9 @@ pub enum Error {
     /// Unsupported operation.
     #[error("Unsupported: {0}")]
     Unsupported(String),
+    /// Operation cannot proceed because the target is already doing exclusive work.
+    #[error("Busy: {0}")]
+    Busy(String),
     /// Authentication-flow failure (Microsoft / Xbox Live / Minecraft services).
     #[error("Authentication failed: {0}")]
     Auth(String),

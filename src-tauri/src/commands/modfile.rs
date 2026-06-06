@@ -2,7 +2,7 @@ use std::path::Path;
 use tauri::State;
 use yaminabe_launcher_shared::datatypes::{InstanceMeta, InstanceOrigin, ModFileEntry, ModLoader, ModpackSearchResults, ModpackVersionFile};
 use yaminabe_launcher_shared::error::Error;
-use crate::{emit_progress, AppState};
+use crate::{emit_progress, ActivityGuard, AppState, InstanceActivity};
 use crate::commands::instance::find_instance_dir;
 use crate::mod_repo::{curseforge, modrinth};
 
@@ -72,6 +72,10 @@ pub async fn upgrade_curseforge_modpack(
     file_id: u32,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
+    let Some(_activity) = ActivityGuard::claim(&state.instance_activity, &instance_id, InstanceActivity::Upgrading) else {
+        return Err(Error::Busy(format!("instance '{instance_id}' is already busy")));
+    };
+
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
     let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
 
