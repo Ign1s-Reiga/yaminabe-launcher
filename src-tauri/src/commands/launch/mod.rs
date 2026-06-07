@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use log::info;
 use tauri::{AppHandle, Emitter, State};
-use yaminabe_launcher_shared::datatypes::{InstanceMeta, LaunchMode, ModLoader};
+use yaminabe_launcher_shared::datatypes::{InstanceMeta, LaunchMode};
 use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::ipc::LogLine;
 use yaminabe_launcher_shared::version_manifest::ClientManifest;

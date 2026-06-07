@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -337,9 +337,8 @@ fn registry_entry(
     entry: &ModFilesEntry,
     downloaded_sha1: Option<&str>,
 ) -> ModListEntry {
-    let sha1 = entry.hashes.iter()
-        .find(|hash| hash.algo == 1)
-        .map(|hash| hash.value.clone())
+    let sha1 = entry_sha1(entry)
+        .map(str::to_string)
         .or_else(|| downloaded_sha1.map(|sha1| sha1.to_string()))
         .unwrap_or_default();
 
@@ -350,6 +349,13 @@ fn registry_entry(
         file_id: entry.id,
         download_source: DownloadSource::CurseForge,
     }
+}
+
+fn entry_sha1(entry: &ModFilesEntry) -> Option<&str> {
+    entry.hashes.iter()
+        .find(|hash| hash.algo == 1)
+        .map(|hash| hash.value.as_str())
+        .filter(|hash| !hash.is_empty())
 }
 
 /// Required mod file ids recorded in an instance's persisted `manifest.json`.
@@ -583,11 +589,20 @@ pub async fn upgrade_modpack(
             }
         }
     }
-    download_mods(to_add, instance_path.to_str().unwrap_or_default(), api_key, http_client).await?;
-    let new_modlist_entries = fetch_file_entries(&new_ids, api_key, http_client).await?
+    let downloaded_modlist_entries = download_mods(
+        to_add,
+        instance_path.to_str().unwrap_or_default(),
+        api_key,
+        http_client,
+    ).await?;
+    let mut new_modlist_entries: Vec<ModListEntry> = fetch_file_entries(&new_ids, api_key, http_client).await?
         .into_iter()
         .map(|entry| registry_entry(&entry, None))
         .collect();
+    for entry in downloaded_modlist_entries {
+        new_modlist_entries.retain(|existing| existing.file_name != entry.file_name);
+        new_modlist_entries.push(entry);
+    }
 
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
     std::fs::write(instance_path.join("manifest.json"), &manifest_raw)?;
@@ -621,27 +636,45 @@ pub async fn download_mods(
     }
 
     let mods_dir = PathBuf::from(instance_location).join("mods");
-    let mut entries = Vec::new();
-    let mut files = Vec::new();
+    let mut modlist = Vec::new();
     for entry in fetch_file_entries(&file_ids, api_key, client).await? {
-        match entry.download_url.as_ref() {
+        let primary = match entry.download_url.as_ref() {
             Some(url) => {
-                files.push((url.clone(), entry.file_name.clone()));
+                super::download_files(client, vec![(url.clone(), entry.file_name.clone())], &mods_dir).await
             }
-            None => info!("Skipping {} (distribution restricted)", entry.file_name),
-        }
-        entries.push(entry);
-    }
+            None => Err(Error::Invalid(format!("CurseForge file {} has no download URL", entry.file_name))),
+        };
 
-    let downloaded = super::download_files(client, files, &mods_dir).await?;
-    let downloaded_sha1_by_name: HashMap<String, String> = downloaded.into_iter()
-        .map(|file| (file.file_name, file.sha1))
-        .collect();
-    let modlist = entries.iter()
-        .map(|entry| registry_entry(
-            entry,
-            downloaded_sha1_by_name.get(&entry.file_name).map(String::as_str),
-        ))
-        .collect();
+        match primary {
+            Ok(downloaded) => {
+                let downloaded_sha1 = downloaded.first().map(|file| file.sha1.as_str());
+                modlist.push(registry_entry(&entry, downloaded_sha1));
+            }
+            Err(primary_error) => {
+                log::warn!("CurseForge download failed for {}: {primary_error}", entry.file_name);
+                let Some(sha1) = entry_sha1(&entry) else {
+                    return Err(Error::Invalid(format!(
+                        "CurseForge download failed for {} and no SHA-1 was available for Modrinth fallback",
+                        entry.file_name
+                    )));
+                };
+                let fallback = super::modrinth::download_mod_by_sha1(
+                    sha1,
+                    &entry.file_name,
+                    instance_location,
+                    client,
+                ).await;
+                match fallback {
+                    Ok(entry) => modlist.push(entry),
+                    Err(fallback_error) => {
+                        return Err(Error::Invalid(format!(
+                            "CurseForge download failed for {}; Modrinth fallback also failed: {fallback_error}",
+                            entry.file_name
+                        )));
+                    }
+                }
+            }
+        }
+    }
     Ok(modlist)
 }

@@ -9,7 +9,7 @@ use crate::commands::instance::{
     find_instance_dir, instance_meta_file, remove_modlist_file, upsert_modlist_entries,
 };
 use crate::json::read_json;
-use crate::mod_repo::{curseforge, modrinth};
+use crate::mod_repo;
 
 #[tauri::command]
 pub async fn search_curseforge_modpacks(
@@ -18,7 +18,7 @@ pub async fn search_curseforge_modpacks(
     state: State<'_, AppState>,
 ) -> Result<ModpackSearchResults, Error> {
     let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
-    curseforge::search_modpacks(&query, index, &state.http_client, &api_key).await
+    mod_repo::search_modpacks(&query, index, &state.http_client, &api_key).await
 }
 
 #[tauri::command]
@@ -27,7 +27,7 @@ pub async fn get_modpack_files(
     state: State<'_, AppState>,
 ) -> Result<Vec<ModpackVersionFile>, Error> {
     let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
-    curseforge::get_modpack_files(mod_id, &state.http_client, &api_key).await
+    mod_repo::get_modpack_files(mod_id, &state.http_client, &api_key).await
 }
 
 #[tauri::command]
@@ -50,7 +50,7 @@ pub async fn install_curseforge_modpack(
     let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
     let origin = InstanceOrigin::CurseForge { project_id, file_id };
 
-    let result = curseforge::install_modpack(
+    let result = mod_repo::install_modpack(
         &app_handle, &id, &instance_name,
         download_url, install_dir, category, origin,
         &api_key, &state,
@@ -92,7 +92,7 @@ pub async fn upgrade_curseforge_modpack(
     let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
 
     emit_progress(&app_handle, &instance_id, &instance_name, "Preparing upgrade", false, None);
-    let result = curseforge::upgrade_modpack(
+    let result = mod_repo::upgrade_modpack(
         &app_handle, &instance_id, &instance_name, instance_dir,
         download_url, project_id, file_id, &api_key, &state,
     ).await;
@@ -118,7 +118,7 @@ pub async fn search_curseforge_mods(
     state: State<'_, AppState>,
 ) -> Result<ModpackSearchResults, Error> {
     let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
-    curseforge::search_mods(&query, index, &mc_version, &mod_loader, &state.http_client, &api_key).await
+    mod_repo::search_mods(&query, index, &mc_version, &mod_loader, &state.http_client, &api_key).await
 }
 
 #[tauri::command]
@@ -131,7 +131,7 @@ pub async fn install_curseforge_mod(
     let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
     let meta: InstanceMeta = read_json(instance_meta_file(&instance_dir))?;
     let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
-    let entries = curseforge::install_mod(
+    let entries = mod_repo::install_mod(
         &instance_dir,
         project_id,
         &meta.game_version,
@@ -192,20 +192,14 @@ pub async fn download_mods(
     source: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
-    match source.as_deref().unwrap_or("modrinth") {
-        "curseforge" => {
-            let ids: Vec<u32> = file_ids.iter()
-                .filter_map(|s| s.parse().ok())
-                .collect();
-            let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
-            let instance_path = std::path::PathBuf::from(&instance_location);
-            let entries = curseforge::download_mods(ids, &instance_location, &api_key, &state.http_client).await?;
-            upsert_modlist_entries(&instance_path, entries)
-        }
-        _ => {
-            let instance_path = std::path::PathBuf::from(&instance_location);
-            let entries = modrinth::download_mods(&file_ids, &instance_location, &state.http_client).await?;
-            upsert_modlist_entries(&instance_path, entries)
-        }
-    }
+    let instance_path = std::path::PathBuf::from(&instance_location);
+    let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
+    let entries = mod_repo::download_mods(
+        file_ids,
+        &instance_location,
+        source.as_deref(),
+        &api_key,
+        &state.http_client,
+    ).await?;
+    upsert_modlist_entries(&instance_path, entries)
 }
