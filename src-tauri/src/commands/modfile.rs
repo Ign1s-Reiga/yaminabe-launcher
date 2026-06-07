@@ -1,9 +1,14 @@
 use std::path::Path;
 use tauri::State;
-use yaminabe_launcher_shared::datatypes::{InstanceMeta, InstanceOrigin, ModFileEntry, ModLoader, ModpackSearchResults, ModpackVersionFile};
+use yaminabe_launcher_shared::datatypes::{
+    InstanceMeta, InstanceOrigin, ModFileEntry, ModLoader, ModpackSearchResults, ModpackVersionFile,
+};
 use yaminabe_launcher_shared::error::Error;
 use crate::{emit_progress, ActivityGuard, AppState, InstanceActivity};
-use crate::commands::instance::find_instance_dir;
+use crate::commands::instance::{
+    find_instance_dir, instance_meta_file, remove_modlist_file, upsert_modlist_entries,
+};
+use crate::json::read_json;
 use crate::mod_repo::{curseforge, modrinth};
 
 #[tauri::command]
@@ -79,7 +84,7 @@ pub async fn upgrade_curseforge_modpack(
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
     let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
 
-    let meta: InstanceMeta = serde_json::from_str(&std::fs::read_to_string(instance_dir.join("instance.json"))?)?;
+    let meta: InstanceMeta = read_json(instance_meta_file(&instance_dir))?;
     if meta.origin.curseforge_ids().is_none() {
         return Err(Error::Invalid("instance is not a CurseForge modpack instance".to_string()));
     }
@@ -124,9 +129,17 @@ pub async fn install_curseforge_mod(
 ) -> Result<(), Error> {
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
     let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
-    let meta: InstanceMeta = serde_json::from_str(&std::fs::read_to_string(instance_dir.join("instance.json"))?)?;
+    let meta: InstanceMeta = read_json(instance_meta_file(&instance_dir))?;
     let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
-    curseforge::install_mod(&instance_dir, project_id, &meta.game_version, &meta.mod_loader, &api_key, &state.http_client).await
+    let entries = curseforge::install_mod(
+        &instance_dir,
+        project_id,
+        &meta.game_version,
+        &meta.mod_loader,
+        &api_key,
+        &state.http_client,
+    ).await?;
+    upsert_modlist_entries(&instance_dir, entries)
 }
 
 #[tauri::command]
@@ -169,7 +182,7 @@ pub fn delete_instance_mod(
     if path.exists() {
         std::fs::remove_file(&path)?;
     }
-    Ok(())
+    remove_modlist_file(&instance_dir, &file_name)
 }
 
 #[tauri::command]
@@ -185,8 +198,14 @@ pub async fn download_mods(
                 .filter_map(|s| s.parse().ok())
                 .collect();
             let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
-            curseforge::download_mods(ids, &instance_location, &api_key, &state.http_client).await
+            let instance_path = std::path::PathBuf::from(&instance_location);
+            let entries = curseforge::download_mods(ids, &instance_location, &api_key, &state.http_client).await?;
+            upsert_modlist_entries(&instance_path, entries)
         }
-        _ => modrinth::download_mods(&file_ids, &instance_location, &state.http_client).await,
+        _ => {
+            let instance_path = std::path::PathBuf::from(&instance_location);
+            let entries = modrinth::download_mods(&file_ids, &instance_location, &state.http_client).await?;
+            upsert_modlist_entries(&instance_path, entries)
+        }
     }
 }

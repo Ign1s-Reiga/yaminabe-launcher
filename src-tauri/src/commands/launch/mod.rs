@@ -16,7 +16,7 @@ use crate::auth::{
     hydrate_account, persist_account, refresh_account_tokens, MinecraftAccount,
     MinecraftAccountRecord,
 };
-use crate::commands::instance::find_instance_dir;
+use crate::commands::instance::{find_instance_dir, instance_meta_file};
 use crate::commands::java::download_java_runtime;
 use crate::install_task::version_manifest_path;
 
@@ -53,17 +53,9 @@ pub async fn launch_instance(
     app_handle: tauri::AppHandle,
     instance_id: String,
     mc_version: String,
-    // `mod_loader` is no longer needed by the backend (instance.json's
-    // version_id is the source of truth) but is preserved in the IPC signature
-    // for frontend compatibility. Prefix-underscore to silence the unused warning.
-    _mod_loader: ModLoader,
-    // Optional so existing call sites that omit it keep working; None and
-    // Some(Online) are treated identically.
-    launch_mode: Option<LaunchMode>,
+    launch_mode: LaunchMode,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
-    let launch_mode = launch_mode.unwrap_or(LaunchMode::Online);
-
     // Claim this id for the whole launch lifecycle (PID filled in once the
     // process spawns) so delete_instance refuses during prep too. `claim` fails
     // if another exclusive instance activity is already in flight: a stale or
@@ -82,9 +74,9 @@ pub async fn launch_instance(
             .to_string_lossy()
             .into_owned()
     };
-    let instance_meta: Option<InstanceMeta> = std::fs::read_to_string(
-        PathBuf::from(&instance_location).join("instance.json")
-    ).ok().and_then(|s| serde_json::from_str(&s).ok());
+    let instance_meta: Option<InstanceMeta> = crate::json::read_json(
+        instance_meta_file(Path::new(&instance_location))
+    ).ok();
 
     let (instance_jre_path, ram_mb, window_width, window_height) = {
         let s = state.settings.read().unwrap();
@@ -129,13 +121,8 @@ pub async fn launch_instance(
     {
         let mut s = state.settings.write().unwrap();
         s.last_played_instance_id = instance_id.clone();
-        match serde_json::to_string_pretty(&*s) {
-            Ok(json) => {
-                if let Err(e) = std::fs::write(crate::settings_path(), json) {
-                    log::warn!("failed to persist last_played_instance_id: {e}");
-                }
-            }
-            Err(e) => log::warn!("failed to serialize settings: {e}"),
+        if let Err(e) = crate::json::write_json(crate::settings_path(), &*s) {
+            log::warn!("failed to persist last_played_instance_id: {e}");
         }
     }
 
@@ -146,7 +133,7 @@ pub async fn launch_instance(
 
     log!("Resolving version JSON...");
     // Source of truth: the version_id captured at install time and recorded
-    // in instance.json. Pre-refactor instances with no version_id field must
+    // in `.launcher/instance.json`. Pre-refactor instances with no version_id field must
     // be re-created — we don't attempt to guess the on-disk folder name.
     let version_id = match instance_meta.as_ref().map(|m| m.version_id.clone()) {
         Some(id) if !id.is_empty() => id,
@@ -168,7 +155,7 @@ pub async fn launch_instance(
         Err(e) => fail!(e),
     };
 
-    // jrePath in instance.json wins; otherwise fetch the JRE the manifest
+    // jrePath in `.launcher/instance.json` wins; otherwise fetch the JRE the manifest
     // recommends. We pick `java.exe` (not `javaw.exe`) so JVM startup errors
     // surface on the captured stdio; CREATE_NO_WINDOW keeps the console hidden.
     let java = match resolve_java(instance_jre_path, &manifest, &state.http_client, &app_handle, &instance_id).await {

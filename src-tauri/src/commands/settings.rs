@@ -6,6 +6,7 @@ use tauri_plugin_opener::OpenerExt;
 use crate::{settings_path, AppSettings, AppState};
 use yaminabe_launcher_shared::error::Error;
 use crate::commands::instance::find_instance_dir;
+use crate::json::write_json;
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, AppState>) -> AppSettings {
@@ -59,8 +60,7 @@ pub fn save_settings(
     settings: AppSettings,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
-    let json = serde_json::to_string_pretty(&settings)?;
-    std::fs::write(settings_path(), &json)?;
+    write_json(settings_path(), &settings)?;
     *state.settings.write().unwrap() = settings;
     Ok(())
 }

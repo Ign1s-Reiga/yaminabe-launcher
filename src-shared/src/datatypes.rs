@@ -56,7 +56,8 @@ impl ModLoader {
 /// Where an instance came from. Gates per-origin rules — e.g. a
 /// modpack-managed instance has a read-only mod list. Extensible to other
 /// sources (Modrinth, local zip, …) later.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum InstanceOrigin {
     #[default]
     Manual,
@@ -75,7 +76,7 @@ impl InstanceOrigin {
     pub fn curseforge_ids(&self) -> Option<(u32, u32)> {
         match self {
             InstanceOrigin::CurseForge { project_id, file_id } => Some((*project_id, *file_id)),
-            _ => None,
+            InstanceOrigin::Manual => None,
         }
     }
 }
@@ -179,6 +180,22 @@ pub struct ModpackVersionFile {
 pub struct ModFileEntry {
     pub file_name: String,
     pub size: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DownloadSource {
+    CurseForge,
+    Modrinth,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModListEntry {
+    pub file_name: String,
+    pub sha1: String,
+    pub project_id: u32,
+    pub file_id: u32,
+    pub download_source: DownloadSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -295,4 +312,58 @@ pub struct LoaderVersion {
     pub game_version: String,
     #[serde(rename = "type")]
     pub loader_type: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DownloadSource, InstanceOrigin, ModListEntry};
+
+    #[test]
+    fn serializes_manual_origin_as_typed_object() {
+        let json = serde_json::to_string(&InstanceOrigin::Manual).unwrap();
+
+        assert_eq!(json, r#"{"type":"Manual"}"#);
+    }
+
+    #[test]
+    fn serializes_curseforge_origin_as_typed_object() {
+        let json = serde_json::to_string(&InstanceOrigin::CurseForge {
+            project_id: 1198207,
+            file_id: 8186745,
+        }).unwrap();
+
+        assert_eq!(json, r#"{"type":"CurseForge","project_id":1198207,"file_id":8186745}"#);
+    }
+
+    #[test]
+    fn deserializes_typed_object_origins() {
+        let manual: InstanceOrigin = serde_json::from_str(
+            r#"{"type":"Manual"}"#,
+        ).unwrap();
+        let curseforge: InstanceOrigin = serde_json::from_str(
+            r#"{"type":"CurseForge","project_id":1198207,"file_id":8186745}"#,
+        ).unwrap();
+
+        assert_eq!(manual, InstanceOrigin::Manual);
+        assert_eq!(curseforge, InstanceOrigin::CurseForge {
+            project_id: 1198207,
+            file_id: 8186745,
+        });
+    }
+
+    #[test]
+    fn serializes_modlist_entry_schema() {
+        let json = serde_json::to_string(&ModListEntry {
+            file_name: "example.jar".to_string(),
+            sha1: "abc123".to_string(),
+            project_id: 10,
+            file_id: 20,
+            download_source: DownloadSource::CurseForge,
+        }).unwrap();
+
+        assert_eq!(
+            json,
+            r#"{"fileName":"example.jar","sha1":"abc123","projectId":10,"fileId":20,"downloadSource":"CurseForge"}"#
+        );
+    }
 }

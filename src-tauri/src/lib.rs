@@ -1,6 +1,7 @@
 mod auth;
 mod commands;
 mod install_task;
+mod json;
 mod mod_repo;
 mod http_utils;
 
@@ -169,8 +170,7 @@ pub fn run() {
             }
 
             // Initialize and load AppSettings
-            let settings_text = std::fs::read_to_string(settings_path())?;
-            let mut settings: AppSettings = serde_json::from_str(&settings_text)?;
+            let mut settings: AppSettings = crate::json::read_json(settings_path())?;
             if settings.instance_install_dir.is_empty() {
                 settings.instance_install_dir = app.path().local_data_dir()?.join(".yaminabe").join("instances")
                     .to_string_lossy()
