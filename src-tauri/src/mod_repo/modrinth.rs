@@ -11,7 +11,8 @@ struct Version {
     project_id: String,
     #[serde(default)]
     files: Vec<VersionFile>,
-    dependencies: Vec<Dependency>
+    #[serde(default)]
+    dependencies: Vec<Dependency>,
 }
 
 impl Version {
@@ -49,8 +50,14 @@ struct Dependency {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum DependencyType {
     Required,
+    Optional,
+    Incompatible,
+    Embedded,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Default, Deserialize)]
