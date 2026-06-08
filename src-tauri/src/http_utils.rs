@@ -150,7 +150,21 @@ pub async fn download_resource(
     if let Some(parent) = dest_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(dest_path, &bytes)?;
+
+    // Write to a sibling temp file then rename into place. Rename is atomic, so
+    // a concurrent reader (e.g. a mod loader scanning mods/ at launch) sees
+    // either the old file or the complete new one, never a partial write.
+    let file_name = dest_path.file_name()
+        .ok_or_else(|| Error::Invalid(format!("download destination has no file name: {}", dest_path.display())))?;
+    let mut tmp_name = file_name.to_os_string();
+    tmp_name.push(".part");
+    let tmp_path = dest_path.with_file_name(tmp_name);
+
+    std::fs::write(&tmp_path, &bytes)?;
+    if let Err(e) = std::fs::rename(&tmp_path, &dest_path) {
+        std::fs::remove_file(&tmp_path).ok();
+        return Err(e.into());
+    }
     Ok(())
 }
 

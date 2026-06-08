@@ -75,7 +75,7 @@ pub async fn upgrade_curseforge_modpack(
     file_id: u32,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
-    let Some(_activity) = ActivityGuard::claim(&state.instance_activity, &instance_id, InstanceActivity::Upgrading) else {
+    let Some(_activity) = ActivityGuard::claim(&state.instance_activity, &instance_id, InstanceActivity::Modifying) else {
         return Err(Error::Busy(format!("instance '{instance_id}' is already busy")));
     };
 
@@ -142,6 +142,9 @@ pub fn delete_instance_mod(
     if file_name.is_empty() || file_name.contains('/') || file_name.contains('\\') || file_name.contains("..") {
         return Err(Error::Invalid(format!("invalid mod file name '{file_name}'")));
     }
+    let Some(_activity) = ActivityGuard::claim(&state.instance_activity, &instance_id, InstanceActivity::Modifying) else {
+        return Err(Error::Busy(format!("instance '{instance_id}' is already busy")));
+    };
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
     let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
     let path = instance_dir.join("mods").join(&file_name);
