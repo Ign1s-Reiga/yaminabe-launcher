@@ -341,16 +341,12 @@ pub async fn download_mod(
         .find(|v| v.algo == 1)
         .map(|v| v.value.as_str())
         .ok_or_else(|| Error::Invalid(format!("CurseForge file {} has no SHA-1 hash", file.file_name)))?;
-    let Some(url) = &file.download_url else {
-        // TODO: Use correct error type
-        return Err(Error::Invalid(format!("CurseForge file {} has no download URL", file.file_name)));
-    };
-
+    
     if let Some(url) = &file.download_url {
-        download_resource(client, url, sha1, mods_dir.join("mods").join(&file.file_name)).await?;
+        download_resource(client, url, sha1, mods_dir.join(&file.file_name)).await?;
     } else {
-        warn!("CurseForge has restricts downloads for file {}, falling back to Modrinth lookup by SHA-1", file.file_name);
-        modrinth::download_mod_by_sha1(sha1, mods_dir, client).await?;
+        warn!("CurseForge restricts downloads for file {}, falling back to Modrinth lookup by SHA-1", file.file_name);
+        modrinth::download_mod_by_sha1(sha1, &mods_dir, client).await?;
     }
     Ok(file.to_modlist_entry())
 }

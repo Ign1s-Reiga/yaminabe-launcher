@@ -127,18 +127,30 @@ pub async fn download_resource(
     expected_sha1: &str,
     dest_path: PathBuf,
 ) -> Result<(), Error> {
-    let req = client.get(url);
-    let resp = req.send().await?;
+    let resource = get_resource_name(url).unwrap_or_default();
+
+    // An existing file that already matches needs no network round-trip; one
+    // that does not match is stale/corrupt and must be replaced, so fall
+    // through and overwrite it with verified bytes below.
+    if dest_path.exists() {
+        if let Ok(existing) = std::fs::read(&dest_path) {
+            if verify_sha1(&existing, expected_sha1, resource).is_ok() {
+                return Ok(());
+            }
+        }
+    }
+
+    let resp = client.get(url).send().await?;
     if !resp.status().is_success() {
         return Err(Error::HttpRequestRejected(resp.status().as_u16(), url.to_string()));
     }
     let bytes = resp.bytes().await
         .map_err(Error::InvalidResponse)?;
-    verify_sha1(&bytes, expected_sha1, get_resource_name(url).unwrap_or_default())?;
-    if !dest_path.exists() {
-        std::fs::create_dir_all(dest_path.parent().unwrap())?;
-        std::fs::write(dest_path, &bytes)?;
+    verify_sha1(&bytes, expected_sha1, resource)?;
+    if let Some(parent) = dest_path.parent() {
+        std::fs::create_dir_all(parent)?;
     }
+    std::fs::write(dest_path, &bytes)?;
     Ok(())
 }
 
