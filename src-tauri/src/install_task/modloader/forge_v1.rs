@@ -4,7 +4,8 @@ use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::version_manifest::ClientManifest;
 use crate::libraries_dir;
 use crate::http_utils::download_from_maven;
-use super::{installer_archive, maven_coord_to_path, version_manifest_path};
+use crate::install_task::{installer_archive, maven_coord_to_path};
+use super::version_manifest_path;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

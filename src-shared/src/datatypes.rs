@@ -57,7 +57,7 @@ impl ModLoader {
 /// modpack-managed instance has a read-only mod list. Extensible to other
 /// sources (Modrinth, local zip, …) later.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum InstanceOrigin {
     #[default]
     Manual,
@@ -89,10 +89,6 @@ pub struct InstanceMeta {
     pub game_version: String,
     pub mod_loader: ModLoader,
     pub mod_loader_version: Option<String>,
-    /// The `versions/<id>` folder name that the install pipeline produced for
-    /// this instance. Populated at `create_instance` time from whatever the
-    /// loader's installer wrote (V1/V2 read it from `install_profile.json` /
-    /// `version.json`) so launch never needs to recompute it.
     #[serde(default)]
     pub version_id: String,
     pub category: String,
@@ -106,8 +102,6 @@ pub struct InstanceMeta {
     pub window_width: u32,
     #[serde(default)]
     pub window_height: u32,
-    /// Where this instance came from. Defaults to `Manual` so existing
-    /// `instance.json` files without the field keep loading.
     #[serde(default)]
     pub origin: InstanceOrigin,
 }
@@ -147,6 +141,8 @@ impl Default for InstanceMeta {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModpackInfo {
     pub id: u32,
+    #[serde(default)]
+    pub file_id: Option<u32>,
     pub name: String,
     pub summary: String,
     pub logo_url: Option<String>,
@@ -172,18 +168,8 @@ pub struct ModpackVersionFile {
     pub display_name: String,
 }
 
-/// One file present in an instance's `mods/` directory, listed for the manual
-/// mod manager (issue #29). Reflects the actual file on disk, so mods dropped in
-/// by hand also appear.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ModFileEntry {
-    pub file_name: String,
-    pub size: u64,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DownloadSource {
+pub enum DistroSource {
     CurseForge,
     Modrinth,
 }
@@ -193,9 +179,11 @@ pub enum DownloadSource {
 pub struct ModListEntry {
     pub file_name: String,
     pub sha1: String,
-    pub project_id: u32,
-    pub file_id: u32,
-    pub download_source: DownloadSource,
+    pub project_id: String,
+    pub file_id: String,
+    pub distro_platform: DistroSource,
+    #[serde(default)]
+    pub size: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -316,7 +304,7 @@ pub struct LoaderVersion {
 
 #[cfg(test)]
 mod tests {
-    use super::{DownloadSource, InstanceOrigin, ModListEntry};
+    use super::{DistroSource, InstanceOrigin, ModListEntry};
 
     #[test]
     fn serializes_manual_origin_as_typed_object() {
@@ -356,14 +344,15 @@ mod tests {
         let json = serde_json::to_string(&ModListEntry {
             file_name: "example.jar".to_string(),
             sha1: "abc123".to_string(),
-            project_id: 10,
-            file_id: 20,
-            download_source: DownloadSource::CurseForge,
+            project_id: "10".to_string(),
+            file_id: "20".to_string(),
+            distro_platform: DistroSource::CurseForge,
+            size: 1024,
         }).unwrap();
 
         assert_eq!(
             json,
-            r#"{"fileName":"example.jar","sha1":"abc123","projectId":10,"fileId":20,"downloadSource":"CurseForge"}"#
+            r#"{"fileName":"example.jar","sha1":"abc123","projectId":"10","fileId":"20","distroPlatform":"CurseForge","size":1024}"#
         );
     }
 }

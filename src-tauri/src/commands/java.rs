@@ -98,6 +98,7 @@ struct RuntimeFileDownloads {
 #[derive(Deserialize)]
 struct RuntimeDownload {
     url: String,
+    sha1: String,
 }
 
 /// Download a Mojang-distributed JRE for the given `component` (e.g. `"jre-legacy"`)
@@ -109,9 +110,6 @@ pub async fn download_java_runtime(
 ) -> Result<PathBuf, Error> {
     let runtime_dir = runtimes_dir().join(component);
     let javaw_path  = runtime_dir.join("bin").join("javaw.exe");
-    if javaw_path.exists() {
-        return Ok(javaw_path);
-    }
 
     let all = fetch_json(
         client,
@@ -140,11 +138,7 @@ pub async fn download_java_runtime(
             continue;
         }
         if file.file_type == "file" && let Some(dl) = &file.downloads {
-            if dest.exists() { continue; }
-            if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            download_resource(client, dl.raw.url.as_str(), dest).await?;
+            download_resource(client, dl.raw.url.as_str(), &dl.raw.sha1, dest).await?;
         }
     }
 

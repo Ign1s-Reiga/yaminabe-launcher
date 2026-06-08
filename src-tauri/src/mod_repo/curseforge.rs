@@ -3,28 +3,34 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use log::info;
+use log::{info, warn};
 use serde::Deserialize;
 use tauri::State;
 use yaminabe_launcher_shared::datatypes::{
-    DownloadSource, InstanceMeta, InstanceOrigin, ModListEntry, ModLoader, ModpackInfo,
+    DistroSource, InstanceMeta, InstanceOrigin, ModListEntry, ModLoader, ModpackInfo,
     ModpackSearchResults, ModpackVersionFile,
 };
+use yaminabe_launcher_shared::datatypes::DistroSource::Modrinth;
 use yaminabe_launcher_shared::error::Error;
 use crate::{emit_progress, AppState};
 use crate::commands::instance::{
     instance_meta_file, replace_modlist_entries_for_file_ids, upsert_modlist_entries,
 };
-use crate::http_utils::fetch_json;
-use crate::install_task::{ensure_fabric, ensure_forge, ensure_neoforge, ensure_quilt, ensure_vanilla};
+use crate::http_utils::{download_resource, fetch_json};
+use crate::install_task::ensure_game_and_loader;
 use crate::json::{read_json, write_json};
-
-// ── Wire types ────────────────────────────────────────────────────────────────
+use crate::mod_repo::modrinth;
 
 #[derive(Debug, Deserialize)]
 struct CurseForgeArrayResponse<T>
 {
     data: Vec<T>
+}
+
+#[derive(Debug, Deserialize)]
+struct CurseForgeResponse<T>
+{
+    data: T
 }
 
 #[derive(Debug, Deserialize)]
@@ -41,20 +47,34 @@ struct Pagination {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct ModFilesEntry {
+struct ModFile {
     id: u32,
     mod_id: u32,
     release_type: u32,
     file_name: String,
     download_url: Option<String>,
     display_name: String,
+    file_size_on_disk: u64,
     #[serde(default)]
-    hashes: Vec<CfFileHash>,
+    hashes: Vec<FileHash>,
+}
+
+impl ModFile {
+    fn to_modlist_entry(self: &ModFile) -> ModListEntry {
+        ModListEntry {
+            file_name: self.file_name.clone(),
+            sha1: self.hashes.iter().find(|h| h.algo == 1).map(|h| h.value.clone()).unwrap_or_default(),
+            project_id: self.mod_id.to_string(),
+            file_id: self.id.to_string(),
+            distro_platform: DistroSource::CurseForge,
+            size: self.file_size_on_disk,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct CfFileHash {
+struct FileHash {
     value: String,
     algo: u32,
 }
@@ -67,10 +87,10 @@ struct SearchModsEntry {
     summary: String,
     primary_category_id: u32,
     categories: Vec<CategoryItem>,
-    logo: Option<CfLogo>,
+    logo: Option<Logo>,
     download_count: u32,
     #[serde(default)]
-    latest_files_indexes: Vec<CfFileIndex>,
+    latest_files_indexes: Vec<FilesIndex>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -80,29 +100,31 @@ struct CategoryItem {
 }
 
 #[derive(Debug, Deserialize)]
-struct CfLogo {
+struct Logo {
     url: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CfFileIndex {
+struct FilesIndex {
+    #[serde(default)]
+    file_id: u32,
     game_version: String,
 }
 
-// ── Modpack manifest ──────────────────────────────────────────────────────────
-
 #[derive(Debug, Deserialize)]
-struct CurseForgeModpackManifest {
+struct ModpackManifest {
     minecraft: CfManifestMinecraft,
     #[serde(default = "default_overrides_dir")]
     overrides: String,
     #[serde(default)]
-    files: Vec<CfManifestFile>,
+    files: Vec<ManifestFilesItem>,
 }
 
 #[derive(Debug, Deserialize)]
-struct CfManifestFile {
+struct ManifestFilesItem {
+    #[serde(rename = "projectID")]
+    project_id: u32,
     #[serde(rename = "fileID")]
     file_id: u32,
     required: bool,
@@ -156,6 +178,9 @@ fn to_search_results(body: CurseForgePaginatedResponse<SearchModsEntry>) -> Modp
 
         ModpackInfo {
             id: m.id,
+            file_id: m.latest_files_indexes.first()
+                .map(|f| f.file_id)
+                .filter(|file_id| *file_id != 0),
             name: m.name,
             summary: m.summary,
             logo_url: m.logo.map(|l| l.url),
@@ -179,8 +204,6 @@ pub async fn search_modpacks(
         return Ok(ModpackSearchResults { items: vec![], total: 0 });
     }
 
-    let index_str = index.to_string();
-
     let body = fetch_json(http_client, "https://api.curseforge.com/v1/mods/search")
         .header("x-api-key", api_key)
         .query(&[
@@ -190,7 +213,7 @@ pub async fn search_modpacks(
             ("sortField", "2"),
             ("pageSize", "50"),
             ("sortOrder", "desc"),
-            ("index", index_str.as_str()),
+            ("index", &index.to_string()),
         ])
         .send::<CurseForgePaginatedResponse<SearchModsEntry>>()
         .await?;
@@ -212,8 +235,6 @@ pub async fn search_mods(
         return Ok(ModpackSearchResults { items: vec![], total: 0 });
     }
 
-    let index_str = index.to_string();
-
     let body = fetch_json(http_client, "https://api.curseforge.com/v1/mods/search")
         .header("x-api-key", api_key)
         .query(&[
@@ -225,46 +246,12 @@ pub async fn search_mods(
             ("sortField", "2"),
             ("pageSize", "50"),
             ("sortOrder", "desc"),
-            ("index", index_str.as_str()),
+            ("index", &index.to_string()),
         ])
         .send::<CurseForgePaginatedResponse<SearchModsEntry>>()
         .await?;
 
     Ok(to_search_results(body))
-}
-
-/// Download the newest file of `project_id` that is compatible with the given
-/// Minecraft version + mod loader into the instance's `mods/` directory.
-pub async fn install_mod(
-    instance_path: &Path,
-    project_id: u32,
-    mc_version: &str,
-    mod_loader: &ModLoader,
-    api_key: &str,
-    client: &reqwest::Client,
-) -> Result<Vec<ModListEntry>, Error> {
-    let entries = fetch_json(client, &format!("https://api.curseforge.com/v1/mods/{project_id}/files"))
-        .header("x-api-key", api_key)
-        .query(&[
-            ("gameVersion", mc_version),
-            ("modLoaderType", mod_loader_type(mod_loader)),
-            ("pageSize", "50"),
-        ])
-        .send::<CurseForgeArrayResponse<ModFilesEntry>>()
-        .await?
-        .data;
-
-    // Newest downloadable file wins (CurseForge ids increase over time).
-    let file = entries.into_iter()
-        .filter(|f| f.download_url.is_some())
-        .max_by_key(|f| f.id)
-        .ok_or_else(|| Error::NotExists(format!("compatible file for mod {project_id}")))?;
-
-    let mods_dir = instance_path.join("mods");
-    let url = file.download_url.clone().unwrap_or_default();
-    let downloaded = super::download_files(client, vec![(url, file.file_name.clone())], &mods_dir).await?;
-    let downloaded_sha1 = downloaded.first().map(|file| file.sha1.as_str());
-    Ok(vec![registry_entry(&file, downloaded_sha1)])
 }
 
 pub async fn get_modpack_files(
@@ -278,7 +265,7 @@ pub async fn get_modpack_files(
     )
         .header("x-api-key", api_key)
         .query(&[("pageSize", "50")])
-        .send::<CurseForgeArrayResponse<ModFilesEntry>>().await?
+        .send::<CurseForgeArrayResponse<ModFile>>().await?
         .data;
     
     entries.sort_by(|a, b| b.id.cmp(&a.id));
@@ -306,7 +293,7 @@ pub async fn get_modpack_files(
 
 fn read_manifest<R: std::io::Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
-) -> Result<(CurseForgeModpackManifest, String), Error> {
+) -> Result<(ModpackManifest, String), Error> {
     let mut file = archive.by_name("manifest.json")
         .map_err(|_| Error::Invalid("modpack zip is missing manifest.json".to_string()))?;
     let mut content = String::new();
@@ -317,7 +304,7 @@ fn read_manifest<R: std::io::Read + std::io::Seek>(
 
 /// Resolve the modpack's primary mod loader and its version. CurseForge
 /// manifest loader ids are `{name}-{version}` (e.g. `neoforge-21.1.228`).
-fn resolve_loader(manifest: &CurseForgeModpackManifest) -> Result<(ModLoader, Option<String>), Error> {
+fn resolve_loader(manifest: &ModpackManifest) -> Result<(ModLoader, Option<String>), Error> {
     let mod_loader_id = manifest.minecraft.mod_loaders.iter()
         .find(|l| l.primary)
         .or_else(|| manifest.minecraft.mod_loaders.first())
@@ -329,33 +316,46 @@ fn resolve_loader(manifest: &CurseForgeModpackManifest) -> Result<(ModLoader, Op
     Ok((ModLoader::from_str(loader_name)?, loader_version))
 }
 
-fn manifest_file_ids(manifest: &CurseForgeModpackManifest) -> Vec<u32> {
+fn manifest_file_ids(manifest: &ModpackManifest) -> Vec<u32> {
     manifest.files.iter().filter(|f| f.required).map(|f| f.file_id).collect()
 }
 
-fn registry_entry(
-    entry: &ModFilesEntry,
-    downloaded_sha1: Option<&str>,
-) -> ModListEntry {
-    let sha1 = entry_sha1(entry)
-        .map(str::to_string)
-        .or_else(|| downloaded_sha1.map(|sha1| sha1.to_string()))
-        .unwrap_or_default();
-
-    ModListEntry {
-        file_name: entry.file_name.clone(),
-        sha1,
-        project_id: entry.mod_id,
-        file_id: entry.id,
-        download_source: DownloadSource::CurseForge,
-    }
+fn manifest_mod_files(manifest: &ModpackManifest) -> Vec<(String, String)> {
+    manifest.files.iter()
+        .filter(|f| f.required)
+        .map(|f| (f.project_id.to_string(), f.file_id.to_string()))
+        .collect()
 }
 
-fn entry_sha1(entry: &ModFilesEntry) -> Option<&str> {
-    entry.hashes.iter()
-        .find(|hash| hash.algo == 1)
-        .map(|hash| hash.value.as_str())
-        .filter(|hash| !hash.is_empty())
+pub async fn download_mod(
+    project_id: &str,
+    file_id: &str,
+    mods_dir: &Path,
+    api_key: &str,
+    client: &reqwest::Client,
+) -> Result<ModListEntry, Error> {
+    let file = fetch_json(client, &format!("https://api.curseforge.com/v1/mods/{project_id}/files/{file_id}"))
+        .header("x-api-key", api_key)
+        .send::<CurseForgeResponse<ModFile>>()
+        .await?
+        .data;
+
+    let sha1 = file.hashes.iter()
+        .find(|v| v.algo == 1)
+        .map(|v| v.value.as_str())
+        .ok_or_else(|| Error::Invalid(format!("CurseForge file {} has no SHA-1 hash", file.file_name)))?;
+    let Some(url) = &file.download_url else {
+        // TODO: Use correct error type
+        return Err(Error::Invalid(format!("CurseForge file {} has no download URL", file.file_name)));
+    };
+
+    if let Some(url) = &file.download_url {
+        download_resource(client, url, sha1, mods_dir.join("mods").join(&file.file_name)).await?;
+    } else {
+        warn!("CurseForge has restricts downloads for file {}, falling back to Modrinth lookup by SHA-1", file.file_name);
+        modrinth::download_mod_by_sha1(sha1, mods_dir, client).await?;
+    }
+    Ok(file.to_modlist_entry())
 }
 
 /// Required mod file ids recorded in an instance's persisted `manifest.json`.
@@ -363,51 +363,9 @@ fn entry_sha1(entry: &ModFilesEntry) -> Option<&str> {
 /// diff safely degrades to "download everything, remove nothing".
 fn installed_manifest_file_ids(instance_path: &Path) -> Vec<u32> {
     std::fs::read_to_string(instance_path.join("manifest.json")).ok()
-        .and_then(|c| serde_json::from_str::<CurseForgeModpackManifest>(&c).ok())
+        .and_then(|c| serde_json::from_str::<ModpackManifest>(&c).ok())
         .map(|m| manifest_file_ids(&m))
         .unwrap_or_default()
-}
-
-/// Ensure the vanilla client and (if any) the mod loader for `mc_version` are
-/// installed, returning the `versions/<id>` the launch path should use. Shared
-/// by install and upgrade.
-async fn ensure_game_and_loader(
-    app_handle: &tauri::AppHandle,
-    id: &str,
-    instance_name: &str,
-    mc_version: &str,
-    mod_loader: &ModLoader,
-    loader_version: &Option<String>,
-    state: &State<'_, AppState>,
-) -> Result<String, Error> {
-    let http_client = &state.http_client;
-    emit_progress(app_handle, id, instance_name, &format!("Installing Minecraft {mc_version}"), false, None);
-    let vanilla_version_id = ensure_vanilla(mc_version, state).await?;
-
-    let require_loader_version = || loader_version.as_deref()
-        .ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")));
-    let loader_version_id = match mod_loader {
-        ModLoader::Fabric => {
-            emit_progress(app_handle, id, instance_name, "Installing Fabric", false, None);
-            Some(ensure_fabric(mc_version, require_loader_version()?, http_client).await?)
-        }
-        ModLoader::Quilt => {
-            emit_progress(app_handle, id, instance_name, "Installing Quilt", false, None);
-            Some(ensure_quilt(mc_version, require_loader_version()?, http_client).await?)
-        }
-        ModLoader::Forge => {
-            emit_progress(app_handle, id, instance_name, "Installing Forge", false, None);
-            Some(ensure_forge(mc_version, require_loader_version()?, http_client).await?)
-        }
-        ModLoader::NeoForge => {
-            emit_progress(app_handle, id, instance_name, "Installing NeoForge", false, None);
-            Some(ensure_neoforge(mc_version, require_loader_version()?, http_client).await?)
-        }
-        ModLoader::Vanilla => None,
-    };
-    // The loader's own version manifest takes precedence; Vanilla instances
-    // fall back to the bare MC id.
-    Ok(loader_version_id.unwrap_or(vanilla_version_id))
 }
 
 /// Extract the modpack's `overrides/` tree into `instance_path`, overwriting
@@ -445,11 +403,11 @@ fn extract_overrides<R: std::io::Read + std::io::Seek>(
 
 /// Resolve CurseForge file metadata (download url + filename) for a set of file
 /// ids, batching at the API's 50-per-request limit.
-async fn fetch_file_entries(
+pub(crate) async fn fetch_file_entries(
     file_ids: &[u32],
     api_key: &str,
     client: &reqwest::Client,
-) -> Result<Vec<ModFilesEntry>, Error> {
+) -> Result<Vec<ModFile>, Error> {
     let mut entries = Vec::new();
     for chunk in file_ids.chunks(50) {
         let body = serde_json::json!({ "fileIds": chunk });
@@ -461,7 +419,7 @@ async fn fetch_file_entries(
         if !resp.status().is_success() {
             return Err(Error::HttpRequestRejected(resp.status().as_u16(), "https://api.curseforge.com/v1/mods/files".to_string()));
         }
-        let data = resp.json::<CurseForgeArrayResponse<ModFilesEntry>>().await
+        let data = resp.json::<CurseForgeArrayResponse<ModFile>>().await
             .map_err(Error::InvalidResponse)?;
         entries.extend(data.data);
     }
@@ -493,7 +451,7 @@ pub async fn install_modpack(
     let (manifest, manifest_raw) = read_manifest(&mut archive)?;
     let mc_version = manifest.minecraft.version.clone();
     let (mod_loader, loader_version) = resolve_loader(&manifest)?;
-    let file_ids = manifest_file_ids(&manifest);
+    let mod_files = manifest_mod_files(&manifest);
 
     let version_id = ensure_game_and_loader(
         app_handle, id, instance_name, &mc_version, &mod_loader, &loader_version, state,
@@ -507,7 +465,13 @@ pub async fn install_modpack(
     extract_overrides(&mut archive, &overrides_prefix, &instance_path)?;
 
     emit_progress(app_handle, id, instance_name, "Downloading mods", false, None);
-    let modlist_entries = download_mods(file_ids, instance_path.to_str().unwrap_or_default(), api_key, http_client).await?;
+    let modlist_entries = super::download_mods(
+        mod_files,
+        &instance_path,
+        DistroSource::CurseForge,
+        api_key,
+        http_client,
+    ).await?;
 
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
     // Persist the modpack manifest so a later upgrade can diff the mod list.
@@ -578,9 +542,11 @@ pub async fn upgrade_modpack(
     let to_remove: Vec<u32> = old_ids.iter().copied().filter(|fid| !new_set.contains(fid)).collect();
     let to_add: Vec<u32> = new_ids.iter().copied().filter(|fid| !old_set.contains(fid)).collect();
 
+    let mut old_file_names = Vec::new();
     if !to_remove.is_empty() {
         let mods_dir = instance_path.join("mods");
         for entry in fetch_file_entries(&to_remove, api_key, http_client).await? {
+            old_file_names.push(entry.file_name.clone());
             let path = mods_dir.join(&entry.file_name);
             if path.exists() {
                 if let Err(e) = std::fs::remove_file(&path) {
@@ -589,15 +555,21 @@ pub async fn upgrade_modpack(
             }
         }
     }
-    let downloaded_modlist_entries = download_mods(
+    let to_add_set: HashSet<u32> = to_add.iter().copied().collect();
+    let to_add: Vec<(String, String)> = manifest.files.iter()
+        .filter(|file| file.required && to_add_set.contains(&file.file_id))
+        .map(|file| (file.project_id.to_string(), file.file_id.to_string()))
+        .collect();
+    let downloaded_modlist_entries = super::download_mods(
         to_add,
-        instance_path.to_str().unwrap_or_default(),
+        &instance_path,
+        DistroSource::CurseForge,
         api_key,
         http_client,
     ).await?;
     let mut new_modlist_entries: Vec<ModListEntry> = fetch_file_entries(&new_ids, api_key, http_client).await?
         .into_iter()
-        .map(|entry| registry_entry(&entry, None))
+        .map(|entry| entry.to_modlist_entry())
         .collect();
     for entry in downloaded_modlist_entries {
         new_modlist_entries.retain(|existing| existing.file_name != entry.file_name);
@@ -608,8 +580,9 @@ pub async fn upgrade_modpack(
     std::fs::write(instance_path.join("manifest.json"), &manifest_raw)?;
     replace_modlist_entries_for_file_ids(
         &instance_path,
-        DownloadSource::CurseForge,
+        DistroSource::CurseForge,
         &old_ids,
+        &old_file_names,
         new_modlist_entries,
     )?;
 
@@ -623,58 +596,4 @@ pub async fn upgrade_modpack(
 
     info!("Upgraded '{}' to file {} (MC {}, {})", instance_name, new_file_id, mc_version, mod_loader);
     Ok(())
-}
-
-pub async fn download_mods(
-    file_ids: Vec<u32>,
-    instance_location: &str,
-    api_key: &str,
-    client: &reqwest::Client,
-) -> Result<Vec<ModListEntry>, Error> {
-    if file_ids.is_empty() {
-        return Ok(vec![]);
-    }
-
-    let mods_dir = PathBuf::from(instance_location).join("mods");
-    let mut modlist = Vec::new();
-    for entry in fetch_file_entries(&file_ids, api_key, client).await? {
-        let primary = match entry.download_url.as_ref() {
-            Some(url) => {
-                super::download_files(client, vec![(url.clone(), entry.file_name.clone())], &mods_dir).await
-            }
-            None => Err(Error::Invalid(format!("CurseForge file {} has no download URL", entry.file_name))),
-        };
-
-        match primary {
-            Ok(downloaded) => {
-                let downloaded_sha1 = downloaded.first().map(|file| file.sha1.as_str());
-                modlist.push(registry_entry(&entry, downloaded_sha1));
-            }
-            Err(primary_error) => {
-                log::warn!("CurseForge download failed for {}: {primary_error}", entry.file_name);
-                let Some(sha1) = entry_sha1(&entry) else {
-                    return Err(Error::Invalid(format!(
-                        "CurseForge download failed for {} and no SHA-1 was available for Modrinth fallback",
-                        entry.file_name
-                    )));
-                };
-                let fallback = super::modrinth::download_mod_by_sha1(
-                    sha1,
-                    &entry.file_name,
-                    instance_location,
-                    client,
-                ).await;
-                match fallback {
-                    Ok(entry) => modlist.push(entry),
-                    Err(fallback_error) => {
-                        return Err(Error::Invalid(format!(
-                            "CurseForge download failed for {}; Modrinth fallback also failed: {fallback_error}",
-                            entry.file_name
-                        )));
-                    }
-                }
-            }
-        }
-    }
-    Ok(modlist)
 }

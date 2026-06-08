@@ -200,5 +200,6 @@ pub struct LoggingClient {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LoggingFile {
     pub id: String,
+    pub sha1: String,
     pub url: String,
 }

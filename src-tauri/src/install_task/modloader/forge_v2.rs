@@ -9,7 +9,8 @@ use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::version_manifest::{Library, ClientManifest};
 use crate::{bin_dir, libraries_dir, temp_dir, versions_dir};
 use crate::http_utils::{download_resource, sha1_hex, verify_sha1};
-use super::{installer_archive, maven_coord_to_path, version_manifest_path};
+use crate::install_task::{installer_archive, maven_coord_to_path};
+use super::version_manifest_path;
 
 #[derive(Deserialize)]
 struct InstallProfileV2 {

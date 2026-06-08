@@ -4,7 +4,7 @@ use leptos::prelude::*;
 use leptos::{component, IntoView, view};
 use yaminabe_launcher_shared::datatypes::ModpackVersionFile;
 use crate::components::ui::*;
-use crate::curseforge::{call_get_files, call_upgrade};
+use crate::curseforge::{call_get_files, call_upgrade_modpack};
 
 /// Version picker for upgrading a CurseForge-origin instance to a newer modpack
 /// file. Fetches the project's file list, lets the user pick a newer file (older
@@ -55,7 +55,7 @@ pub fn UpgradeModpackModal(
         leptos::task::spawn_local(async move {
             // Upgrade progress flows through the install sidebar's event stream;
             // a synchronous IPC rejection does not, so log it here.
-            if let Err(e) = call_upgrade(iid, project_id, target_id, download_url).await {
+            if let Err(e) = call_upgrade_modpack(iid, project_id, target_id, download_url).await {
                 log::error!("upgrade_curseforge_modpack failed: {e}");
             }
         });

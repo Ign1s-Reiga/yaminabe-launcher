@@ -1,12 +1,15 @@
 use crate::ipc;
 use leptos::web_sys;
 use serde::Serialize;
-use yaminabe_launcher_shared::datatypes::{GameVersion, LoaderVersion, ModFileEntry, ModLoader, ModpackSearchResults, ModpackVersionFile};
+use yaminabe_launcher_shared::datatypes::{
+    DistroSource, GameVersion, LoaderVersion, ModListEntry, ModLoader, ModpackSearchResults,
+    ModpackVersionFile,
+};
 
 // ── IPC ───────────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
-struct SearchArgs {
+struct SearchModpackArgs {
     query: String,
     index: u32,
 }
@@ -17,8 +20,8 @@ struct GetFilesArgs {
     mod_id: u32,
 }
 
-pub async fn call_search(query: String, index: u32) -> Result<ModpackSearchResults, String> {
-    ipc::call("search_curseforge_modpacks", SearchArgs { query, index }).await
+pub async fn call_search_modpacks(query: String, index: u32) -> Result<ModpackSearchResults, String> {
+    ipc::call("search_curseforge_modpacks", SearchModpackArgs { query, index }).await
 }
 
 pub async fn call_get_files(mod_id: u32) -> Result<Vec<ModpackVersionFile>, String> {
@@ -27,7 +30,7 @@ pub async fn call_get_files(mod_id: u32) -> Result<Vec<ModpackVersionFile>, Stri
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct InstallArgs {
+pub struct InstallModpackArgs {
     download_url: String,
     instance_name: String,
     install_dir: String,
@@ -36,7 +39,7 @@ pub struct InstallArgs {
     file_id: u32,
 }
 
-impl InstallArgs {
+impl InstallModpackArgs {
     pub fn from_form_data(
         install_dir: String,
         download_url: String,
@@ -58,44 +61,44 @@ impl InstallArgs {
     }
 }
 
-pub async fn call_install(
-    args: InstallArgs
+pub async fn call_install_modpack(
+    args: InstallModpackArgs
 ) -> Result<(), String> {
     ipc::call("install_curseforge_modpack", args).await
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct UpgradeArgs {
+struct UpgradeModpackArgs {
     instance_id: String,
     download_url: String,
     project_id: u32,
     file_id: u32,
 }
 
-pub async fn call_upgrade(
+pub async fn call_upgrade_modpack(
     instance_id: String,
     project_id: u32,
     file_id: u32,
     download_url: String,
 ) -> Result<(), String> {
-    ipc::call("upgrade_curseforge_modpack", UpgradeArgs { instance_id, download_url, project_id, file_id }).await
+    ipc::call("upgrade_curseforge_modpack", UpgradeModpackArgs { instance_id, download_url, project_id, file_id }).await
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DownloadModsArgs {
-    file_ids: Vec<String>,
-    instance_location: String,
-    source: Option<String>,
+    mod_files: Vec<(String, String)>,
+    instance_id: String,
+    source: DistroSource,
 }
 
 pub async fn call_download_mods(
-    file_ids: Vec<String>,
-    instance_location: String,
-    source: Option<String>,
+    mod_files: Vec<(String, String)>,
+    instance_id: String,
+    source: DistroSource,
 ) -> Result<(), String> {
-    ipc::call("download_mods", DownloadModsArgs { file_ids, instance_location, source }).await
+    ipc::call("download_mods", DownloadModsArgs { mod_files, instance_id, source }).await
 }
 
 // ── Manual mod management (issue #29) ───────────────────────────────────────────
@@ -115,39 +118,28 @@ pub async fn call_search_mods(
     mod_loader: ModLoader,
     index: u32,
 ) -> Result<ModpackSearchResults, String> {
-    ipc::call("search_curseforge_mods", SearchModsArgs { query, mc_version, mod_loader, index }).await
+    ipc::call("search_mods", SearchModsArgs { query, mc_version, mod_loader, index }).await
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct InstallModArgs {
-    instance_id: String,
-    project_id: u32,
-}
-
-pub async fn call_install_mod(instance_id: String, project_id: u32) -> Result<(), String> {
-    ipc::call("install_curseforge_mod", InstallModArgs { instance_id, project_id }).await
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct InstanceIdArg {
+struct ListInstanceModsArgs {
     instance_id: String,
 }
 
-pub async fn call_list_mods(instance_id: String) -> Result<Vec<ModFileEntry>, String> {
-    ipc::call("list_instance_mods", InstanceIdArg { instance_id }).await
+pub async fn call_list_mods(instance_id: String) -> Result<Vec<ModListEntry>, String> {
+    ipc::call("list_instance_mods", ListInstanceModsArgs { instance_id }).await
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DeleteModArgs {
+struct DeleteModsArgs {
     instance_id: String,
     file_name: String,
 }
 
 pub async fn call_delete_mod(instance_id: String, file_name: String) -> Result<(), String> {
-    ipc::call("delete_instance_mod", DeleteModArgs { instance_id, file_name }).await
+    ipc::call("delete_instance_mod", DeleteModsArgs { instance_id, file_name }).await
 }
 
 pub async fn call_get_minecraft_versions() -> Result<Vec<GameVersion>, String> {

@@ -1,13 +1,11 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tauri::State;
 use yaminabe_launcher_shared::datatypes::{
-    InstanceMeta, InstanceOrigin, ModFileEntry, ModLoader, ModpackSearchResults, ModpackVersionFile,
+    DistroSource, InstanceMeta, InstanceOrigin, ModListEntry, ModLoader, ModpackSearchResults, ModpackVersionFile,
 };
 use yaminabe_launcher_shared::error::Error;
 use crate::{emit_progress, ActivityGuard, AppState, InstanceActivity};
-use crate::commands::instance::{
-    find_instance_dir, instance_meta_file, remove_modlist_file, upsert_modlist_entries,
-};
+use crate::commands::instance::{find_instance_dir, instance_meta_file, modlist_file, remove_modlist_file, upsert_modlist_entries};
 use crate::json::read_json;
 use crate::mod_repo;
 
@@ -110,7 +108,7 @@ pub async fn upgrade_curseforge_modpack(
 }
 
 #[tauri::command]
-pub async fn search_curseforge_mods(
+pub async fn search_mods(
     query: String,
     mc_version: String,
     mod_loader: ModLoader,
@@ -122,48 +120,16 @@ pub async fn search_curseforge_mods(
 }
 
 #[tauri::command]
-pub async fn install_curseforge_mod(
-    instance_id: String,
-    project_id: u32,
-    state: State<'_, AppState>,
-) -> Result<(), Error> {
-    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
-    let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
-    let meta: InstanceMeta = read_json(instance_meta_file(&instance_dir))?;
-    let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
-    let entries = mod_repo::install_mod(
-        &instance_dir,
-        project_id,
-        &meta.game_version,
-        &meta.mod_loader,
-        &api_key,
-        &state.http_client,
-    ).await?;
-    upsert_modlist_entries(&instance_dir, entries)
-}
-
-#[tauri::command]
 pub fn list_instance_mods(
     instance_id: String,
     state: State<'_, AppState>,
-) -> Result<Vec<ModFileEntry>, Error> {
+) -> Result<Vec<ModListEntry>, Error> {
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
     let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
-    let mods_dir = instance_dir.join("mods");
-    if !mods_dir.exists() {
-        return Ok(vec![]);
-    }
-    let mut mods: Vec<ModFileEntry> = std::fs::read_dir(&mods_dir)?
-        .flatten()
-        .filter(|e| e.path().is_file())
-        .filter_map(|e| {
-            let file_name = e.file_name().to_str()?.to_string();
-            let size = e.metadata().map(|m| m.len()).unwrap_or(0);
-            Some(ModFileEntry { file_name, size })
-        })
-        .collect();
-    mods.sort_by(|a, b| a.file_name.to_lowercase().cmp(&b.file_name.to_lowercase()));
-    Ok(mods)
+    let mut modlist: Vec<ModListEntry> = read_json(modlist_file(&instance_dir))
+        .unwrap_or_default();
+    modlist.sort_by(|a, b| a.file_name.to_lowercase().cmp(&b.file_name.to_lowercase()));
+    Ok(modlist)
 }
 
 #[tauri::command]
@@ -187,17 +153,23 @@ pub fn delete_instance_mod(
 
 #[tauri::command]
 pub async fn download_mods(
-    file_ids: Vec<String>,
-    instance_location: String,
-    source: Option<String>,
+    mod_files: Vec<(String, String)>,
+    instance_id: String,
+    source: DistroSource,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
-    let instance_path = std::path::PathBuf::from(&instance_location);
-    let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
+    let (install_dir, api_key) = {
+        let settings = state.settings.read().unwrap();
+        (
+            settings.instance_install_dir.clone(),
+            settings.curseforge_api_key.clone(),
+        )
+    };
+    let instance_path = find_instance_dir(Path::new(&install_dir), &instance_id)?;
     let entries = mod_repo::download_mods(
-        file_ids,
-        &instance_location,
-        source.as_deref(),
+        mod_files,
+        &instance_path,
+        source,
         &api_key,
         &state.http_client,
     ).await?;

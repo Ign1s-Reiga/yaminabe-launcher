@@ -1,35 +1,23 @@
+use std::path::PathBuf;
 use log::info;
 use yaminabe_launcher_shared::datatypes::ModLoader;
 use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::version_manifest::ClientManifest;
 use crate::{bin_dir, libraries_dir, temp_dir};
 use crate::http_utils::{download_from_maven, get_resource_name, verify_sha1};
+use crate::install_task::maven_coord_to_path;
 use super::version_manifest_path;
 
 pub async fn run_installer(
     loader: &ModLoader,
-    installer_url: &str,
+    installer_path: PathBuf,
     mc_version: &str,
     loader_version: &str,
     client: &reqwest::Client,
 ) -> Result<(), Error> {
-    let expected_sha1 = client.get(format!("{installer_url}.sha1"))
-        .send().await?
-        .text().await.map_err(Error::InvalidResponse)?;
-
-    let file_name = get_resource_name(installer_url)
-        .ok_or_else(|| Error::Invalid(format!("Cannot determine filename from URL: {installer_url}")))?;
-    let temp_path = temp_dir().join(file_name);
-
-    let bytes = std::fs::read(&temp_path)?;
-    if let Err(e) = verify_sha1(&bytes, expected_sha1.trim(), installer_url) {
-        std::fs::remove_file(&temp_path).ok();
-        return Err(e);
-    }
-
     let status = tokio::process::Command::new("java")
         .args([
-            "-jar", &temp_path.to_string_lossy(),
+            "-jar", &installer_path.to_string_lossy(),
             "client",
             "-dir", &bin_dir().to_string_lossy(),
             "-mcversion", mc_version,
@@ -38,8 +26,7 @@ pub async fn run_installer(
         ])
         .status().await
         .map_err(|e| Error::ChildProcess(format!("[{loader}] running installer: {e}")))?;
-
-    std::fs::remove_file(&temp_path).ok();
+    std::fs::remove_file(&installer_path).ok();
 
     if !status.success() {
         return Err(Error::ChildProcess(format!("[{loader}] installer exited with {status}")));
@@ -57,7 +44,7 @@ pub async fn pre_download_libraries(version_id: &str, client: &reqwest::Client) 
         // Fabric/Quilt `url` is the maven repo base for the bare `name`;
         // skip if missing — launch-time `ensure_libraries` covers those.
         let Some(repo_url) = lib.url.as_deref().filter(|u| !u.is_empty()) else { continue; };
-        let dest = libraries_dir().join(super::maven_coord_to_path(&lib.name));
+        let dest = libraries_dir().join(maven_coord_to_path(&lib.name));
         if dest.exists() { continue; }
         download_from_maven(client, repo_url, lib.name.clone(), None, "jar", libraries_dir().clone()).await?;
     }

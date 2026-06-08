@@ -3,9 +3,9 @@ use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, web_sys, IntoView, view};
-use yaminabe_launcher_shared::datatypes::{ModLoader, ModpackInfo};
+use yaminabe_launcher_shared::datatypes::{DistroSource, ModLoader, ModpackInfo};
 use crate::components::ui::*;
-use crate::curseforge::{call_delete_mod, call_install_mod, call_list_mods, call_search_mods};
+use crate::curseforge::{call_delete_mod, call_download_mods, call_list_mods, call_search_mods};
 
 /// Human-readable file size.
 fn format_size(bytes: u64) -> String {
@@ -199,14 +199,18 @@ fn AddModModal(
         });
     };
 
-    let on_add = move |project_id: u32| {
+    let on_add = move |project_id: u32, file_id: u32| {
         if installing.get_untracked().contains(&project_id) || installed.get_untracked().contains(&project_id) {
             return;
         }
         installing.update(|s| { s.insert(project_id); });
         let id = instance_id.get_value();
         leptos::task::spawn_local(async move {
-            match call_install_mod(id, project_id).await {
+            match call_download_mods(
+                vec![(project_id.to_string(), file_id.to_string())],
+                id,
+                DistroSource::CurseForge,
+            ).await {
                 Ok(()) => {
                     installing.update(|s| { s.remove(&project_id); });
                     installed.update(|s| { s.insert(project_id); });
@@ -214,7 +218,7 @@ fn AddModModal(
                 }
                 Err(e) => {
                     installing.update(|s| { s.remove(&project_id); });
-                    log::error!("install_curseforge_mod failed: {e}");
+                    log::error!("download_mods failed: {e}");
                 }
             }
         });
@@ -314,6 +318,7 @@ fn AddModModal(
                                 <div class=results_list>
                                     {move || results.get().into_iter().map(|pack| {
                                         let pid = pack.id;
+                                        let file_id = pack.file_id;
                                         let logo_view = if let Some(url) = pack.logo_url.clone() {
                                             view! { <img class=logo src=url alt="" /> }.into_any()
                                         } else {
@@ -329,9 +334,13 @@ fn AddModModal(
                                                 <Button
                                                     variant=ButtonVariant::Primary
                                                     disabled=Signal::derive(move || {
-                                                        installing.get().contains(&pid) || installed.get().contains(&pid)
+                                                        file_id.is_none() || installing.get().contains(&pid) || installed.get().contains(&pid)
                                                     })
-                                                    on_click=Callback::new(move |_| on_add(pid))
+                                                    on_click=Callback::new(move |_| {
+                                                        if let Some(file_id) = file_id {
+                                                            on_add(pid, file_id);
+                                                        }
+                                                    })
                                                 >
                                                     {move || if installed.get().contains(&pid) {
                                                         "Added"

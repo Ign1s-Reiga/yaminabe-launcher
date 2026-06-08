@@ -1,15 +1,12 @@
 use std::path::{Path, PathBuf};
 use log::info;
 use tauri::State;
-use yaminabe_launcher_shared::datatypes::{DownloadSource, InstanceMeta, ModListEntry, ModLoader};
+use yaminabe_launcher_shared::datatypes::{DistroSource, InstanceMeta, ModListEntry};
 use yaminabe_launcher_shared::error::Error;
 use crate::{emit_progress, libraries_dir, versions_dir, ActivityGuard, AppState, InstanceActivity};
 use crate::commands::java::download_java_runtime;
 use crate::json::{read_json, read_json_or_default, write_json};
-use crate::install_task::{
-    ensure_fabric, ensure_forge, ensure_neoforge, ensure_quilt, ensure_vanilla,
-    version_manifest_path,
-};
+use crate::install_task::{ensure_game_and_loader, version_manifest_path};
 
 pub fn instance_meta_file(instance_dir: &Path) -> PathBuf {
     instance_dir.join(".launcher").join("instance.json")
@@ -44,14 +41,19 @@ pub fn remove_modlist_file(instance_dir: &Path, file_name: &str) -> Result<(), E
 
 pub fn replace_modlist_entries_for_file_ids(
     instance_dir: &Path,
-    download_source: DownloadSource,
+    download_source: DistroSource,
     old_file_ids: &[u32],
+    old_file_names: &[String],
     new_entries: Vec<ModListEntry>,
 ) -> Result<(), Error> {
-    let old_file_ids: std::collections::HashSet<u32> = old_file_ids.iter().copied().collect();
+    let old_file_ids: std::collections::HashSet<String> = old_file_ids.iter()
+        .map(u32::to_string)
+        .collect();
+    let old_file_names: std::collections::HashSet<&str> = old_file_names.iter().map(String::as_str).collect();
     let mut modlist: Vec<ModListEntry> = read_json_or_default(modlist_file(instance_dir))?;
     modlist.retain(|entry| {
-        entry.download_source != download_source || !old_file_ids.contains(&entry.file_id)
+        !old_file_names.contains(entry.file_name.as_str())
+            && (entry.distro_platform != download_source || !old_file_ids.contains(&entry.file_id))
     });
     for entry in new_entries {
         modlist.retain(|existing| existing.file_name != entry.file_name);
@@ -122,12 +124,16 @@ pub async fn create_instance(
         if let Err(e) = std::fs::create_dir_all(dir) { fail!(Error::IO(e)); }
     }
 
-    step!(&format!("Downloading Minecraft {mc_version}"));
-    let vanilla_version_id = match ensure_vanilla(&mc_version, &state).await {
+    let version_id = match ensure_game_and_loader(
+        &app_handle, &id, &name, &mc_version, &mod_loader, &mod_loader_version, &state,
+    ).await {
         Ok(id) => id,
         Err(e) => fail!(e),
     };
 
+    // Resolve and download the JRE the game launches with. This is independent
+    // of the loader install (those installers shell out to the system `java`),
+    // but depends on the vanilla manifest `ensure_game_and_loader` just wrote.
     let java_component = {
         #[derive(serde::Deserialize, Default)]
         struct JavaVersion { component: String }
@@ -149,49 +155,7 @@ pub async fn create_instance(
         fail!(Error::Invalid(format!("failed to download recommended JRE '{java_component}': {e}")));
     }
 
-    let require_hint = || mod_loader_version.as_deref()
-        .ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")));
-
-    // TODO: Show version what is installing
-    let loader_version_id = match &mod_loader {
-        ModLoader::Fabric => {
-            step!("Installing Fabric");
-            let hint = match require_hint() { Ok(h) => h, Err(e) => fail!(e) };
-            match ensure_fabric(&mc_version, hint, &state.http_client).await {
-                Ok(id) => Some(id),
-                Err(e) => fail!(e),
-            }
-        }
-        ModLoader::Quilt => {
-            step!("Installing Quilt");
-            let hint = match require_hint() { Ok(h) => h, Err(e) => fail!(e) };
-            match ensure_quilt(&mc_version, hint, &state.http_client).await {
-                Ok(id) => Some(id),
-                Err(e) => fail!(e),
-            }
-        }
-        ModLoader::Forge => {
-            step!("Installing Forge");
-            let hint = match require_hint() { Ok(h) => h, Err(e) => fail!(e) };
-            match ensure_forge(&mc_version, hint, &state.http_client).await {
-                Ok(id) => Some(id),
-                Err(e) => fail!(e),
-            }
-        }
-        ModLoader::NeoForge => {
-            step!("Installing NeoForge");
-            let hint = match require_hint() { Ok(h) => h, Err(e) => fail!(e) };
-            match ensure_neoforge(&mc_version, hint, &state.http_client).await {
-                Ok(id) => Some(id),
-                Err(e) => fail!(e),
-            }
-        }
-        ModLoader::Vanilla => None,
-    };
-
-    // The loader's own version manifest takes precedence; Vanilla instances
-    // fall back to the bare MC id.
-    instance_meta.version_id = loader_version_id.unwrap_or(vanilla_version_id);
+    instance_meta.version_id = version_id;
 
     step!("Finalizing");
     if let Err(e) = write_json(instance_meta_file(&instance_path), &instance_meta) { fail!(e); }

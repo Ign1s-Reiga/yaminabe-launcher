@@ -8,7 +8,7 @@ use crate::components::card::result_card::ResultCard;
 use crate::components::modal::install_modpack_modal::{InstallModpackModal, InstallState};
 use crate::components::pagination::Pagination;
 use crate::components::ui::*;
-use crate::curseforge::{call_get_files, call_install, call_search, InstallArgs};
+use crate::curseforge::{call_get_files, call_install_modpack, call_search_modpacks, InstallModpackArgs};
 use crate::ipc;
 
 const PAGE_SIZE: usize = 50;
@@ -65,7 +65,7 @@ pub fn SearchPage() -> impl IntoView {
         });
         let index = (q.page * PAGE_SIZE) as u32;
         leptos::task::spawn_local(async move {
-            match call_search(q.query, index).await {
+            match call_search_modpacks(q.query, index).await {
                 Ok(data) => {
                     search_state.update(|s| {
                         s.total = data.total;
@@ -143,13 +143,13 @@ pub fn SearchPage() -> impl IntoView {
         let project_id = ver.mod_id;
         let file_id = ver.id;
 
-        let Some(args) = InstallArgs::from_form_data(install_dir, download_url, project_id, file_id, &data) else { return };
+        let Some(args) = InstallModpackArgs::from_form_data(install_dir, download_url, project_id, file_id, &data) else { return };
         install.set(None);
 
         leptos::task::spawn_local(async move {
             // Install progress flows through the install sidebar's event
             // stream; synchronous IPC failures don't, so log them here.
-            if let Err(e) = call_install(args).await {
+            if let Err(e) = call_install_modpack(args).await {
                 log::error!("install_curseforge_modpack failed: {e}");
             }
         });

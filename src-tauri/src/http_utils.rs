@@ -124,6 +124,7 @@ impl FetchJsonBuilder {
 pub async fn download_resource(
     client: &Client,
     url: &str,
+    expected_sha1: &str,
     dest_path: PathBuf,
 ) -> Result<(), Error> {
     let req = client.get(url);
@@ -133,7 +134,11 @@ pub async fn download_resource(
     }
     let bytes = resp.bytes().await
         .map_err(Error::InvalidResponse)?;
-    std::fs::write(dest_path, &bytes)?;
+    verify_sha1(&bytes, expected_sha1, get_resource_name(url).unwrap_or_default())?;
+    if !dest_path.exists() {
+        std::fs::create_dir_all(dest_path.parent().unwrap())?;
+        std::fs::write(dest_path, &bytes)?;
+    }
     Ok(())
 }
 
@@ -186,30 +191,31 @@ pub async fn fetch_and_verify(
 pub async fn download_from_maven(
     client: &Client,
     repo_url: &str,
-    dep: String,
+    coords: String,
     jar_name_suffix: Option<&str>,
     file_ext: &str,
     dest_path: PathBuf,
-) -> Result<(), Error> {
-    let parts: Vec<&str> = dep.splitn(3, ':').collect();
+) -> Result<PathBuf, Error> {
+    let parts: Vec<&str> = coords.splitn(3, ':').collect();
     let (group_id, artifact_id, version) = (parts[0], parts[1], parts[2]);
-    let group_url_path = group_id.replace('.', "/");
-    let group_dir = group_id.replace('.', std::path::MAIN_SEPARATOR_STR);
     let jar_name = match jar_name_suffix {
         Some(suffix) => format!("{artifact_id}-{version}-{suffix}.{file_ext}"),
         None => format!("{artifact_id}-{version}.{file_ext}"),
     };
-    let url = format!("{repo_url}/{group_url_path}/{artifact_id}/{version}/{jar_name}");
-    let file_path = dest_path.join(&group_dir).join(artifact_id).join(version).join(&jar_name);
+    let mut relative_path = PathBuf::from(group_id.replace('.', "/"));
+    relative_path.extend([artifact_id, version, &jar_name]);
+    
+    let url = format!("{repo_url}/{}", relative_path.to_string_lossy());
+    let file_path = dest_path.join(&relative_path);
 
     let sha1 = client.get(format!("{url}.sha1")).send().await?
         .text().await.map_err(Error::InvalidResponse)?;
 
-    let bytes = fetch_and_verify(client, &url, sha1.trim(), &dep).await?;
+    let bytes = fetch_and_verify(client, &url, sha1.trim(), &coords).await?;
 
     if let Some(parent) = file_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(&file_path, &bytes)?;
-    Ok(())
+    Ok(file_path)
 }
