@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use log::info;
 use tauri::State;
-use yaminabe_launcher_shared::datatypes::{DistroSource, InstanceMeta, ModListEntry};
+use yaminabe_launcher_shared::datatypes::{DownloadSource, InstanceMeta, ModListEntry};
 use yaminabe_launcher_shared::error::Error;
 use crate::{emit_progress, libraries_dir, versions_dir, ActivityGuard, AppState, InstanceActivity};
 use crate::commands::java::download_java_runtime;
@@ -41,19 +41,16 @@ pub fn remove_modlist_file(instance_dir: &Path, file_name: &str) -> Result<(), E
 
 pub fn replace_modlist_entries_for_file_ids(
     instance_dir: &Path,
-    download_source: DistroSource,
     old_file_ids: &[u32],
     old_file_names: &[String],
     new_entries: Vec<ModListEntry>,
 ) -> Result<(), Error> {
-    let old_file_ids: std::collections::HashSet<String> = old_file_ids.iter()
-        .map(u32::to_string)
-        .collect();
+    let old_file_ids: std::collections::HashSet<u32> = old_file_ids.iter().copied().collect();
     let old_file_names: std::collections::HashSet<&str> = old_file_names.iter().map(String::as_str).collect();
     let mut modlist: Vec<ModListEntry> = read_json_or_default(modlist_file(instance_dir))?;
     modlist.retain(|entry| {
-        !old_file_names.contains(entry.file_name.as_str())
-            && (entry.distro_platform != download_source || !old_file_ids.contains(&entry.file_id))
+        if old_file_names.contains(entry.file_name.as_str()) { return false; }
+        !matches!(&entry.source, DownloadSource::CurseForge { file_id, .. } if old_file_ids.contains(file_id))
     });
     for entry in new_entries {
         modlist.retain(|existing| existing.file_name != entry.file_name);

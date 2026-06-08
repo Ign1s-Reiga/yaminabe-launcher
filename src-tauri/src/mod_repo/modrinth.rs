@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::http_utils::{download_resource, fetch_json};
 use serde::Deserialize;
-use yaminabe_launcher_shared::datatypes::{DistroSource, ModListEntry};
+use yaminabe_launcher_shared::datatypes::{DownloadSource, ModListEntry};
 use yaminabe_launcher_shared::error::Error;
 
 #[derive(Deserialize)]
@@ -21,9 +21,10 @@ impl Version {
         ModListEntry {
             file_name: version_file.filename.clone(),
             sha1: version_file.hashes.sha1.clone(),
-            project_id: self.project_id.clone(),
-            file_id: self.id.clone(),
-            distro_platform: DistroSource::Modrinth,
+            source: DownloadSource::Modrinth {
+                project_id: self.project_id.clone(),
+                version_id: self.id.clone(),
+            },
             size: version_file.size,
         }
     }

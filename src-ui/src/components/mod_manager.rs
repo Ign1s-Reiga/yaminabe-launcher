@@ -3,7 +3,7 @@ use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, web_sys, IntoView, view};
-use yaminabe_launcher_shared::datatypes::{DistroSource, ModLoader, ModpackInfo};
+use yaminabe_launcher_shared::datatypes::{DownloadSource, ModLoader, ModProjectInfo};
 use crate::components::ui::*;
 use crate::curseforge::{call_delete_mod, call_download_mods, call_list_mods, call_search_mods};
 
@@ -169,7 +169,7 @@ fn AddModModal(
     let mod_loader = StoredValue::new(mod_loader);
 
     let query: RwSignal<String> = RwSignal::new(String::new());
-    let results: RwSignal<Vec<ModpackInfo>> = RwSignal::new(vec![]);
+    let results: RwSignal<Vec<ModProjectInfo>> = RwSignal::new(vec![]);
     let loading: RwSignal<bool> = RwSignal::new(false);
     let searched: RwSignal<bool> = RwSignal::new(false);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
@@ -207,9 +207,8 @@ fn AddModModal(
         let id = instance_id.get_value();
         leptos::task::spawn_local(async move {
             match call_download_mods(
-                vec![(project_id.to_string(), file_id.to_string())],
+                vec![DownloadSource::CurseForge { project_id, file_id }],
                 id,
-                DistroSource::CurseForge,
             ).await {
                 Ok(()) => {
                     installing.update(|s| { s.remove(&project_id); });

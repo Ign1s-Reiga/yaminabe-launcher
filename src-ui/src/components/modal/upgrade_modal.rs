@@ -2,7 +2,7 @@ use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, IntoView, view};
-use yaminabe_launcher_shared::datatypes::ModpackVersionFile;
+use yaminabe_launcher_shared::datatypes::ModProjectFile;
 use crate::components::ui::*;
 use crate::curseforge::{call_get_files, call_upgrade_modpack};
 
@@ -17,7 +17,7 @@ pub fn UpgradeModpackModal(
     current_file_id: u32,
     on_close: Callback<()>,
 ) -> impl IntoView {
-    let files: RwSignal<Vec<ModpackVersionFile>> = RwSignal::new(vec![]);
+    let files: RwSignal<Vec<ModProjectFile>> = RwSignal::new(vec![]);
     let loading: RwSignal<bool> = RwSignal::new(true);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
     let selected: RwSignal<u32> = RwSignal::new(0);

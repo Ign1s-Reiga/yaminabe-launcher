@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use tauri::State;
 use yaminabe_launcher_shared::datatypes::{
-    DistroSource, InstanceMeta, InstanceOrigin, ModListEntry, ModLoader, ModpackSearchResults, ModpackVersionFile,
+    DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModProjectSearchResults, ModProjectFile,
 };
 use yaminabe_launcher_shared::error::Error;
 use crate::{emit_progress, ActivityGuard, AppState, InstanceActivity};
@@ -14,7 +14,7 @@ pub async fn search_curseforge_modpacks(
     query: String,
     index: u32,
     state: State<'_, AppState>,
-) -> Result<ModpackSearchResults, Error> {
+) -> Result<ModProjectSearchResults, Error> {
     let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
     mod_repo::search_modpacks(&query, index, &state.http_client, &api_key).await
 }
@@ -23,7 +23,7 @@ pub async fn search_curseforge_modpacks(
 pub async fn get_modpack_files(
     mod_id: u32,
     state: State<'_, AppState>,
-) -> Result<Vec<ModpackVersionFile>, Error> {
+) -> Result<Vec<ModProjectFile>, Error> {
     let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
     mod_repo::get_modpack_files(mod_id, &state.http_client, &api_key).await
 }
@@ -46,7 +46,7 @@ pub async fn install_curseforge_modpack(
         .to_string();
 
     let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
-    let origin = InstanceOrigin::CurseForge { project_id, file_id };
+    let origin = DownloadSource::CurseForge { project_id, file_id };
 
     let result = mod_repo::install_modpack(
         &app_handle, &id, &instance_name,
@@ -114,7 +114,7 @@ pub async fn search_mods(
     mod_loader: ModLoader,
     index: u32,
     state: State<'_, AppState>,
-) -> Result<ModpackSearchResults, Error> {
+) -> Result<ModProjectSearchResults, Error> {
     let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
     mod_repo::search_mods(&query, index, &mc_version, &mod_loader, &state.http_client, &api_key).await
 }
@@ -153,9 +153,8 @@ pub fn delete_instance_mod(
 
 #[tauri::command]
 pub async fn download_mods(
-    mod_files: Vec<(String, String)>,
+    mod_files: Vec<DownloadSource>,
     instance_id: String,
-    source: DistroSource,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
     let (install_dir, api_key) = {
@@ -169,7 +168,6 @@ pub async fn download_mods(
     let entries = mod_repo::download_mods(
         mod_files,
         &instance_path,
-        source,
         &api_key,
         &state.http_client,
     ).await?;

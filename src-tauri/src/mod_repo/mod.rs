@@ -4,7 +4,7 @@ use std::sync::Arc;
 use reqwest::Client;
 use tauri::State;
 use yaminabe_launcher_shared::datatypes::{
-    DistroSource, InstanceOrigin, ModListEntry, ModLoader, ModpackSearchResults, ModpackVersionFile,
+    DownloadSource, ModListEntry, ModLoader, ModProjectSearchResults, ModProjectFile,
 };
 use yaminabe_launcher_shared::error::Error;
 use crate::AppState;
@@ -17,7 +17,7 @@ pub async fn search_modpacks(
     index: u32,
     client: &Client,
     api_key: &str,
-) -> Result<ModpackSearchResults, Error> {
+) -> Result<ModProjectSearchResults, Error> {
     curseforge::search_modpacks(query, index, client, api_key).await
 }
 
@@ -25,7 +25,7 @@ pub async fn get_modpack_files(
     mod_id: u32,
     client: &Client,
     api_key: &str,
-) -> Result<Vec<ModpackVersionFile>, Error> {
+) -> Result<Vec<ModProjectFile>, Error> {
     curseforge::get_modpack_files(mod_id, client, api_key).await
 }
 
@@ -36,7 +36,7 @@ pub async fn install_modpack(
     download_url: String,
     instance_location: String,
     category: String,
-    origin: InstanceOrigin,
+    origin: DownloadSource,
     api_key: &str,
     state: &State<'_, AppState>,
 ) -> Result<(), Error> {
@@ -84,29 +84,38 @@ pub async fn search_mods(
     mod_loader: &ModLoader,
     client: &Client,
     api_key: &str,
-) -> Result<ModpackSearchResults, Error> {
+) -> Result<ModProjectSearchResults, Error> {
     curseforge::search_mods(query, index, mc_version, mod_loader, client, api_key).await
 }
 
-async fn download_mod_with_fallback(
-    mod_file: (String, String),
+/// Dispatch a single download on its source variant. The CurseForge → Modrinth
+/// (by SHA-1) fallback for opted-out files lives inside `curseforge::download_mod`.
+///
+/// TODO: on final download failure, return a `ModListEntry` whose source is
+/// `DownloadSource::Manual` so a modpack install can continue and flag the mod
+/// for manual installation (needs the file metadata to survive the failure).
+async fn download_from_source(
+    source: DownloadSource,
     mods_dir: &Path,
-    source: DistroSource,
     api_key: &str,
     client: &Client,
 ) -> Result<ModListEntry, Error> {
-    let (project_id, file_id) = mod_file;
-    // TODO: if got Err (= failed to download finally), return ModListEntry { distro_platform: DistroPlatform::Manual }
     match source {
-        DistroSource::Modrinth => modrinth::download_mod(file_id, mods_dir, client).await,
-        DistroSource::CurseForge => curseforge::download_mod(&project_id, &file_id, mods_dir, api_key, client).await
+        DownloadSource::CurseForge { project_id, file_id } => {
+            curseforge::download_mod(project_id, file_id, mods_dir, api_key, client).await
+        }
+        DownloadSource::Modrinth { version_id, .. } => {
+            modrinth::download_mod(version_id, mods_dir, client).await
+        }
+        DownloadSource::Manual => Err(Error::Invalid(
+            "cannot download a Manual source; this mod must be installed by hand".to_string(),
+        )),
     }
 }
 
 pub async fn download_mods(
-    mod_files: Vec<(String, String)>,
+    mod_files: Vec<DownloadSource>,
     mods_dir: &Path,
-    source: DistroSource,
     api_key: &str,
     client: &Client,
 ) -> Result<Vec<ModListEntry>, Error> {
@@ -126,13 +135,7 @@ pub async fn download_mods(
         handles.push(tokio::spawn(async move {
             let permit = semaphore.acquire_owned().await
                 .map_err(|e| Error::ChildProcess(format!("semaphore acquire: {e}")))?;
-            let result = download_mod_with_fallback(
-                mod_file,
-                &mods_dir,
-                source,
-                &api_key,
-                &client,
-            ).await;
+            let result = download_from_source(mod_file, &mods_dir, &api_key, &client).await;
             drop(permit);
             result
         }));

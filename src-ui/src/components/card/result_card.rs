@@ -4,12 +4,12 @@ use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
-use yaminabe_launcher_shared::datatypes::ModpackInfo;
+use yaminabe_launcher_shared::datatypes::ModProjectInfo;
 
 #[component]
 pub fn ResultCard(
-    pack: ModpackInfo,
-    on_install: Callback<ModpackInfo>,
+    pack: ModProjectInfo,
+    on_install: Callback<ModProjectInfo>,
 ) -> impl IntoView {
     let card = css! {
         display: flex;

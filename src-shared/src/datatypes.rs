@@ -53,30 +53,35 @@ impl ModLoader {
     }
 }
 
-/// Where an instance came from. Gates per-origin rules — e.g. a
-/// modpack-managed instance has a read-only mod list. Extensible to other
-/// sources (Modrinth, local zip, …) later.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+/// Where a downloadable artifact comes from — used for both an instance's
+/// provenance (`InstanceMeta.origin`) and an individual mod file
+/// (`ModListEntry.source`). Each remote variant carries the ids that fully
+/// identify what to fetch, so one value answers "what, and from where".
+/// `Manual` means there is no managed remote source: a user-assembled instance,
+/// or a mod the user must install by hand (e.g. an automated download that
+/// could not be resolved).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
-pub enum InstanceOrigin {
+pub enum DownloadSource {
     #[default]
     Manual,
     CurseForge { project_id: u32, file_id: u32 },
+    Modrinth { project_id: String, version_id: String },
 }
 
-impl InstanceOrigin {
-    /// Whether the instance's contents are managed by an external source and
-    /// should therefore be treated as read-only in the UI.
+impl DownloadSource {
+    /// Whether the contents are managed by an external source and should
+    /// therefore be treated as read-only in the UI. `false` only for `Manual`.
     pub fn is_managed(&self) -> bool {
-        !matches!(self, InstanceOrigin::Manual)
+        !matches!(self, DownloadSource::Manual)
     }
 
-    /// The `(project_id, file_id)` of a CurseForge-installed instance, used to
-    /// drive the modpack upgrade flow. `None` for any other origin.
+    /// The `(project_id, file_id)` of a CurseForge artifact, used to drive the
+    /// modpack upgrade flow. `None` for any other source.
     pub fn curseforge_ids(&self) -> Option<(u32, u32)> {
         match self {
-            InstanceOrigin::CurseForge { project_id, file_id } => Some((*project_id, *file_id)),
-            InstanceOrigin::Manual => None,
+            DownloadSource::CurseForge { project_id, file_id } => Some((*project_id, *file_id)),
+            _ => None,
         }
     }
 }
@@ -103,7 +108,7 @@ pub struct InstanceMeta {
     #[serde(default)]
     pub window_height: u32,
     #[serde(default)]
-    pub origin: InstanceOrigin,
+    pub origin: DownloadSource,
 }
 
 impl Default for InstanceMeta {
@@ -133,13 +138,13 @@ impl Default for InstanceMeta {
             description: String::new(),
             window_width: 0,
             window_height: 0,
-            origin: InstanceOrigin::Manual,
+            origin: DownloadSource::Manual,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModpackInfo {
+pub struct ModProjectInfo {
     pub id: u32,
     #[serde(default)]
     pub file_id: Option<u32>,
@@ -153,13 +158,13 @@ pub struct ModpackInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModpackSearchResults {
-    pub items: Vec<ModpackInfo>,
+pub struct ModProjectSearchResults {
+    pub items: Vec<ModProjectInfo>,
     pub total: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModpackVersionFile {
+pub struct ModProjectFile {
     pub id: u32,
     pub mod_id: u32,
     pub release_type: String,
@@ -168,20 +173,15 @@ pub struct ModpackVersionFile {
     pub display_name: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DistroSource {
-    CurseForge,
-    Modrinth,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModListEntry {
     pub file_name: String,
     pub sha1: String,
-    pub project_id: String,
-    pub file_id: String,
-    pub distro_platform: DistroSource,
+    /// Where this jar was fetched from. `#[serde(default)]` so a modlist.json
+    /// written before the field existed deserializes as `Manual`.
+    #[serde(default)]
+    pub source: DownloadSource,
     #[serde(default)]
     pub size: u64,
 }
@@ -304,38 +304,45 @@ pub struct LoaderVersion {
 
 #[cfg(test)]
 mod tests {
-    use super::{DistroSource, InstanceOrigin, ModListEntry};
+    use super::{DownloadSource, ModListEntry};
 
     #[test]
-    fn serializes_manual_origin_as_typed_object() {
-        let json = serde_json::to_string(&InstanceOrigin::Manual).unwrap();
+    fn serializes_manual_source_as_typed_object() {
+        let json = serde_json::to_string(&DownloadSource::Manual).unwrap();
 
-        assert_eq!(json, r#"{"type":"Manual"}"#);
+        assert_eq!(json, r#"{"type":"manual"}"#);
     }
 
     #[test]
-    fn serializes_curseforge_origin_as_typed_object() {
-        let json = serde_json::to_string(&InstanceOrigin::CurseForge {
+    fn serializes_curseforge_source_as_typed_object() {
+        let json = serde_json::to_string(&DownloadSource::CurseForge {
             project_id: 1198207,
             file_id: 8186745,
         }).unwrap();
 
-        assert_eq!(json, r#"{"type":"CurseForge","project_id":1198207,"file_id":8186745}"#);
+        assert_eq!(json, r#"{"type":"curseForge","project_id":1198207,"file_id":8186745}"#);
     }
 
     #[test]
-    fn deserializes_typed_object_origins() {
-        let manual: InstanceOrigin = serde_json::from_str(
-            r#"{"type":"Manual"}"#,
+    fn deserializes_typed_object_sources() {
+        let manual: DownloadSource = serde_json::from_str(
+            r#"{"type":"manual"}"#,
         ).unwrap();
-        let curseforge: InstanceOrigin = serde_json::from_str(
-            r#"{"type":"CurseForge","project_id":1198207,"file_id":8186745}"#,
+        let curseforge: DownloadSource = serde_json::from_str(
+            r#"{"type":"curseForge","project_id":1198207,"file_id":8186745}"#,
+        ).unwrap();
+        let modrinth: DownloadSource = serde_json::from_str(
+            r#"{"type":"modrinth","project_id":"AANobbMI","version_id":"IIJjncsf"}"#,
         ).unwrap();
 
-        assert_eq!(manual, InstanceOrigin::Manual);
-        assert_eq!(curseforge, InstanceOrigin::CurseForge {
+        assert_eq!(manual, DownloadSource::Manual);
+        assert_eq!(curseforge, DownloadSource::CurseForge {
             project_id: 1198207,
             file_id: 8186745,
+        });
+        assert_eq!(modrinth, DownloadSource::Modrinth {
+            project_id: "AANobbMI".to_string(),
+            version_id: "IIJjncsf".to_string(),
         });
     }
 
@@ -344,15 +351,13 @@ mod tests {
         let json = serde_json::to_string(&ModListEntry {
             file_name: "example.jar".to_string(),
             sha1: "abc123".to_string(),
-            project_id: "10".to_string(),
-            file_id: "20".to_string(),
-            distro_platform: DistroSource::CurseForge,
+            source: DownloadSource::CurseForge { project_id: 10, file_id: 20 },
             size: 1024,
         }).unwrap();
 
         assert_eq!(
             json,
-            r#"{"fileName":"example.jar","sha1":"abc123","projectId":"10","fileId":"20","distroPlatform":"CurseForge","size":1024}"#
+            r#"{"fileName":"example.jar","sha1":"abc123","source":{"type":"curseForge","project_id":10,"file_id":20},"size":1024}"#
         );
     }
 }

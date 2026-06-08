@@ -3,7 +3,7 @@ use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, IntoView, view, web_sys};
 use wasm_bindgen::JsCast;
-use yaminabe_launcher_shared::datatypes::{AppSettings, ModpackInfo};
+use yaminabe_launcher_shared::datatypes::{AppSettings, ModProjectInfo};
 use crate::components::card::result_card::ResultCard;
 use crate::components::modal::install_modpack_modal::{InstallModpackModal, InstallState};
 use crate::components::pagination::Pagination;
@@ -23,7 +23,7 @@ struct SearchQuery {
 struct SearchState {
     is_loading: bool,
     error: Option<String>,
-    results: Vec<ModpackInfo>,
+    results: Vec<ModProjectInfo>,
     total: u32,
 }
 
@@ -88,7 +88,7 @@ pub fn SearchPage() -> impl IntoView {
         search_query.set(SearchQuery { query: q, page: 0 });
     };
 
-    let open_install = move |pack: ModpackInfo| {
+    let open_install = move |pack: ModProjectInfo| {
         install_name.set(pack.name.clone());
         let mod_id = pack.id;
         install.set(Some(InstallState {

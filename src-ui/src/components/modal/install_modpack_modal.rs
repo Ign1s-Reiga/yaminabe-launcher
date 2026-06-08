@@ -2,14 +2,14 @@ use bamboo_css_macro::css;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::{component, IntoView, view};
-use yaminabe_launcher_shared::datatypes::{ModpackInfo, ModpackVersionFile};
+use yaminabe_launcher_shared::datatypes::{ModProjectInfo, ModProjectFile};
 use crate::components::ui::*;
 
 #[derive(Clone)]
 pub struct InstallState {
-    pub pack: ModpackInfo,
+    pub pack: ModProjectInfo,
     pub version: String,
-    pub versions: Vec<ModpackVersionFile>,
+    pub versions: Vec<ModProjectFile>,
     pub versions_loading: bool,
     pub versions_error: Option<String>,
 }

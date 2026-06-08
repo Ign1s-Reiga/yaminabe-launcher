@@ -2,8 +2,8 @@ use crate::ipc;
 use leptos::web_sys;
 use serde::Serialize;
 use yaminabe_launcher_shared::datatypes::{
-    DistroSource, GameVersion, LoaderVersion, ModListEntry, ModLoader, ModpackSearchResults,
-    ModpackVersionFile,
+    DownloadSource, GameVersion, LoaderVersion, ModListEntry, ModLoader, ModProjectSearchResults,
+    ModProjectFile,
 };
 
 // ── IPC ───────────────────────────────────────────────────────────────────────
@@ -20,11 +20,11 @@ struct GetFilesArgs {
     mod_id: u32,
 }
 
-pub async fn call_search_modpacks(query: String, index: u32) -> Result<ModpackSearchResults, String> {
+pub async fn call_search_modpacks(query: String, index: u32) -> Result<ModProjectSearchResults, String> {
     ipc::call("search_curseforge_modpacks", SearchModpackArgs { query, index }).await
 }
 
-pub async fn call_get_files(mod_id: u32) -> Result<Vec<ModpackVersionFile>, String> {
+pub async fn call_get_files(mod_id: u32) -> Result<Vec<ModProjectFile>, String> {
     ipc::call("get_modpack_files", GetFilesArgs { mod_id }).await
 }
 
@@ -88,17 +88,15 @@ pub async fn call_upgrade_modpack(
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DownloadModsArgs {
-    mod_files: Vec<(String, String)>,
+    mod_files: Vec<DownloadSource>,
     instance_id: String,
-    source: DistroSource,
 }
 
 pub async fn call_download_mods(
-    mod_files: Vec<(String, String)>,
+    mod_files: Vec<DownloadSource>,
     instance_id: String,
-    source: DistroSource,
 ) -> Result<(), String> {
-    ipc::call("download_mods", DownloadModsArgs { mod_files, instance_id, source }).await
+    ipc::call("download_mods", DownloadModsArgs { mod_files, instance_id }).await
 }
 
 // ── Manual mod management (issue #29) ───────────────────────────────────────────
@@ -117,7 +115,7 @@ pub async fn call_search_mods(
     mc_version: String,
     mod_loader: ModLoader,
     index: u32,
-) -> Result<ModpackSearchResults, String> {
+) -> Result<ModProjectSearchResults, String> {
     ipc::call("search_mods", SearchModsArgs { query, mc_version, mod_loader, index }).await
 }
 
