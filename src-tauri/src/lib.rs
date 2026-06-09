@@ -4,6 +4,7 @@ mod install_task;
 mod json;
 mod mod_repo;
 mod http_utils;
+mod maven;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

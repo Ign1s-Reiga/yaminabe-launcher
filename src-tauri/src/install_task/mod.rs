@@ -12,7 +12,8 @@ use yaminabe_launcher_shared::datatypes::ModLoader;
 use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::version_manifest::ClientManifest;
 use crate::{emit_progress, libraries_dir, versions_dir, AppState};
-use crate::http_utils::{download_from_maven, download_resource};
+use crate::http_utils::download_resource;
+use crate::maven::MavenCoords;
 
 // ── Vanilla ───────────────────────────────────────────────────────────────────
 
@@ -35,7 +36,7 @@ pub async fn ensure_vanilla(
                 "Minecraft version '{mc_version}' not present in the Mojang version manifest"
             )))?;
 
-        download_resource(&state.http_client, &version_metadata.manifest_url, client_manifest_path.clone()).await?
+        download_resource(&state.http_client, &version_metadata.manifest_url, &version_metadata.sha1, client_manifest_path.clone()).await?
     }
 
     let text = std::fs::read_to_string(&client_manifest_path)?;
@@ -46,7 +47,7 @@ pub async fn ensure_vanilla(
             .ok_or_else(|| Error::Invalid(format!(
                 "version manifest for '{mc_version}' has no client download entry"
             )))?;
-        download_resource(&state.http_client, &client_metadata.url, client_path).await?
+        download_resource(&state.http_client, &client_metadata.url, &client_metadata.sha1, client_path).await?
     }
 
     info!("Downloaded vanilla Minecraft {mc_version}");
@@ -147,7 +148,7 @@ pub async fn ensure_libraries(version_id: &str, client: &reqwest::Client) -> Res
                 if let Some(parent) = dest.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                download_resource(client, &artifact.url, dest).await?;
+                download_resource(client, &artifact.url, &artifact.sha1, dest).await?;
                 continue;
             }
 
@@ -159,12 +160,12 @@ pub async fn ensure_libraries(version_id: &str, client: &reqwest::Client) -> Res
                 if let Some(parent) = dest.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                download_resource(client, &artifact.url, dest).await?;
+                download_resource(client, &artifact.url, &artifact.sha1, dest).await?;
             } else {
                 let dest = libraries_dir().join(maven_coord_to_path(&lib.name));
                 if dest.exists() { continue; }
                 let base = lib.url.as_deref().filter(|u| !u.is_empty()).unwrap_or(DEFAULT_MAVEN);
-                download_from_maven(client, base, lib.name.clone(), None, "jar", libraries_dir().clone()).await?;
+                MavenCoords::new(base, &lib.name).download(client, libraries_dir()).await?;
             }
         }
     }

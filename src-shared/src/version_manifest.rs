@@ -97,11 +97,11 @@ pub struct ArgRuleOs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arch: Option<String>,
     #[serde(default, rename = "versionRange", skip_serializing_if = "Option::is_none")]
-    pub version_range: Option<VersionRange>,
+    pub version_range: Option<BuildVersionRange>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct VersionRange {
+pub struct BuildVersionRange {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

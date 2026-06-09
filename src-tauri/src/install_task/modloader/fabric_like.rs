@@ -3,8 +3,8 @@ use log::info;
 use yaminabe_launcher_shared::datatypes::ModLoader;
 use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::version_manifest::ClientManifest;
-use crate::{bin_dir, libraries_dir, temp_dir};
-use crate::http_utils::{download_from_maven, get_resource_name, verify_sha1};
+use crate::{bin_dir, libraries_dir};
+use crate::maven::MavenCoords;
 use crate::install_task::maven_coord_to_path;
 use super::version_manifest_path;
 
@@ -46,7 +46,7 @@ pub async fn pre_download_libraries(version_id: &str, client: &reqwest::Client) 
         let Some(repo_url) = lib.url.as_deref().filter(|u| !u.is_empty()) else { continue; };
         let dest = libraries_dir().join(maven_coord_to_path(&lib.name));
         if dest.exists() { continue; }
-        download_from_maven(client, repo_url, lib.name.clone(), None, "jar", libraries_dir().clone()).await?;
+        MavenCoords::new(repo_url, &lib.name).download(client, libraries_dir()).await?;
     }
 
     info!("Pre-downloaded libraries for {version_id}");

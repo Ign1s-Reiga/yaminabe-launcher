@@ -28,7 +28,6 @@ pub struct VersionMetadata {
     pub rel_type: ReleaseType,
     #[serde(rename = "url")]
     pub manifest_url: String,
-    pub release_time: String,
     pub sha1: String,
 }
 

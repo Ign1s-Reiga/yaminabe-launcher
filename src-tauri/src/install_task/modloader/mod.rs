@@ -8,7 +8,8 @@ use serde::Deserialize;
 use yaminabe_launcher_shared::datatypes::ModLoader;
 use yaminabe_launcher_shared::error::Error;
 use crate::{temp_dir, versions_dir};
-use crate::http_utils::{download_from_maven, fetch_json};
+use crate::http_utils::fetch_json;
+use crate::maven::MavenCoords;
 use super::installer_archive;
 
 // ── Path helpers (visible to submodules and other commands) ──────────────────
@@ -28,6 +29,7 @@ struct FabricLikeMetadata {
 async fn ensure_fabric_like(
     loader: ModLoader,
     meta_url: &str,
+    maven_url: &str,
     mc_version: &str,
     loader_version: &str,
     client: &reqwest::Client,
@@ -39,7 +41,7 @@ async fn ensure_fabric_like(
         .ok_or_else(|| Error::Invalid(format!("No {loader} installer metadata available")))?
         .maven;
 
-    let installer_path = download_from_maven(client, &installer_coords, temp_dir()).await?;
+    let installer_path = MavenCoords::new(maven_url, &installer_coords).download(client, temp_dir()).await?;
 
     fabric_like::run_installer(&loader, installer_path, mc_version, loader_version, client).await?;
     let version_id = fetch_json(client, &format!("{meta_url}/loader/{mc_version}/{loader_version}/profile/json/"))
@@ -60,6 +62,7 @@ pub async fn ensure_fabric(
     ensure_fabric_like(
         ModLoader::Fabric,
         "https://meta.fabricmc.net/v2/versions/",
+        "https://maven.fabricmc.net/",
         mc_version,
         loader_version,
         client,
@@ -74,6 +77,7 @@ pub async fn ensure_quilt(
     ensure_fabric_like(
         ModLoader::Quilt,
         "https://meta.quiltmc.org/v3/versions/",
+        "https://maven.quiltmc.org/repository/release/",
         mc_version,
         loader_version,
         client,
@@ -100,18 +104,9 @@ pub async fn ensure_forge(
 
     // Pre-1.6 (jar-mod era) is unsupported; the installer download 404s for
     // those MC versions, surfacing as a clean network error.
-    download_from_maven(
-        client,
-        "https://maven.minecraftforge.net/",
-        format!("net.minecraftforge:forge:{forge_version}"),
-        Some("installer"),
-        "jar",
-        temp_dir().clone(),
-    ).await?;
-    let installer_path = temp_dir()
-        .join("net").join("minecraftforge").join("forge")
-        .join(&forge_version)
-        .join(format!("forge-{forge_version}-installer.jar"));
+    let installer_path = MavenCoords::new("https://maven.minecraftforge.net/", &format!("net.minecraftforge:forge:{forge_version}"))
+        .resource_suffix("installer")
+        .download(client, temp_dir()).await?;
     let install_type = detect_install_type(&installer_path)?;
 
     let version_id = match install_type {
@@ -151,19 +146,9 @@ pub async fn ensure_neoforge(
 
     // Download the installer once up front so we can read the authoritative
     // version_id out of its `version.json` before deciding to skip.
-    download_from_maven(
-        client,
-        "https://maven.neoforged.net/releases/",
-        format!("net.neoforged:neoforge:{nf_version}"),
-        Some("installer"),
-        "jar",
-        temp_dir().clone(),
-    ).await?;
-
-    let installer_path = temp_dir()
-        .join("net").join("neoforged").join("neoforge")
-        .join(nf_version)
-        .join(format!("neoforge-{nf_version}-installer.jar"));
+    let installer_path = MavenCoords::new("https://maven.neoforged.net/releases/", &format!("net.neoforged:neoforge:{nf_version}"))
+        .resource_suffix("installer")
+        .download(client, temp_dir()).await?;
 
     let version_id = read_v2_version(&installer_path)?;
 
