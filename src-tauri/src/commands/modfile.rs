@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tauri::State;
 use yaminabe_launcher_shared::datatypes::{
     DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModProjectSearchResults, ModProjectFile,
@@ -29,14 +29,11 @@ pub async fn get_modpack_files(
 }
 
 #[tauri::command]
-pub async fn install_curseforge_modpack(
+pub async fn install_modpack(
     app_handle: tauri::AppHandle,
-    download_url: String,
     instance_name: String,
-    install_dir: String,
     category: String,
-    project_id: u32,
-    file_id: u32,
+    source: DownloadSource,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
     let id = std::time::SystemTime::now()
@@ -45,13 +42,8 @@ pub async fn install_curseforge_modpack(
         .as_millis()
         .to_string();
 
-    let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
-    let origin = DownloadSource::CurseForge { project_id, file_id };
-
     let result = mod_repo::install_modpack(
-        &app_handle, &id, &instance_name,
-        download_url, install_dir, category, origin,
-        &api_key, &state,
+        &app_handle, &id, &instance_name, category, source, &state,
     ).await;
 
     match result {
@@ -67,12 +59,10 @@ pub async fn install_curseforge_modpack(
 }
 
 #[tauri::command]
-pub async fn upgrade_curseforge_modpack(
+pub async fn upgrade_modpack(
     app_handle: tauri::AppHandle,
     instance_id: String,
-    download_url: String,
-    project_id: u32,
-    file_id: u32,
+    source: DownloadSource,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
     let Some(_activity) = ActivityGuard::claim(&state.instance_activity, &instance_id, InstanceActivity::Modifying) else {
@@ -87,12 +77,10 @@ pub async fn upgrade_curseforge_modpack(
         return Err(Error::Invalid("instance is not a CurseForge modpack instance".to_string()));
     }
     let instance_name = meta.name.clone();
-    let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
 
     emit_progress(&app_handle, &instance_id, &instance_name, "Preparing upgrade", false, None);
     let result = mod_repo::upgrade_modpack(
-        &app_handle, &instance_id, &instance_name, instance_dir,
-        download_url, project_id, file_id, &api_key, &state,
+        &app_handle, &instance_id, &instance_name, instance_dir, source, &state,
     ).await;
 
     match result {

@@ -34,7 +34,7 @@ async fn ensure_fabric_like(
     loader_version: &str,
     client: &reqwest::Client,
 ) -> Result<String, Error> {
-    let installer_coords = fetch_json(client, &format!("{meta_url}/installer/"))
+    let installer_coords = fetch_json(client, &format!("{meta_url}installer/"))
         .send::<Vec<FabricLikeMetadata>>()
         .await?
         .into_iter().next()
@@ -44,7 +44,7 @@ async fn ensure_fabric_like(
     let installer_path = MavenCoords::new(maven_url, &installer_coords).download(client, temp_dir()).await?;
 
     fabric_like::run_installer(&loader, installer_path, mc_version, loader_version, client).await?;
-    let version_id = fetch_json(client, &format!("{meta_url}/loader/{mc_version}/{loader_version}/profile/json/"))
+    let version_id = fetch_json(client, &format!("{meta_url}loader/{mc_version}/{loader_version}/profile/json/"))
         .send::<VersionInfo>()
         .await?
         .id;

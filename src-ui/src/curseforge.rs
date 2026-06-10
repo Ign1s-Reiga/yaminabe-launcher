@@ -31,32 +31,20 @@ pub async fn call_get_files(mod_id: u32) -> Result<Vec<ModProjectFile>, String> 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallModpackArgs {
-    download_url: String,
     instance_name: String,
-    install_dir: String,
     category: String,
-    project_id: u32,
-    file_id: u32,
+    source: DownloadSource,
 }
 
 impl InstallModpackArgs {
-    pub fn from_form_data(
-        install_dir: String,
-        download_url: String,
-        project_id: u32,
-        file_id: u32,
-        data: &web_sys::FormData,
-    ) -> Option<Self> {
+    pub fn from_form_data(source: DownloadSource, data: &web_sys::FormData) -> Option<Self> {
         let get = |k: &str| data.get(k).as_string().unwrap_or_default();
         let instance_name = get("instance_name");
         if instance_name.trim().is_empty() { return None; }
         Some(Self {
-            download_url,
             instance_name,
-            install_dir,
             category: get("category"),
-            project_id,
-            file_id,
+            source,
         })
     }
 }
@@ -64,25 +52,21 @@ impl InstallModpackArgs {
 pub async fn call_install_modpack(
     args: InstallModpackArgs
 ) -> Result<(), String> {
-    ipc::call("install_curseforge_modpack", args).await
+    ipc::call("install_modpack", args).await
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UpgradeModpackArgs {
     instance_id: String,
-    download_url: String,
-    project_id: u32,
-    file_id: u32,
+    source: DownloadSource,
 }
 
 pub async fn call_upgrade_modpack(
     instance_id: String,
-    project_id: u32,
-    file_id: u32,
-    download_url: String,
+    source: DownloadSource,
 ) -> Result<(), String> {
-    ipc::call("upgrade_curseforge_modpack", UpgradeModpackArgs { instance_id, download_url, project_id, file_id }).await
+    ipc::call("upgrade_modpack", UpgradeModpackArgs { instance_id, source }).await
 }
 
 #[derive(Serialize)]

@@ -42,13 +42,26 @@ impl FromStr for ModLoader {
 }
 
 impl ModLoader {
-    pub fn get_modloader_color(&self) -> &'static str {
+    pub fn mod_loader_color(&self) -> &'static str {
         match self {
             ModLoader::Vanilla => "#406b50",
             ModLoader::Forge => "#6b5040",
             ModLoader::Fabric => "#40506b",
             ModLoader::Quilt => "#50406b",
             ModLoader::NeoForge => "#6b5b40",
+        }
+    }
+
+    /// Numeric `modLoader` id as it appears in `latestFilesIndexes`.
+    /// `None` for Vanilla,
+    /// since loader-agnostic files carry no id.
+    pub fn mod_loader_id(&self) -> Option<u32> {
+        match self {
+            ModLoader::Forge => Some(1),
+            ModLoader::NeoForge => Some(6),
+            ModLoader::Fabric => Some(4),
+            ModLoader::Quilt => Some(5),
+            ModLoader::Vanilla => None,
         }
     }
 }

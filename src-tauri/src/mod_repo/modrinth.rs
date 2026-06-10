@@ -66,19 +66,8 @@ struct Hashes {
     sha1: String,
 }
 
-fn selected_file(version: &Version) -> Option<&VersionFile> {
-    version.files.iter().find(|f| f.primary).or_else(|| version.files.first())
-}
-
-async fn download_version_file(
-    version: Version,
-    mods_dir: &Path,
-    client: &reqwest::Client,
-) -> Result<ModListEntry, Error> {
-    let file = selected_file(&version)
-        .ok_or_else(|| Error::NotExists(format!("Modrinth version-file {} does not exists.", version.id)))?;
-    download_resource(client, &file.url, &file.hashes.sha1, mods_dir.join(&file.filename)).await?;
-    Ok(version.to_modlist_entry())
+pub async fn search_mods() {
+    unimplemented!()
 }
 
 /// Download the Modrinth file matching `sha1` to `dest_path` (a full path,
@@ -109,10 +98,33 @@ pub async fn download_mod(
     download_version_file(version, mods_dir, client).await
 }
 
+pub fn search_modpacks() {
+    unimplemented!()
+}
+
+pub fn list_project_files() {
+    unimplemented!()
+}
+
 pub fn install_modpack() {
     unimplemented!()
 }
 
-pub fn search_modpacks() {
+pub fn upgrade_modpack() {
     unimplemented!()
+}
+
+async fn download_version_file(
+    version: Version,
+    mods_dir: &Path,
+    client: &reqwest::Client,
+) -> Result<ModListEntry, Error> {
+    let file = selected_file(&version)
+        .ok_or_else(|| Error::NotExists(format!("Modrinth version-file {} does not exists.", version.id)))?;
+    download_resource(client, &file.url, &file.hashes.sha1, mods_dir.join(&file.filename)).await?;
+    Ok(version.to_modlist_entry())
+}
+
+fn selected_file(version: &Version) -> Option<&VersionFile> {
+    version.files.iter().find(|f| f.primary).or_else(|| version.files.first())
 }

@@ -33,24 +33,15 @@ pub async fn install_modpack(
     app_handle: &tauri::AppHandle,
     id: &str,
     instance_name: &str,
-    download_url: String,
-    instance_location: String,
     category: String,
-    origin: DownloadSource,
-    api_key: &str,
+    source: DownloadSource,
     state: &State<'_, AppState>,
 ) -> Result<(), Error> {
-    curseforge::install_modpack(
-        app_handle,
-        id,
-        instance_name,
-        download_url,
-        instance_location,
-        category,
-        origin,
-        api_key,
-        state,
-    ).await
+    if matches!(source, DownloadSource::CurseForge { .. }) {
+        curseforge::install_modpack(app_handle, id, instance_name, category, source, state).await
+    } else {
+        Err(Error::Unsupported("only CurseForge modpacks can be installed".to_string()))
+    }
 }
 
 pub async fn upgrade_modpack(
@@ -58,23 +49,14 @@ pub async fn upgrade_modpack(
     id: &str,
     instance_name: &str,
     instance_path: PathBuf,
-    download_url: String,
-    project_id: u32,
-    new_file_id: u32,
-    api_key: &str,
+    source: DownloadSource,
     state: &State<'_, AppState>,
 ) -> Result<(), Error> {
-    curseforge::upgrade_modpack(
-        app_handle,
-        id,
-        instance_name,
-        instance_path,
-        download_url,
-        project_id,
-        new_file_id,
-        api_key,
-        state,
-    ).await
+    if matches!(source, DownloadSource::CurseForge { .. }) {
+        curseforge::upgrade_modpack(app_handle, id, instance_name, instance_path, source, state).await
+    } else {
+        Err(Error::Unsupported("only CurseForge modpacks can be upgraded".to_string()))
+    }
 }
 
 pub async fn search_mods(
@@ -115,13 +97,15 @@ async fn download_from_source(
 
 pub async fn download_mods(
     mod_files: Vec<DownloadSource>,
-    mods_dir: &Path,
+    instance_path: &Path,
     api_key: &str,
     client: &Client,
 ) -> Result<Vec<ModListEntry>, Error> {
     if mod_files.is_empty() {
         return Ok(vec![]);
     }
+    let mods_dir = instance_path.join("mods");
+    std::fs::create_dir_all(&mods_dir)?;
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(3));
     let mut handles: Vec<tokio::task::JoinHandle<Result<ModListEntry, Error>>> = Vec::new();
@@ -129,7 +113,7 @@ pub async fn download_mods(
     for mod_file in mod_files {
         let client = client.clone();
         let api_key = api_key.to_string();
-        let mods_dir = mods_dir.to_path_buf();
+        let mods_dir = mods_dir.clone();
         let semaphore = Arc::clone(&semaphore);
 
         handles.push(tokio::spawn(async move {

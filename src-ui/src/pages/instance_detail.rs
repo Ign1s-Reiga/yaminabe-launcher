@@ -79,7 +79,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     let is_vanilla = instance.mod_loader == ModLoader::Vanilla;
     let mods_game_version = StoredValue::new(instance.game_version.clone());
     let mods_loader = StoredValue::new(instance.mod_loader.clone());
-    let header_bg = format!("background-color: {}", &instance.mod_loader.get_modloader_color());
+    let header_bg = format!("background-color: {}", &instance.mod_loader.mod_loader_color());
     let instance_name = instance.name.clone();
     let category_label = if instance.category.is_empty() { "Default".to_string() } else { instance.category.clone() };
     let meta_text = format!("MC {}  ·  {}  ·  {}", instance.game_version, instance.mod_loader, category_label);

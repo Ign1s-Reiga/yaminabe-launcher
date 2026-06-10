@@ -145,42 +145,14 @@ struct CfManifestLoader {
     primary: bool,
 }
 
-// ── Platform implementations ──────────────────────────────────────────────────
-
-/// CurseForge `modLoaderType` query value for a mod loader. `0` (Any) for
-/// Vanilla, which has no loader-specific mods.
-fn mod_loader_type(mod_loader: &ModLoader) -> &'static str {
-    match mod_loader {
-        ModLoader::Forge => "1",
-        ModLoader::Fabric => "4",
-        ModLoader::Quilt => "5",
-        ModLoader::NeoForge => "6",
-        ModLoader::Vanilla => "0",
-    }
-}
-
-/// Numeric `modLoader` id as it appears in `latestFilesIndexes` (the same loader
-/// mapping as [`mod_loader_type`], minus the `0`/Any case). `None` for Vanilla,
-/// since loader-agnostic files carry no id.
-fn mod_loader_id(mod_loader: &ModLoader) -> Option<u32> {
-    match mod_loader {
-        ModLoader::Forge => Some(1),
-        ModLoader::Fabric => Some(4),
-        ModLoader::Quilt => Some(5),
-        ModLoader::NeoForge => Some(6),
-        ModLoader::Vanilla => None,
-    }
-}
-
 /// The newest `latestFilesIndexes` entry compatible with `mc_version` and
 /// `mod_loader` — the file the Add Mod button actually downloads. Loader-
 /// agnostic entries (no `modLoader`) are accepted for any loader. `None` when
 /// nothing listed fits, so the project is left non-installable rather than
 /// offering a file for the wrong version or loader.
 fn compatible_file_id(indexes: &[FilesIndex], mc_version: &str, mod_loader: &ModLoader) -> Option<u32> {
-    let loader_id = mod_loader_id(mod_loader);
     indexes.iter()
-        .find(|f| f.game_version == mc_version && (f.mod_loader == loader_id || f.mod_loader.is_none()))
+        .find(|f| f.game_version == mc_version && (f.mod_loader == mod_loader.mod_loader_id() || f.mod_loader.is_none()))
         .map(|f| f.file_id)
         .filter(|id| *id != 0)
 }
@@ -275,7 +247,7 @@ pub async fn search_mods(
             ("classId", "6"),
             ("searchFilter", query),
             ("gameVersion", mc_version),
-            ("modLoaderType", mod_loader_type(mod_loader)),
+            ("modLoaderType", &mod_loader.mod_loader_id().unwrap_or_default().to_string()),
             ("sortField", "2"),
             ("pageSize", "50"),
             ("sortOrder", "desc"),
@@ -298,7 +270,7 @@ pub async fn get_modpack_files(
     )
         .header("x-api-key", api_key)
         .query(&[("pageSize", "50")])
-        .send::<CurseForgeArrayResponse<ModFile>>().await?
+        .send::<CurseForgePaginatedResponse<ModFile>>().await?
         .data;
     
     entries.sort_by(|a, b| b.id.cmp(&a.id));
@@ -450,27 +422,58 @@ pub(crate) async fn fetch_file_entries(
         if !resp.status().is_success() {
             return Err(Error::HttpRequestRejected(resp.status().as_u16(), "https://api.curseforge.com/v1/mods/files".to_string()));
         }
-        let data = resp.json::<CurseForgeArrayResponse<ModFile>>().await
+        let data = resp.json::<CurseForgePaginatedResponse<ModFile>>().await
             .map_err(Error::InvalidResponse)?;
         entries.extend(data.data);
     }
     Ok(entries)
 }
 
-pub async fn install_modpack(
+/// Resolve a CurseForge file's download URL from its project + file ids.
+async fn fetch_file_download_url(
+    project_id: u32,
+    file_id: u32,
+    api_key: &str,
+    client: &reqwest::Client,
+) -> Result<String, Error> {
+    let file = fetch_json(client, &format!("https://api.curseforge.com/v1/mods/{project_id}/files/{file_id}"))
+        .header("x-api-key", api_key)
+        .send::<CurseForgeResponse<ModFile>>()
+        .await?
+        .data;
+    file.download_url
+        .ok_or_else(|| Error::Invalid(format!("CurseForge modpack file {} has no download URL", file.file_name)))
+}
+
+/// The game/loader/manifest state produced by [`prepare_modpack`], handed back so
+/// the install and upgrade paths can finish with their own mod handling.
+struct PreparedModpack {
+    manifest: ModpackManifest,
+    mc_version: String,
+    mod_loader: ModLoader,
+    loader_version: Option<String>,
+    version_id: String,
+}
+
+/// Shared install/upgrade prefix: resolve the modpack zip URL from
+/// `(project_id, file_id)`, download and open it, read the manifest, ensure the
+/// game + loader are installed, extract `overrides/` into `instance_path`, and
+/// persist the manifest there. Mod-list handling and instance metadata differ
+/// between install and upgrade, so they stay with the caller.
+async fn prepare_modpack(
     app_handle: &tauri::AppHandle,
     id: &str,
     instance_name: &str,
-    download_url: String,
-    instance_location: String,
-    _category: String,
-    origin: DownloadSource,
+    instance_path: &Path,
+    project_id: u32,
+    file_id: u32,
     api_key: &str,
     state: &State<'_, AppState>,
-) -> Result<(), Error> {
+) -> Result<PreparedModpack, Error> {
     let http_client = &state.http_client;
     emit_progress(app_handle, id, instance_name, "Downloading modpack", false, None);
 
+    let download_url = fetch_file_download_url(project_id, file_id, api_key, http_client).await?;
     let resp = http_client.get(&download_url).send().await?;
     if !resp.status().is_success() {
         return Err(Error::HttpRequestRejected(resp.status().as_u16(), download_url));
@@ -482,46 +485,62 @@ pub async fn install_modpack(
     let (manifest, manifest_raw) = read_manifest(&mut archive)?;
     let mc_version = manifest.minecraft.version.clone();
     let (mod_loader, loader_version) = resolve_loader(&manifest)?;
-    let mod_files = manifest_mod_sources(&manifest);
 
     let version_id = ensure_game_and_loader(
         app_handle, id, instance_name, &mc_version, &mod_loader, &loader_version, state,
     ).await?;
 
-    let instance_path = PathBuf::from(&instance_location).join(instance_name.to_lowercase());
-    std::fs::create_dir_all(&instance_path)?;
-
     emit_progress(app_handle, id, instance_name, "Extracting files", false, None);
     let overrides_prefix = format!("{}/", manifest.overrides.trim_end_matches('/'));
-    extract_overrides(&mut archive, &overrides_prefix, &instance_path)?;
+    extract_overrides(&mut archive, &overrides_prefix, instance_path)?;
+    // Persist the manifest so a later upgrade can diff the mod list.
+    std::fs::write(instance_path.join("manifest.json"), &manifest_raw)?;
 
-    emit_progress(app_handle, id, instance_name, "Downloading mods", false, None);
-    let mods_dir = instance_path.join("mods");
-    std::fs::create_dir_all(&mods_dir)?;
-    let modlist_entries = super::download_mods(
-        mod_files,
-        &mods_dir,
-        api_key,
-        http_client,
+    Ok(PreparedModpack { manifest, mc_version, mod_loader, loader_version, version_id })
+}
+
+pub async fn install_modpack(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    category: String,
+    source: DownloadSource,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
+    let (project_id, file_id) = source.curseforge_ids()
+        .ok_or_else(|| Error::Unsupported("not a CurseForge modpack source".to_string()))?;
+    let (api_key, install_dir) = {
+        let settings = state.settings.read().unwrap();
+        (settings.curseforge_api_key.clone(), settings.instance_install_dir.clone())
+    };
+
+    let instance_path = PathBuf::from(&install_dir).join(instance_name.to_lowercase());
+    std::fs::create_dir_all(&instance_path)?;
+
+    let prepared = prepare_modpack(
+        app_handle, id, instance_name, &instance_path, project_id, file_id, &api_key, state,
     ).await?;
 
+    emit_progress(app_handle, id, instance_name, "Downloading mods", false, None);
+    let mod_files = manifest_mod_sources(&prepared.manifest);
+    let modlist_entries = super::download_mods(mod_files, &instance_path, &api_key, &state.http_client).await?;
+
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
-    // Persist the modpack manifest so a later upgrade can diff the mod list.
-    std::fs::write(instance_path.join("manifest.json"), &manifest_raw)?;
     upsert_modlist_entries(&instance_path, modlist_entries)?;
 
     let meta = InstanceMeta {
         name: instance_name.to_string(),
-        game_version: mc_version.clone(),
-        mod_loader: mod_loader.clone(),
-        mod_loader_version: loader_version,
-        version_id,
-        origin,
+        game_version: prepared.mc_version.clone(),
+        mod_loader: prepared.mod_loader.clone(),
+        mod_loader_version: prepared.loader_version,
+        version_id: prepared.version_id,
+        category,
+        origin: source,
         ..InstanceMeta::default()
     };
     write_json(instance_meta_file(&instance_path), &meta)?;
 
-    info!("Installed '{}' (MC {}, {}) → {}", instance_name, mc_version, mod_loader, instance_path.display());
+    info!("Installed '{}' (MC {}, {}) → {}", instance_name, prepared.mc_version, prepared.mod_loader, instance_path.display());
     Ok(())
 }
 
@@ -535,40 +554,25 @@ pub async fn upgrade_modpack(
     id: &str,
     instance_name: &str,
     instance_path: PathBuf,
-    download_url: String,
-    project_id: u32,
-    new_file_id: u32,
-    api_key: &str,
+    source: DownloadSource,
     state: &State<'_, AppState>,
 ) -> Result<(), Error> {
+    let (project_id, file_id) = source.curseforge_ids()
+        .ok_or_else(|| Error::Unsupported("not a CurseForge modpack source".to_string()))?;
+    let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
     let http_client = &state.http_client;
-    emit_progress(app_handle, id, instance_name, "Downloading modpack", false, None);
 
-    let resp = http_client.get(&download_url).send().await?;
-    if !resp.status().is_success() {
-        return Err(Error::HttpRequestRejected(resp.status().as_u16(), download_url));
-    }
-    let zip_bytes = resp.bytes().await.map_err(Error::InvalidResponse)?.to_vec();
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes))
-        .map_err(|e| Error::Invalid(format!("modpack zip is invalid: {e}")))?;
+    // Capture the old file-id set before `prepare_modpack` overwrites manifest.json.
+    let old_ids = installed_manifest_file_ids(&instance_path);
 
-    let (manifest, manifest_raw) = read_manifest(&mut archive)?;
-    let mc_version = manifest.minecraft.version.clone();
-    let (mod_loader, loader_version) = resolve_loader(&manifest)?;
-
-    let version_id = ensure_game_and_loader(
-        app_handle, id, instance_name, &mc_version, &mod_loader, &loader_version, state,
+    let prepared = prepare_modpack(
+        app_handle, id, instance_name, &instance_path, project_id, file_id, &api_key, state,
     ).await?;
-
-    emit_progress(app_handle, id, instance_name, "Extracting files", false, None);
-    let overrides_prefix = format!("{}/", manifest.overrides.trim_end_matches('/'));
-    extract_overrides(&mut archive, &overrides_prefix, &instance_path)?;
 
     // Diff the mod list by file id: download additions, remove drops, skip
     // unchanged files already on disk.
     emit_progress(app_handle, id, instance_name, "Updating mods", false, None);
-    let old_ids = installed_manifest_file_ids(&instance_path);
-    let new_ids = manifest_file_ids(&manifest);
+    let new_ids = manifest_file_ids(&prepared.manifest);
     let old_set: HashSet<u32> = old_ids.iter().copied().collect();
     let new_set: HashSet<u32> = new_ids.iter().copied().collect();
     let to_remove: Vec<u32> = old_ids.iter().copied().filter(|fid| !new_set.contains(fid)).collect();
@@ -577,7 +581,7 @@ pub async fn upgrade_modpack(
     let mut old_file_names = Vec::new();
     if !to_remove.is_empty() {
         let mods_dir = instance_path.join("mods");
-        for entry in fetch_file_entries(&to_remove, api_key, http_client).await? {
+        for entry in fetch_file_entries(&to_remove, &api_key, http_client).await? {
             old_file_names.push(entry.file_name.clone());
             let path = mods_dir.join(&entry.file_name);
             if path.exists() {
@@ -588,17 +592,12 @@ pub async fn upgrade_modpack(
         }
     }
     let to_add_set: HashSet<u32> = to_add.iter().copied().collect();
-    let to_add: Vec<DownloadSource> = manifest.files.iter()
+    let to_add: Vec<DownloadSource> = prepared.manifest.files.iter()
         .filter(|file| file.required && to_add_set.contains(&file.file_id))
         .map(|file| DownloadSource::CurseForge { project_id: file.project_id, file_id: file.file_id })
         .collect();
-    let downloaded_modlist_entries = super::download_mods(
-        to_add,
-        &instance_path,
-        api_key,
-        http_client,
-    ).await?;
-    let mut new_modlist_entries: Vec<ModListEntry> = fetch_file_entries(&new_ids, api_key, http_client).await?
+    let downloaded_modlist_entries = super::download_mods(to_add, &instance_path, &api_key, http_client).await?;
+    let mut new_modlist_entries: Vec<ModListEntry> = fetch_file_entries(&new_ids, &api_key, http_client).await?
         .into_iter()
         .map(|entry| entry.to_modlist_entry())
         .collect();
@@ -608,7 +607,6 @@ pub async fn upgrade_modpack(
     }
 
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
-    std::fs::write(instance_path.join("manifest.json"), &manifest_raw)?;
     replace_modlist_entries_for_file_ids(
         &instance_path,
         &old_ids,
@@ -617,13 +615,13 @@ pub async fn upgrade_modpack(
     )?;
 
     let mut meta: InstanceMeta = read_json(instance_meta_file(&instance_path))?;
-    meta.game_version = mc_version.clone();
-    meta.mod_loader = mod_loader.clone();
-    meta.mod_loader_version = loader_version;
-    meta.version_id = version_id;
-    meta.origin = DownloadSource::CurseForge { project_id, file_id: new_file_id };
+    meta.game_version = prepared.mc_version.clone();
+    meta.mod_loader = prepared.mod_loader.clone();
+    meta.mod_loader_version = prepared.loader_version;
+    meta.version_id = prepared.version_id;
+    meta.origin = source;
     write_json(instance_meta_file(&instance_path), &meta)?;
 
-    info!("Upgraded '{}' to file {} (MC {}, {})", instance_name, new_file_id, mc_version, mod_loader);
+    info!("Upgraded '{}' to file {} (MC {}, {})", instance_name, file_id, prepared.mc_version, prepared.mod_loader);
     Ok(())
 }

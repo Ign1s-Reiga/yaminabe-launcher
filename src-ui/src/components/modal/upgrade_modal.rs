@@ -2,7 +2,7 @@ use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, IntoView, view};
-use yaminabe_launcher_shared::datatypes::ModProjectFile;
+use yaminabe_launcher_shared::datatypes::{DownloadSource, ModProjectFile};
 use crate::components::ui::*;
 use crate::curseforge::{call_get_files, call_upgrade_modpack};
 
@@ -48,15 +48,14 @@ pub fn UpgradeModpackModal(
     let on_confirm = move |_ev: leptos::web_sys::MouseEvent| {
         let target_id = selected.get_untracked();
         if target_id <= current_file_id { return; }
-        let Some(file) = files.get_untracked().into_iter().find(|f| f.id == target_id) else { return; };
-        let download_url = file.download_url.clone();
         let iid = instance_id.get_value();
+        let source = DownloadSource::CurseForge { project_id, file_id: target_id };
         on_close.run(());
         leptos::task::spawn_local(async move {
             // Upgrade progress flows through the install sidebar's event stream;
             // a synchronous IPC rejection does not, so log it here.
-            if let Err(e) = call_upgrade_modpack(iid, project_id, target_id, download_url).await {
-                log::error!("upgrade_curseforge_modpack failed: {e}");
+            if let Err(e) = call_upgrade_modpack(iid, source).await {
+                log::error!("upgrade_modpack failed: {e}");
             }
         });
     };

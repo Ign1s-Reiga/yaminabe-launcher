@@ -13,12 +13,11 @@ pub struct MavenCoords<'a> {
     repo_url: &'a str,
     coords: &'a str,
     resource_suffix: Option<&'a str>,
-    file_ext: Option<&'a str>,
 }
 
 impl<'a> MavenCoords<'a> {
     pub fn new(repo_url: &'a str, coords: &'a str) -> Self {
-        Self { repo_url, coords, resource_suffix: None, file_ext: None }
+        Self { repo_url, coords, resource_suffix: None }
     }
 
     /// Classifier appended to the file name (e.g. `installer`).
@@ -27,19 +26,12 @@ impl<'a> MavenCoords<'a> {
         self
     }
 
-    /// File extension; defaults to `jar` when unset.
-    pub fn file_ext(mut self, ext: &'a str) -> Self {
-        self.file_ext = Some(ext);
-        self
-    }
-
     fn coords_to_relpath(&self) -> PathBuf {
         let parts: Vec<&str> = self.coords.splitn(3, ':').collect();
         let (group_id, artifact_id, version) = (parts[0], parts[1], parts[2]);
-        let file_ext = self.file_ext.unwrap_or("jar");
         let jar_name = match self.resource_suffix {
-            Some(suffix) => format!("{artifact_id}-{version}-{suffix}.{file_ext}"),
-            None => format!("{artifact_id}-{version}.{file_ext}"),
+            Some(suffix) => format!("{artifact_id}-{version}-{suffix}.jar"),
+            None => format!("{artifact_id}-{version}.jar"),
         };
         let mut relative_path = PathBuf::from(group_id.replace('.', "/"));
         relative_path.extend([artifact_id, version, &jar_name]);

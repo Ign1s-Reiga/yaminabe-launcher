@@ -3,7 +3,7 @@ use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, IntoView, view, web_sys};
 use wasm_bindgen::JsCast;
-use yaminabe_launcher_shared::datatypes::{AppSettings, ModProjectInfo};
+use yaminabe_launcher_shared::datatypes::{AppSettings, DownloadSource, ModProjectInfo};
 use crate::components::card::result_card::ResultCard;
 use crate::components::modal::install_modpack_modal::{InstallModpackModal, InstallState};
 use crate::components::pagination::Pagination;
@@ -134,23 +134,22 @@ pub fn SearchPage() -> impl IntoView {
         else { return };
         let Ok(data) = web_sys::FormData::new_with_form(&form) else { return };
 
-        let install_dir = default_location.get_untracked();
-        if install_dir.trim().is_empty() { return; }
+        // The backend reads the install dir from settings now; still gate on a
+        // configured location so we don't kick off an install with none set.
+        if default_location.get_untracked().trim().is_empty() { return; }
 
         let version_id: u32 = data.get("version").as_string().unwrap_or_default().parse().unwrap_or(0);
         let Some(ver) = state.versions.into_iter().find(|v| v.id == version_id) else { return };
-        let download_url = ver.download_url.clone();
-        let project_id = ver.mod_id;
-        let file_id = ver.id;
+        let source = DownloadSource::CurseForge { project_id: ver.mod_id, file_id: ver.id };
 
-        let Some(args) = InstallModpackArgs::from_form_data(install_dir, download_url, project_id, file_id, &data) else { return };
+        let Some(args) = InstallModpackArgs::from_form_data(source, &data) else { return };
         install.set(None);
 
         leptos::task::spawn_local(async move {
             // Install progress flows through the install sidebar's event
             // stream; synchronous IPC failures don't, so log them here.
             if let Err(e) = call_install_modpack(args).await {
-                log::error!("install_curseforge_modpack failed: {e}");
+                log::error!("install_modpack failed: {e}");
             }
         });
     };

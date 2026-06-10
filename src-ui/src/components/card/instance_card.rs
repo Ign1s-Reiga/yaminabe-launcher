@@ -171,7 +171,7 @@ pub fn InstanceCard(
         line-height: 1.5;
     };
 
-    let bg = format!("background-color: {}", &instance.mod_loader.get_modloader_color());
+    let bg = format!("background-color: {}", &instance.mod_loader.mod_loader_color());
     let name = instance.name.clone();
     let mc_version = format!("MC {}", instance.game_version);
     let mod_loader = instance.mod_loader.clone();
