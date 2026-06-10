@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::http_utils::{download_resource, fetch_json};
 use serde::Deserialize;
@@ -81,15 +81,21 @@ async fn download_version_file(
     Ok(version.to_modlist_entry())
 }
 
-pub async fn download_mod_by_sha1(
+/// Download the Modrinth file matching `sha1` to `dest_path` (a full path,
+/// including the file name), so a caller mirroring another platform's file can
+/// keep that platform's on-disk name. Verifies against the Modrinth hash.
+pub async fn download_file_by_sha1(
     sha1: &str,
-    mods_dir: &Path,
+    dest_path: PathBuf,
     client: &reqwest::Client,
-) -> Result<ModListEntry, Error> {
+) -> Result<(), Error> {
     let version = fetch_json(client, &format!("https://api.modrinth.com/v2/version_file/{sha1}"))
         .send::<Version>()
         .await?;
-    download_version_file(version, mods_dir, client).await
+    let file = selected_file(&version)
+        .ok_or_else(|| Error::NotExists(format!("Modrinth version-file {} does not exists.", version.id)))?;
+    download_resource(client, &file.url, &file.hashes.sha1, dest_path).await?;
+    Ok(())
 }
 
 pub async fn download_mod(

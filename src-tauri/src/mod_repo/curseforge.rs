@@ -107,6 +107,8 @@ struct FilesIndex {
     #[serde(default)]
     file_id: u32,
     game_version: String,
+    #[serde(default)]
+    mod_loader: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -157,7 +159,36 @@ fn mod_loader_type(mod_loader: &ModLoader) -> &'static str {
     }
 }
 
-fn to_search_results(body: CurseForgePaginatedResponse<SearchModsEntry>) -> ModProjectSearchResults {
+/// Numeric `modLoader` id as it appears in `latestFilesIndexes` (the same loader
+/// mapping as [`mod_loader_type`], minus the `0`/Any case). `None` for Vanilla,
+/// since loader-agnostic files carry no id.
+fn mod_loader_id(mod_loader: &ModLoader) -> Option<u32> {
+    match mod_loader {
+        ModLoader::Forge => Some(1),
+        ModLoader::Fabric => Some(4),
+        ModLoader::Quilt => Some(5),
+        ModLoader::NeoForge => Some(6),
+        ModLoader::Vanilla => None,
+    }
+}
+
+/// The newest `latestFilesIndexes` entry compatible with `mc_version` and
+/// `mod_loader` — the file the Add Mod button actually downloads. Loader-
+/// agnostic entries (no `modLoader`) are accepted for any loader. `None` when
+/// nothing listed fits, so the project is left non-installable rather than
+/// offering a file for the wrong version or loader.
+fn compatible_file_id(indexes: &[FilesIndex], mc_version: &str, mod_loader: &ModLoader) -> Option<u32> {
+    let loader_id = mod_loader_id(mod_loader);
+    indexes.iter()
+        .find(|f| f.game_version == mc_version && (f.mod_loader == loader_id || f.mod_loader.is_none()))
+        .map(|f| f.file_id)
+        .filter(|id| *id != 0)
+}
+
+fn to_search_results(
+    body: CurseForgePaginatedResponse<SearchModsEntry>,
+    compat: Option<(&str, &ModLoader)>,
+) -> ModProjectSearchResults {
     let total = body.pagination.total_count;
     let items: Vec<ModProjectInfo> = body.data.into_iter().map(|m| {
         let mut versions: Vec<String> = m.latest_files_indexes.iter()
@@ -173,11 +204,16 @@ fn to_search_results(body: CurseForgePaginatedResponse<SearchModsEntry>) -> ModP
         categories.sort_by_key(|c| if c.id == primary_category_id { 0 } else { 1 });
         let category: Vec<String> = categories.into_iter().map(|c| c.name).collect();
 
+        // Mods: pick the file matching the searched version/loader. Modpack
+        // search has no such filter, so fall back to the latest file.
+        let file_id = match compat {
+            Some((mc_version, mod_loader)) => compatible_file_id(&m.latest_files_indexes, mc_version, mod_loader),
+            None => m.latest_files_indexes.first().map(|f| f.file_id).filter(|id| *id != 0),
+        };
+
         ModProjectInfo {
             id: m.id,
-            file_id: m.latest_files_indexes.first()
-                .map(|f| f.file_id)
-                .filter(|file_id| *file_id != 0),
+            file_id,
             name: m.name,
             summary: m.summary,
             logo_url: m.logo.map(|l| l.url),
@@ -215,7 +251,7 @@ pub async fn search_modpacks(
         .send::<CurseForgePaginatedResponse<SearchModsEntry>>()
         .await?;
 
-    Ok(to_search_results(body))
+    Ok(to_search_results(body, None))
 }
 
 /// Search CurseForge mods (classId 6) pre-filtered to a Minecraft version and
@@ -248,7 +284,7 @@ pub async fn search_mods(
         .send::<CurseForgePaginatedResponse<SearchModsEntry>>()
         .await?;
 
-    Ok(to_search_results(body))
+    Ok(to_search_results(body, Some((mc_version, mod_loader))))
 }
 
 pub async fn get_modpack_files(
@@ -346,7 +382,9 @@ pub async fn download_mod(
         download_resource(client, url, sha1, mods_dir.join(&file.file_name)).await?;
     } else {
         warn!("CurseForge restricts downloads for file {}, falling back to Modrinth lookup by SHA-1", file.file_name);
-        modrinth::download_mod_by_sha1(sha1, &mods_dir, client).await?;
+        // Save the mirrored Modrinth jar under the CurseForge file name so the
+        // returned entry, the Mods tab, and upgrade cleanup all agree on disk.
+        modrinth::download_file_by_sha1(sha1, mods_dir.join(&file.file_name), client).await?;
     }
     Ok(file.to_modlist_entry())
 }
@@ -458,9 +496,11 @@ pub async fn install_modpack(
     extract_overrides(&mut archive, &overrides_prefix, &instance_path)?;
 
     emit_progress(app_handle, id, instance_name, "Downloading mods", false, None);
+    let mods_dir = instance_path.join("mods");
+    std::fs::create_dir_all(&mods_dir)?;
     let modlist_entries = super::download_mods(
         mod_files,
-        &instance_path,
+        &mods_dir,
         api_key,
         http_client,
     ).await?;
