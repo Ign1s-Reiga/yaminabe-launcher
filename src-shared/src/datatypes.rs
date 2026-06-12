@@ -186,6 +186,18 @@ pub struct ModProjectFile {
     pub display_name: String,
 }
 
+/// Lifecycle state of a mod tracked in the modlist. `DownloadFailed` keeps the
+/// entry (with its real `source`) so the UI can list it and the user can link a
+/// jar by hand; `Disabled` is for a future enable/disable toggle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ModState {
+    #[default]
+    Enabled,
+    Disabled,
+    DownloadFailed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModListEntry {
@@ -197,6 +209,10 @@ pub struct ModListEntry {
     pub source: DownloadSource,
     #[serde(default)]
     pub size: u64,
+    /// `#[serde(default)]` so a modlist.json written before this field existed
+    /// deserializes as `Enabled`.
+    #[serde(default)]
+    pub state: ModState,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -317,7 +333,7 @@ pub struct LoaderVersion {
 
 #[cfg(test)]
 mod tests {
-    use super::{DownloadSource, ModListEntry};
+    use super::{DownloadSource, ModListEntry, ModState};
 
     #[test]
     fn serializes_manual_source_as_typed_object() {
@@ -366,11 +382,21 @@ mod tests {
             sha1: "abc123".to_string(),
             source: DownloadSource::CurseForge { project_id: 10, file_id: 20 },
             size: 1024,
+            state: ModState::Enabled,
         }).unwrap();
 
         assert_eq!(
             json,
-            r#"{"fileName":"example.jar","sha1":"abc123","source":{"type":"curseForge","project_id":10,"file_id":20},"size":1024}"#
+            r#"{"fileName":"example.jar","sha1":"abc123","source":{"type":"curseForge","project_id":10,"file_id":20},"size":1024,"state":"enabled"}"#
         );
+    }
+
+    #[test]
+    fn modlist_entry_defaults_state_to_enabled() {
+        let entry: ModListEntry = serde_json::from_str(
+            r#"{"fileName":"old.jar","sha1":"x","source":{"type":"manual"},"size":1}"#,
+        ).unwrap();
+
+        assert_eq!(entry.state, ModState::Enabled);
     }
 }

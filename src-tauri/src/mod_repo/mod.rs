@@ -37,10 +37,16 @@ pub async fn install_modpack(
     source: DownloadSource,
     state: &State<'_, AppState>,
 ) -> Result<(), Error> {
-    if matches!(source, DownloadSource::CurseForge { .. }) {
-        curseforge::install_modpack(app_handle, id, instance_name, category, source, state).await
-    } else {
-        Err(Error::Unsupported("only CurseForge modpacks can be installed".to_string()))
+    match source {
+        DownloadSource::CurseForge { .. } => {
+            curseforge::install_modpack(app_handle, id, instance_name, category, source, state).await
+        }
+        DownloadSource::Modrinth { .. } => {
+            modrinth::install_modpack(app_handle, id, instance_name, category, source, state).await
+        }
+        DownloadSource::Manual => Err(Error::Unsupported(
+            "manual modpack installation is not yet supported".to_string(),
+        )),
     }
 }
 
@@ -52,10 +58,16 @@ pub async fn upgrade_modpack(
     source: DownloadSource,
     state: &State<'_, AppState>,
 ) -> Result<(), Error> {
-    if matches!(source, DownloadSource::CurseForge { .. }) {
-        curseforge::upgrade_modpack(app_handle, id, instance_name, instance_path, source, state).await
-    } else {
-        Err(Error::Unsupported("only CurseForge modpacks can be upgraded".to_string()))
+    match source {
+        DownloadSource::CurseForge { .. } => {
+            curseforge::upgrade_modpack(app_handle, id, instance_name, instance_path, source, state).await
+        }
+        DownloadSource::Modrinth { .. } => {
+            modrinth::upgrade_modpack(app_handle, id, instance_name, instance_path, source, state).await
+        }
+        DownloadSource::Manual => Err(Error::Unsupported(
+            "manual modpack upgrade is not yet supported".to_string(),
+        )),
     }
 }
 
@@ -73,9 +85,10 @@ pub async fn search_mods(
 /// Dispatch a single download on its source variant. The CurseForge → Modrinth
 /// (by SHA-1) fallback for opted-out files lives inside `curseforge::download_mod`.
 ///
-/// TODO: on final download failure, return a `ModListEntry` whose source is
-/// `DownloadSource::Manual` so a modpack install can continue and flag the mod
-/// for manual installation (needs the file metadata to survive the failure).
+/// A failure to fetch the jar does not error here: the platform fn returns a
+/// `ModListEntry` with `state = DownloadFailed` (keeping its real source) so the
+/// batch continues and the UI can prompt the user to link a jar by hand. Only a
+/// metadata/API failure propagates as `Err`.
 async fn download_from_source(
     source: DownloadSource,
     mods_dir: &Path,

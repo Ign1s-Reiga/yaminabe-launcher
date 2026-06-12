@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::rc::Rc;
 use leptos::web_sys;
 use serde::Serialize;
 use wasm_bindgen::closure::Closure;
@@ -63,4 +65,47 @@ where
         }
         cb.forget();
     });
+}
+
+/// A scoped Tauri event subscription. Unlike [`on_event`], dropping this handle
+/// detaches the listener — use it for component-local subscriptions (e.g. a
+/// modal that should only react while it is open).
+pub struct EventSubscription {
+    _closure: Closure<dyn Fn(JsValue)>,
+    unlisten: Rc<RefCell<Option<js_sys::Function>>>,
+}
+
+impl Drop for EventSubscription {
+    fn drop(&mut self) {
+        if let Some(unlisten) = self.unlisten.borrow_mut().take() {
+            unlisten.call0(&JsValue::NULL).ok();
+        }
+    }
+}
+
+/// Subscribe to a Tauri event until the returned [`EventSubscription`] is
+/// dropped. The closure is kept alive by the handle; if it is dropped before
+/// the async `listen` resolves, the listener is detached as soon as it does.
+pub fn subscribe<T, F>(event: &'static str, handler: F) -> EventSubscription
+where
+    T: for<'de> serde::Deserialize<'de> + 'static,
+    F: Fn(T) + 'static,
+{
+    let cb = Closure::<dyn Fn(JsValue)>::new(move |raw: JsValue| {
+        let payload = js_sys::Reflect::get(&raw, &JsValue::from_str("payload"))
+            .unwrap_or(JsValue::UNDEFINED);
+        if let Ok(val) = serde_wasm_bindgen::from_value::<T>(payload) {
+            handler(val);
+        }
+    });
+    let unlisten: Rc<RefCell<Option<js_sys::Function>>> = Rc::new(RefCell::new(None));
+    let func: js_sys::Function = cb.as_ref().unchecked_ref::<js_sys::Function>().clone();
+    let unlisten_for_task = Rc::clone(&unlisten);
+    leptos::task::spawn_local(async move {
+        match listen(event, &func).await {
+            Ok(u) => *unlisten_for_task.borrow_mut() = Some(u.unchecked_into::<js_sys::Function>()),
+            Err(e) => log::error!("Tauri listen({event}) failed: {e:?}"),
+        }
+    });
+    EventSubscription { _closure: cb, unlisten }
 }

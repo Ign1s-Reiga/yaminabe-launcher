@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
 
+use tauri::State;
+use crate::AppState;
 use crate::http_utils::{download_resource, fetch_json};
 use serde::Deserialize;
-use yaminabe_launcher_shared::datatypes::{DownloadSource, ModListEntry};
+use yaminabe_launcher_shared::datatypes::{DownloadSource, ModListEntry, ModState};
 use yaminabe_launcher_shared::error::Error;
 
 #[derive(Deserialize)]
@@ -16,7 +18,7 @@ struct Version {
 }
 
 impl Version {
-    fn to_modlist_entry(self: &Version) -> ModListEntry {
+    fn to_modlist_entry(self: &Version, state: ModState) -> ModListEntry {
         let version_file = selected_file(self).unwrap();
 
         ModListEntry {
@@ -27,6 +29,7 @@ impl Version {
                 version_id: self.id.clone(),
             },
             size: version_file.size,
+            state,
         }
     }
 }
@@ -106,11 +109,27 @@ pub fn list_project_files() {
     unimplemented!()
 }
 
-pub fn install_modpack() {
+#[allow(unused_variables)]
+pub async fn install_modpack(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    category: String,
+    source: DownloadSource,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
     unimplemented!()
 }
 
-pub fn upgrade_modpack() {
+#[allow(unused_variables)]
+pub async fn upgrade_modpack(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    instance_path: PathBuf,
+    source: DownloadSource,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
     unimplemented!()
 }
 
@@ -121,8 +140,16 @@ async fn download_version_file(
 ) -> Result<ModListEntry, Error> {
     let file = selected_file(&version)
         .ok_or_else(|| Error::NotExists(format!("Modrinth version-file {} does not exists.", version.id)))?;
-    download_resource(client, &file.url, &file.hashes.sha1, mods_dir.join(&file.filename)).await?;
-    Ok(version.to_modlist_entry())
+    // A failed jar fetch is recorded as `DownloadFailed` (not aborted) so a
+    // batch download can continue and the user can link the jar by hand.
+    let state = match download_resource(client, &file.url, &file.hashes.sha1, mods_dir.join(&file.filename)).await {
+        Ok(()) => ModState::Enabled,
+        Err(e) => {
+            log::warn!("download failed for {}: {e}; marking for manual install", file.filename);
+            ModState::DownloadFailed
+        }
+    };
+    Ok(version.to_modlist_entry(state))
 }
 
 fn selected_file(version: &Version) -> Option<&VersionFile> {

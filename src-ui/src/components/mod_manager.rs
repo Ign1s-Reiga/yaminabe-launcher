@@ -3,7 +3,8 @@ use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, web_sys, IntoView, view};
-use yaminabe_launcher_shared::datatypes::{DownloadSource, ModLoader, ModProjectInfo};
+use yaminabe_launcher_shared::datatypes::{DownloadSource, ModListEntry, ModLoader, ModProjectInfo, ModState};
+use crate::components::card::link_notice_card::LinkNoticeCard;
 use crate::components::ui::*;
 use crate::curseforge::{call_delete_mod, call_download_mods, call_list_mods, call_search_mods};
 
@@ -41,6 +42,15 @@ pub fn ModManager(
         refresh.track();
         let id = instance_id.get_value();
         async move { call_list_mods(id).await.unwrap_or_default() }
+    });
+
+    // Mods whose automatic download failed — surfaced by the link card so the
+    // user can supply the jars from disk. Independent of `read_only`: managed
+    // instances can still have failures to repair.
+    let failed_mods: Signal<Vec<ModListEntry>> = Signal::derive(move || {
+        mods.get()
+            .map(|list| list.into_iter().filter(|m| m.state == ModState::DownloadFailed).collect())
+            .unwrap_or_default()
     });
 
     let header = css! {
@@ -104,6 +114,12 @@ pub fn ModManager(
     };
 
     view! {
+        <LinkNoticeCard
+            instance_id=instance_id.get_value()
+            failed=failed_mods
+            on_linked=Callback::new(move |_: ()| refresh.update(|n| *n += 1))
+        />
+
         <div class=header>
             <span class=hint>
                 {if read_only {

@@ -83,6 +83,33 @@ pub async fn call_download_mods(
     ipc::call("download_mods", DownloadModsArgs { mod_files, instance_id }).await
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LinkModsArgs {
+    instance_id: String,
+    file_paths: Vec<String>,
+}
+
+/// Outcome of [`call_link_mods`]: jars linked, and supplied paths that matched
+/// no failed mod.
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkOutcome {
+    pub linked: Vec<String>,
+    pub unmatched: Vec<String>,
+}
+
+pub async fn call_link_mods(
+    instance_id: String,
+    file_paths: Vec<String>,
+) -> Result<LinkOutcome, String> {
+    ipc::call("link_mods", LinkModsArgs { instance_id, file_paths }).await
+}
+
+pub async fn call_pick_jar_files() -> Result<Vec<String>, String> {
+    ipc::call_noargs("pick_jar_files").await
+}
+
 // ── Manual mod management (issue #29) ───────────────────────────────────────────
 
 #[derive(Serialize)]

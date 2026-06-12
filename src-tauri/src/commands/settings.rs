@@ -30,6 +30,25 @@ pub async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
     rx.await.ok().flatten()
 }
 
+/// Open a native multi-select picker filtered to `.jar` files, returning the
+/// chosen paths. Used by the mod-link flow as the click-to-browse alternative
+/// to dragging jars onto the drop zone.
+#[tauri::command]
+pub async fn pick_jar_files(app: tauri::AppHandle) -> Vec<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Vec<String>>();
+    app.dialog()
+        .file()
+        .add_filter("Mod jar", &["jar"])
+        .pick_files(move |paths| {
+            let result = paths.unwrap_or_default().into_iter().filter_map(|fp| match fp {
+                FilePath::Path(p) => p.to_str().map(|s| s.to_string()),
+                _ => None,
+            }).collect();
+            tx.send(result).ok();
+        });
+    rx.await.unwrap_or_default()
+}
+
 /// Names of the well-known subfolders that actually exist for this instance —
 /// the single source of truth for the list (the UI renders the instance root
 /// plus whatever this returns). Extend the array here to offer more folders.

@@ -1,12 +1,14 @@
 use std::path::Path;
+use serde::Serialize;
 use tauri::State;
 use yaminabe_launcher_shared::datatypes::{
-    DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModProjectSearchResults, ModProjectFile,
+    DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModProjectSearchResults, ModProjectFile, ModState,
 };
 use yaminabe_launcher_shared::error::Error;
 use crate::{emit_progress, ActivityGuard, AppState, InstanceActivity};
 use crate::commands::instance::{find_instance_dir, instance_meta_file, modlist_file, remove_modlist_file, upsert_modlist_entries};
-use crate::json::read_json;
+use crate::http_utils::sha1_hex;
+use crate::json::{read_json, read_json_or_default, write_json};
 use crate::mod_repo;
 
 #[tauri::command]
@@ -65,7 +67,7 @@ pub async fn upgrade_modpack(
     source: DownloadSource,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
-    let Some(_activity) = ActivityGuard::claim(&state.instance_activity, &instance_id, InstanceActivity::Modifying) else {
+    let Some(_activity) = ActivityGuard::claim(&state.instance_activity, &instance_id, InstanceActivity::Upgrading) else {
         return Err(Error::Busy(format!("instance '{instance_id}' is already busy")));
     };
 
@@ -163,4 +165,58 @@ pub async fn download_mods(
         &state.http_client,
     ).await?;
     upsert_modlist_entries(&instance_path, entries)
+}
+
+/// Result of a link attempt: the file names successfully linked and the input
+/// paths that matched no `DownloadFailed` entry (by SHA-1).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkOutcome {
+    linked: Vec<String>,
+    unmatched: Vec<String>,
+}
+
+/// Resolve `DownloadFailed` mods by linking jars the user supplies from disk.
+/// Each path is hashed and matched against a failed entry's recorded SHA-1
+/// (not its file name, so any local copy of the right jar works); a match is
+/// copied into `mods/` under the entry's name and flipped to `Enabled`.
+#[tauri::command]
+pub fn link_mods(
+    instance_id: String,
+    file_paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<LinkOutcome, Error> {
+    let Some(_activity) = ActivityGuard::claim(&state.instance_activity, &instance_id, InstanceActivity::Modifying) else {
+        return Err(Error::Busy(format!("instance '{instance_id}' is already busy")));
+    };
+    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
+    let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
+    let mut modlist: Vec<ModListEntry> = read_json_or_default(modlist_file(&instance_dir))?;
+    let mods_dir = instance_dir.join("mods");
+    std::fs::create_dir_all(&mods_dir)?;
+
+    let mut linked = Vec::new();
+    let mut unmatched = Vec::new();
+    for path in &file_paths {
+        let Ok(bytes) = std::fs::read(path) else {
+            log::warn!("link_mods: cannot read {path}");
+            unmatched.push(path.clone());
+            continue;
+        };
+        let sha1 = sha1_hex(&bytes);
+        let matched = modlist.iter_mut()
+            .find(|e| e.state == ModState::DownloadFailed && !e.sha1.is_empty() && e.sha1 == sha1);
+        match matched {
+            Some(entry) => {
+                std::fs::write(mods_dir.join(&entry.file_name), &bytes)?;
+                entry.state = ModState::Enabled;
+                linked.push(entry.file_name.clone());
+            }
+            None => unmatched.push(path.clone()),
+        }
+    }
+    if !linked.is_empty() {
+        write_json(modlist_file(&instance_dir), &modlist)?;
+    }
+    Ok(LinkOutcome { linked, unmatched })
 }

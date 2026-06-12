@@ -107,9 +107,20 @@ impl<'a> FetchJson<'a> {
 
         let resp = req.send().await?;
         if !resp.status().is_success() {
-            return Err(Error::HttpRequestRejected(resp.status().as_u16(), self.url.to_string()));
+            return Err(rejected_status(resp.status(), self.url));
         }
         resp.json::<T>().await.map_err(Error::InvalidResponse)
+    }
+}
+
+/// Map a non-success HTTP status to the matching `Error`. HTTP 429 becomes
+/// `RateLimitExceeded` so callers can message a rate limit specifically;
+/// everything else stays a generic `HttpRequestRejected`.
+pub fn rejected_status(status: reqwest::StatusCode, url: &str) -> Error {
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        Error::RateLimitExceeded(url.to_string())
+    } else {
+        Error::HttpRequestRejected(status.as_u16(), url.to_string())
     }
 }
 
@@ -135,7 +146,7 @@ pub async fn download_resource(
 
     let resp = client.get(url).send().await?;
     if !resp.status().is_success() {
-        return Err(Error::HttpRequestRejected(resp.status().as_u16(), url.to_string()));
+        return Err(rejected_status(resp.status(), url));
     }
     let bytes = resp.bytes().await
         .map_err(Error::InvalidResponse)?;
@@ -204,7 +215,7 @@ pub async fn fetch_and_verify(
 
     let resp = client.get(url).send().await?;
     if !resp.status().is_success() {
-        return Err(Error::HttpRequestRejected(resp.status().as_u16(), url.to_string()));
+        return Err(rejected_status(resp.status(), url));
     }
     let bytes = resp.bytes().await.map_err(Error::InvalidResponse)?.to_vec();
     verify_sha1(&bytes, expected_sha1, resource)?;

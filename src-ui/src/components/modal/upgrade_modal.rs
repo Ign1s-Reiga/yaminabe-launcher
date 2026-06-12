@@ -2,6 +2,7 @@ use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, IntoView, view};
+use leptos_router::hooks::use_navigate;
 use yaminabe_launcher_shared::datatypes::{DownloadSource, ModProjectFile};
 use crate::components::ui::*;
 use crate::curseforge::{call_get_files, call_upgrade_modpack};
@@ -22,6 +23,7 @@ pub fn UpgradeModpackModal(
     let error: RwSignal<Option<String>> = RwSignal::new(None);
     let selected: RwSignal<u32> = RwSignal::new(0);
     let instance_id = StoredValue::new(instance_id);
+    let navigate = StoredValue::new(use_navigate());
 
     leptos::task::spawn_local(async move {
         match call_get_files(project_id).await {
@@ -51,6 +53,10 @@ pub fn UpgradeModpackModal(
         let iid = instance_id.get_value();
         let source = DownloadSource::CurseForge { project_id, file_id: target_id };
         on_close.run(());
+        // An upgrade is a whole-instance rewrite: send the user back to the
+        // library and let the activity dock track progress, rather than leaving
+        // them on a detail page whose contents are mid-change.
+        navigate.with_value(|nav| nav("/library", Default::default()));
         leptos::task::spawn_local(async move {
             // Upgrade progress flows through the install sidebar's event stream;
             // a synchronous IPC rejection does not, so log it here.

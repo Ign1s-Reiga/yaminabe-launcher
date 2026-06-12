@@ -4,7 +4,7 @@ use tauri::State;
 use yaminabe_launcher_shared::datatypes::{GameVersion, LoaderVersion, ReleaseType};
 use yaminabe_launcher_shared::error::Error;
 use crate::{versions_dir, AppState};
-use crate::http_utils::fetch_json;
+use crate::http_utils::{fetch_json, rejected_status};
 
 const VERSION_MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 
@@ -54,7 +54,7 @@ pub async fn fetch_minecraft_versions(
         std::fs::read_to_string(&cache_path)?
     } else {
         if !resp.status().is_success() {
-            return Err(Error::HttpRequestRejected(resp.status().as_u16(), VERSION_MANIFEST_URL.to_string()));
+            return Err(rejected_status(resp.status(), VERSION_MANIFEST_URL));
         }
 
         let last_modified = resp.headers()

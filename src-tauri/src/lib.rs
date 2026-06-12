@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
-
+use log::warn;
 use tauri::{Emitter, Manager};
 use yaminabe_launcher_shared::datatypes::{AppSettings, JavaInstall};
 use yaminabe_launcher_shared::error::InitializationError;
@@ -21,7 +21,7 @@ use crate::commands::auth::{
     remove_account, set_selected_account, start_microsoft_login,
 };
 use crate::commands::modfile::{
-    delete_instance_mod, download_mods, get_modpack_files, install_modpack,
+    delete_instance_mod, download_mods, get_modpack_files, install_modpack, link_mods,
     list_instance_mods, search_curseforge_modpacks,
     search_mods, upgrade_modpack,
 };
@@ -31,7 +31,7 @@ use crate::commands::minecraft::{
 use crate::commands::instance::{create_instance, delete_instance, get_instances, save_instance_settings};
 use crate::commands::launch::{kill_instance, launch_instance};
 use crate::commands::java::{detect_java_installs, get_java_installs};
-use crate::commands::settings::{get_instance_subfolders, get_settings, open_instance_subfolder, pick_folder, save_settings};
+use crate::commands::settings::{get_instance_subfolders, get_settings, open_instance_subfolder, pick_folder, pick_jar_files, save_settings};
 
 pub fn emit_progress(app: &tauri::AppHandle, id: &str, name: &str, step: &str, done: bool, error: Option<String>) {
     if let Err(e) = app.emit("instance-install-progress", InstallProgress {
@@ -41,7 +41,7 @@ pub fn emit_progress(app: &tauri::AppHandle, id: &str, name: &str, step: &str, d
         done,
         error,
     }) {
-        log::warn!("failed to emit instance-install-progress for {id}: {e}");
+        warn!("failed to emit instance-install-progress for {id}: {e}");
     }
 }
 
@@ -56,9 +56,12 @@ pub enum InstanceActivity {
     Running(u32),
     /// A delete is removing the instance directory.
     Deleting,
-    /// Instance contents are being rewritten — a modpack upgrade or a manual
-    /// mod add/remove.
+    /// A partial edit — a manual mod add or remove (the Mods tab stays usable).
     Modifying,
+    /// A whole-instance rewrite — a modpack upgrade or mod-loader version
+    /// change. The UI sends the user back to the library and tracks progress in
+    /// the activity dock while this is in flight.
+    Upgrading,
 }
 
 /// Map of instance id → its in-flight exclusive activity.
@@ -168,12 +171,22 @@ pub fn run() {
             // (DPAPI on Windows, Keychain on macOS, keyutils on Linux). A
             // failure is non-fatal: account secrets simply won't persist and
             // the login flow will surface a clear error next time it's used.
-            if let Err(e) = keyring::use_native_store(false) {
-                log::warn!("failed to register native keyring store: {e}");
+            #[cfg(target_os = "windows")]
+            let native_store = windows_native_keyring_store::Store::new();
+
+            #[cfg(target_os = "linux")]
+            let native_store = dbus_secret_service_keyring_store::Store::new();
+
+            #[cfg(target_os = "macos")]
+            let native_store = apple_native_keyring_store::Store::new();
+
+            match native_store {
+                Ok(store) => keyring_core::set_default_store(store),
+                Err(e) => warn!("failed to register native keyring store: {e}")
             }
 
             // Initialize and load AppSettings
-            let mut settings: AppSettings = crate::json::read_json(settings_path())?;
+            let mut settings: AppSettings = json::read_json(settings_path())?;
             if settings.instance_install_dir.is_empty() {
                 settings.instance_install_dir = app.path().local_data_dir()?.join(".yaminabe").join("instances")
                     .to_string_lossy()
@@ -206,10 +219,10 @@ pub fn run() {
                         // populated, which can't happen at first-launch init.
                         // Log so it surfaces if that assumption ever breaks.
                         if state.mc_versions.set(manifest).is_err() {
-                            log::warn!("Minecraft version manifest cache was unexpectedly already populated");
+                            warn!("Minecraft version manifest cache was unexpectedly already populated");
                         }
                     }
-                    Err(e) => log::warn!("failed to fetch Minecraft version manifest: {e}"),
+                    Err(e) => warn!("failed to fetch Minecraft version manifest: {e}"),
                 }
             });
 
@@ -231,6 +244,8 @@ pub fn run() {
             list_instance_mods,
             delete_instance_mod,
             download_mods,
+            link_mods,
+            pick_jar_files,
             create_instance,
             get_instances,
             save_instance_settings,
