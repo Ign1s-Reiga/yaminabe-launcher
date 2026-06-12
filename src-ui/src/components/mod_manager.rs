@@ -6,7 +6,7 @@ use leptos::{component, web_sys, IntoView, view};
 use yaminabe_launcher_shared::datatypes::{DownloadSource, ModListEntry, ModLoader, ModProjectInfo, ModState, ProjectClass, SearchOption};
 use crate::components::card::link_notice_card::LinkNoticeCard;
 use crate::components::ui::*;
-use crate::curseforge::{call_delete_mod, call_download_mods, call_list_mods, call_search_projects};
+use crate::curseforge::{call_download_mods, call_list_mods, call_search_projects, call_toggle_mod_state};
 
 /// Human-readable file size.
 fn format_size(bytes: u64) -> String {
@@ -103,12 +103,12 @@ pub fn ModManager(
         font-size: 0.9rem;
     };
 
-    let on_remove = move |file_name: String| {
+    let on_toggle = move |file_name: String| {
         let id = instance_id.get_value();
         leptos::task::spawn_local(async move {
-            match call_delete_mod(id, file_name).await {
+            match call_toggle_mod_state(id, file_name).await {
                 Ok(()) => refresh.update(|n| *n += 1),
-                Err(e) => log::error!("delete_instance_mod failed: {e}"),
+                Err(e) => log::error!("toggle_state_instance_mod failed: {e}"),
             }
         });
     };
@@ -125,7 +125,7 @@ pub fn ModManager(
                 {if read_only {
                     "Mods installed by this modpack."
                 } else {
-                    "Add or remove mods for this instance."
+                    "Add mods, or enable and disable them."
                 }}
             </span>
             {(!read_only).then(move || view! {
@@ -141,18 +141,33 @@ pub fn ModManager(
                 Some(list) if list.is_empty() => view! { <p class=empty>"No mods installed."</p> }.into_any(),
                 Some(list) => list.into_iter().map(|m| {
                     let name = m.file_name.clone();
-                    let name_for_remove = m.file_name.clone();
+                    let file_for_toggle = m.file_name.clone();
+                    let state = m.state;
+                    let name_style = if state == ModState::Enabled { "" } else { "opacity: 0.5;" };
                     view! {
                         <div class=row>
-                            <span class=mod_name>{name}</span>
+                            <span class=mod_name style=name_style>{name}</span>
                             <span class=mod_size>{format_size(m.size)}</span>
-                            {(!read_only).then(move || view! {
-                                <Button
-                                    variant=ButtonVariant::Danger
-                                    on_click=Callback::new(move |_| on_remove(name_for_remove.clone()))
-                                >
-                                    "Remove"
-                                </Button>
+                            {(!read_only).then(move || match state {
+                                ModState::DownloadFailed => view! {
+                                    <span class=mod_size style="color: #d4a017;">"Download failed"</span>
+                                }.into_any(),
+                                ModState::Disabled => view! {
+                                    <Button
+                                        variant=ButtonVariant::Primary
+                                        on_click=Callback::new(move |_| on_toggle(file_for_toggle.clone()))
+                                    >
+                                        "Enable"
+                                    </Button>
+                                }.into_any(),
+                                ModState::Enabled => view! {
+                                    <Button
+                                        variant=ButtonVariant::Secondary
+                                        on_click=Callback::new(move |_| on_toggle(file_for_toggle.clone()))
+                                    >
+                                        "Disable"
+                                    </Button>
+                                }.into_any(),
                             })}
                         </div>
                     }

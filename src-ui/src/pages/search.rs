@@ -8,7 +8,7 @@ use crate::components::card::result_card::ResultCard;
 use crate::components::modal::install_modpack_modal::{InstallModpackModal, InstallState};
 use crate::components::pagination::Pagination;
 use crate::components::ui::*;
-use crate::curseforge::{call_get_files, call_install_modpack, call_search_projects, InstallModpackArgs};
+use crate::curseforge::{call_install_modpack, call_list_project_files, call_search_projects, InstallModpackArgs};
 use crate::ipc;
 
 const PAGE_SIZE: usize = 50;
@@ -105,7 +105,7 @@ pub fn SearchPage() -> impl IntoView {
             versions_error: None,
         }));
         leptos::task::spawn_local(async move {
-            match call_get_files(mod_id).await {
+            match call_list_project_files(mod_id).await {
                 Ok(files) => {
                     let first_version = files.first().map(|f| f.id.to_string()).unwrap_or_default();
                     install.update(|opt| {

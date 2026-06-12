@@ -20,12 +20,12 @@ pub async fn search_projects(
     curseforge::search_projects(option, client, api_key).await
 }
 
-pub async fn get_modpack_files(
+pub async fn list_project_files(
     mod_id: u32,
     client: &Client,
     api_key: &str,
 ) -> Result<Vec<ModProjectFile>, Error> {
-    curseforge::get_modpack_files(mod_id, client, api_key).await
+    curseforge::list_project_files(mod_id, client, api_key).await
 }
 
 pub async fn install_modpack(

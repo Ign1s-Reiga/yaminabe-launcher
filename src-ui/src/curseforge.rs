@@ -23,8 +23,8 @@ pub async fn call_search_projects(option: SearchOption) -> Result<ModProjectSear
     ipc::call("search_projects", SearchProjectsArgs { option }).await
 }
 
-pub async fn call_get_files(mod_id: u32) -> Result<Vec<ModProjectFile>, String> {
-    ipc::call("get_modpack_files", GetFilesArgs { mod_id }).await
+pub async fn call_list_project_files(mod_id: u32) -> Result<Vec<ModProjectFile>, String> {
+    ipc::call("list_project_files", GetFilesArgs { mod_id }).await
 }
 
 #[derive(Serialize)]
@@ -123,13 +123,13 @@ pub async fn call_list_mods(instance_id: String) -> Result<Vec<ModListEntry>, St
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DeleteModsArgs {
+struct ToggleModStateArgs {
     instance_id: String,
     file_name: String,
 }
 
-pub async fn call_delete_mod(instance_id: String, file_name: String) -> Result<(), String> {
-    ipc::call("delete_instance_mod", DeleteModsArgs { instance_id, file_name }).await
+pub async fn call_toggle_mod_state(instance_id: String, file_name: String) -> Result<(), String> {
+    ipc::call("toggle_state_instance_mod", ToggleModStateArgs { instance_id, file_name }).await
 }
 
 pub async fn call_get_minecraft_versions() -> Result<Vec<GameVersion>, String> {

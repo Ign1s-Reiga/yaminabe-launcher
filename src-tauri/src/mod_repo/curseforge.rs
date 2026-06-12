@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use log::{info, warn};
 use serde::Deserialize;
@@ -253,7 +254,7 @@ pub async fn search_projects(
     Ok(to_search_results(body, compat))
 }
 
-pub async fn get_modpack_files(
+pub async fn list_project_files(
     mod_id: u32,
     http_client: &reqwest::Client,
     api_key: &str,
@@ -318,11 +319,76 @@ fn manifest_file_ids(manifest: &ModpackManifest) -> Vec<u32> {
     manifest.files.iter().filter(|f| f.required).map(|f| f.file_id).collect()
 }
 
-fn manifest_mod_sources(manifest: &ModpackManifest) -> Vec<DownloadSource> {
-    manifest.files.iter()
-        .filter(|f| f.required)
-        .map(|f| DownloadSource::CurseForge { project_id: f.project_id, file_id: f.file_id })
-        .collect()
+/// Download a modpack's required files into the instance. A CurseForge manifest
+/// mixes mods and resource packs: jars go to `mods/` and are returned as modlist
+/// entries; `.zip` resource packs go to `resourcepacks/` and are downloaded but
+/// not tracked (the modlist only lists mods). Unlike the manual-add path this
+/// never falls back to Modrinth — a file that can't be fetched becomes a
+/// `DownloadFailed` modlist entry (mods only) for the link flow.
+async fn download_modpack_files(
+    file_ids: &[u32],
+    instance_path: &Path,
+    api_key: &str,
+    client: &reqwest::Client,
+) -> Result<Vec<ModListEntry>, Error> {
+    let files = fetch_file_entries(file_ids, api_key, client).await?;
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(3));
+    let mut handles: Vec<tokio::task::JoinHandle<Result<Option<ModListEntry>, Error>>> = Vec::new();
+    for file in files {
+        let client = client.clone();
+        let instance_path = instance_path.to_path_buf();
+        let semaphore = Arc::clone(&semaphore);
+        handles.push(tokio::spawn(async move {
+            let permit = semaphore.acquire_owned().await
+                .map_err(|e| Error::ChildProcess(format!("semaphore acquire: {e}")))?;
+            let result = download_modpack_file(&file, &instance_path, &client).await;
+            drop(permit);
+            result
+        }));
+    }
+
+    let mut modlist = Vec::new();
+    for handle in handles {
+        if let Some(entry) = handle.await
+            .map_err(|e| Error::ChildProcess(format!("download task panicked: {e}")))?? {
+            modlist.push(entry);
+        }
+    }
+    Ok(modlist)
+}
+
+/// Download one modpack file to its type-appropriate subdir (no Modrinth
+/// fallback). Returns `Some(entry)` for a mod (tracked in the modlist), `None`
+/// for a resource pack (downloaded but untracked). A restricted or failed
+/// download yields a `DownloadFailed` entry rather than an error.
+async fn download_modpack_file(
+    file: &ModFile,
+    instance_path: &Path,
+    client: &reqwest::Client,
+) -> Result<Option<ModListEntry>, Error> {
+    let is_resourcepack = file.file_name.to_ascii_lowercase().ends_with(".zip");
+    let dir = instance_path.join(if is_resourcepack { "resourcepacks" } else { "mods" });
+    std::fs::create_dir_all(&dir)?;
+    let dest = dir.join(&file.file_name);
+    let sha1 = file.hashes.iter().find(|h| h.algo == 1).map(|h| h.value.as_str()).unwrap_or("");
+
+    let download_state = match &file.download_url {
+        Some(url) => match download_resource(client, url, sha1, dest).await {
+            Ok(()) => ModState::Enabled,
+            Err(e) => {
+                warn!("modpack file {} failed to download: {e}; marking for manual install", file.file_name);
+                ModState::DownloadFailed
+            }
+        },
+        None => {
+            warn!("modpack file {} has no download URL (third-party downloads disabled); marking for manual install", file.file_name);
+            ModState::DownloadFailed
+        }
+    };
+
+    // Resource packs aren't tracked in the modlist; only mods are.
+    Ok((!is_resourcepack).then(|| file.to_modlist_entry(download_state)))
 }
 
 pub async fn download_project_file(
@@ -559,8 +625,8 @@ pub async fn install_modpack(
     ).await?;
 
     emit_progress(app_handle, id, instance_name, "Downloading mods", false, None);
-    let mod_files = manifest_mod_sources(&prepared.manifest);
-    let modlist_entries = super::download_mods(mod_files, &instance_path, &api_key, &state.http_client).await?;
+    let file_ids = manifest_file_ids(&prepared.manifest);
+    let modlist_entries = download_modpack_files(&file_ids, &instance_path, &api_key, &state.http_client).await?;
 
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
     upsert_modlist_entries(&instance_path, modlist_entries)?;
@@ -629,14 +695,15 @@ pub async fn upgrade_modpack(
             }
         }
     }
-    let to_add_set: HashSet<u32> = to_add.iter().copied().collect();
-    let to_add: Vec<DownloadSource> = prepared.manifest.files.iter()
-        .filter(|file| file.required && to_add_set.contains(&file.file_id))
-        .map(|file| DownloadSource::CurseForge { project_id: file.project_id, file_id: file.file_id })
-        .collect();
-    let downloaded_modlist_entries = super::download_mods(to_add, &instance_path, &api_key, http_client).await?;
+    // `to_add` mixes new mods and (all) resource packs — resource packs are never
+    // in `old_ids`, since the modlist tracks only mods. `download_modpack_files`
+    // routes each to the right dir and returns entries for mods alone.
+    let downloaded_modlist_entries = download_modpack_files(&to_add, &instance_path, &api_key, http_client).await?;
+    // Baseline the new modlist from the full file set, but keep only mods — the
+    // downloaded entries (with real state) overwrite their baseline below.
     let mut new_modlist_entries: Vec<ModListEntry> = fetch_file_entries(&new_ids, &api_key, http_client).await?
         .into_iter()
+        .filter(|entry| !entry.file_name.to_ascii_lowercase().ends_with(".zip"))
         .map(|entry| entry.to_modlist_entry(ModState::Enabled))
         .collect();
     for entry in downloaded_modlist_entries {

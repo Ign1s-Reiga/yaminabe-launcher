@@ -6,7 +6,7 @@ use yaminabe_launcher_shared::datatypes::{
 };
 use yaminabe_launcher_shared::error::Error;
 use crate::{emit_progress, ActivityGuard, AppState, InstanceActivity};
-use crate::commands::instance::{find_instance_dir, instance_meta_file, modlist_file, remove_modlist_file, upsert_modlist_entries};
+use crate::commands::instance::{find_instance_dir, instance_meta_file, modlist_file, upsert_modlist_entries};
 use crate::http_utils::sha1_hex;
 use crate::json::{read_json, read_json_or_default, write_json};
 use crate::mod_repo;
@@ -21,12 +21,12 @@ pub async fn search_projects(
 }
 
 #[tauri::command]
-pub async fn get_modpack_files(
+pub async fn list_project_files(
     mod_id: u32,
     state: State<'_, AppState>,
 ) -> Result<Vec<ModProjectFile>, Error> {
     let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
-    mod_repo::get_modpack_files(mod_id, &state.http_client, &api_key).await
+    mod_repo::list_project_files(mod_id, &state.http_client, &api_key).await
 }
 
 #[tauri::command]
@@ -94,41 +94,6 @@ pub async fn upgrade_modpack(
             Err(e)
         }
     }
-}
-
-#[tauri::command]
-pub fn list_instance_mods(
-    instance_id: String,
-    state: State<'_, AppState>,
-) -> Result<Vec<ModListEntry>, Error> {
-    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
-    let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
-    let mut modlist: Vec<ModListEntry> = read_json(modlist_file(&instance_dir))
-        .unwrap_or_default();
-    modlist.sort_by(|a, b| a.file_name.to_lowercase().cmp(&b.file_name.to_lowercase()));
-    Ok(modlist)
-}
-
-#[tauri::command]
-pub fn delete_instance_mod(
-    instance_id: String,
-    file_name: String,
-    state: State<'_, AppState>,
-) -> Result<(), Error> {
-    // Only a bare file name inside `mods/` may be removed — reject traversal.
-    if file_name.is_empty() || file_name.contains('/') || file_name.contains('\\') || file_name.contains("..") {
-        return Err(Error::Invalid(format!("invalid mod file name '{file_name}'")));
-    }
-    let Some(_activity) = ActivityGuard::claim(&state.instance_activity, &instance_id, InstanceActivity::Modifying) else {
-        return Err(Error::Busy(format!("instance '{instance_id}' is already busy")));
-    };
-    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
-    let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
-    let path = instance_dir.join("mods").join(&file_name);
-    if path.exists() {
-        std::fs::remove_file(&path)?;
-    }
-    remove_modlist_file(&instance_dir, &file_name)
 }
 
 #[tauri::command]

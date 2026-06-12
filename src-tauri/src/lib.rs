@@ -21,13 +21,16 @@ use crate::commands::auth::{
     remove_account, set_selected_account, start_microsoft_login,
 };
 use crate::commands::modfile::{
-    delete_instance_mod, download_mods, get_modpack_files, install_modpack, link_mods,
-    list_instance_mods, search_projects, upgrade_modpack,
+    download_mods, install_modpack, link_mods,
+    list_project_files, search_projects, upgrade_modpack,
 };
 use crate::commands::minecraft::{
     fetch_minecraft_versions, get_minecraft_versions, get_modloader_versions, VersionManifest,
 };
-use crate::commands::instance::{create_instance, delete_instance, get_instances, save_instance_settings};
+use crate::commands::instance::{
+    create_instance, delete_instance, get_instances, list_instance_mods,
+    save_instance_settings, toggle_state_instance_mod,
+};
 use crate::commands::launch::{kill_instance, launch_instance};
 use crate::commands::java::{detect_java_installs, get_java_installs};
 use crate::commands::settings::{get_instance_subfolders, get_settings, open_instance_subfolder, pick_folder, pick_jar_files, save_settings};
@@ -241,11 +244,11 @@ pub fn run() {
             launch_instance,
             kill_instance,
             search_projects,
-            get_modpack_files,
+            list_project_files,
             install_modpack,
             upgrade_modpack,
             list_instance_mods,
-            delete_instance_mod,
+            toggle_state_instance_mod,
             download_mods,
             link_mods,
             pick_jar_files,

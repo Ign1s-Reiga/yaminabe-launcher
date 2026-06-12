@@ -5,7 +5,7 @@ use leptos::{component, IntoView, view};
 use leptos_router::hooks::use_navigate;
 use yaminabe_launcher_shared::datatypes::{DownloadSource, ModProjectFile};
 use crate::components::ui::*;
-use crate::curseforge::{call_get_files, call_upgrade_modpack};
+use crate::curseforge::{call_list_project_files, call_upgrade_modpack};
 
 /// Version picker for upgrading a CurseForge-origin instance to a newer modpack
 /// file. Fetches the project's file list, lets the user pick a newer file (older
@@ -26,7 +26,7 @@ pub fn UpgradeModpackModal(
     let navigate = StoredValue::new(use_navigate());
 
     leptos::task::spawn_local(async move {
-        match call_get_files(project_id).await {
+        match call_list_project_files(project_id).await {
             Ok(list) => {
                 // Default to the newest file strictly newer than the installed one.
                 let default = list.iter().map(|f| f.id).filter(|id| *id > current_file_id).max().unwrap_or(0);

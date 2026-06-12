@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use log::info;
 use tauri::State;
-use yaminabe_launcher_shared::datatypes::{DownloadSource, InstanceMeta, ModListEntry};
+use yaminabe_launcher_shared::datatypes::{DownloadSource, InstanceMeta, ModListEntry, ModState};
 use yaminabe_launcher_shared::error::Error;
 use crate::{emit_progress, libraries_dir, versions_dir, ActivityGuard, AppState, InstanceActivity};
 use crate::commands::java::download_java_runtime;
@@ -26,16 +26,6 @@ pub fn upsert_modlist_entries(instance_dir: &Path, entries: Vec<ModListEntry>) -
         modlist.push(entry);
     }
     sort_modlist(&mut modlist);
-    write_json(modlist_file(instance_dir), &modlist)
-}
-
-pub fn remove_modlist_file(instance_dir: &Path, file_name: &str) -> Result<(), Error> {
-    let mut modlist: Vec<ModListEntry> = read_json_or_default(modlist_file(instance_dir))?;
-    let before = modlist.len();
-    modlist.retain(|entry| entry.file_name != file_name);
-    if modlist.len() == before {
-        return Ok(());
-    }
     write_json(modlist_file(instance_dir), &modlist)
 }
 
@@ -221,5 +211,68 @@ pub fn delete_instance(id: String, state: State<'_, AppState>) -> Result<(), Err
     let dir = find_instance_dir(Path::new(&install_dir), &id)?;
     std::fs::remove_dir_all(&dir)?;
     info!("Deleted instance '{id}' at {}", dir.display());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_instance_mods(
+    instance_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<ModListEntry>, Error> {
+    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
+    let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
+    let mut modlist: Vec<ModListEntry> = read_json(modlist_file(&instance_dir))
+        .unwrap_or_default();
+    modlist.sort_by(|a, b| a.file_name.to_lowercase().cmp(&b.file_name.to_lowercase()));
+    Ok(modlist)
+}
+
+/// Toggle a tracked mod between `Enabled` and `Disabled`. Disabling renames its
+/// jar to `<name>.disabled` (which mod loaders ignore) and flips the modlist
+/// state; enabling renames it back. The modlist only ever holds mods (resource
+/// packs aren't tracked), so the file always lives under `mods/`. A
+/// `DownloadFailed` entry has no jar yet and can't be toggled.
+#[tauri::command]
+pub fn toggle_state_instance_mod(
+    instance_id: String,
+    file_name: String,
+    state: State<'_, AppState>,
+) -> Result<(), Error> {
+    // Only a bare file name inside `mods/` may be touched — reject traversal.
+    if file_name.is_empty() || file_name.contains('/') || file_name.contains('\\') || file_name.contains("..") {
+        return Err(Error::Invalid(format!("invalid mod file name '{file_name}'")));
+    }
+    let Some(_activity) = ActivityGuard::claim(&state.instance_activity, &instance_id, InstanceActivity::Modifying) else {
+        return Err(Error::Busy(format!("instance '{instance_id}' is already busy")));
+    };
+    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
+    let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
+    let mut modlist: Vec<ModListEntry> = read_json_or_default(modlist_file(&instance_dir))?;
+    let entry = modlist.iter_mut().find(|e| e.file_name == file_name)
+        .ok_or_else(|| Error::NotExists(format!("mod '{file_name}'")))?;
+
+    let mods_dir = instance_dir.join("mods");
+    let enabled_path = mods_dir.join(&entry.file_name);
+    let disabled_path = mods_dir.join(format!("{}.disabled", entry.file_name));
+    match entry.state {
+        ModState::Enabled => {
+            if enabled_path.exists() {
+                std::fs::rename(&enabled_path, &disabled_path)?;
+            }
+            entry.state = ModState::Disabled;
+        }
+        ModState::Disabled => {
+            if disabled_path.exists() {
+                std::fs::rename(&disabled_path, &enabled_path)?;
+            }
+            entry.state = ModState::Enabled;
+        }
+        ModState::DownloadFailed => {
+            return Err(Error::Invalid(format!("mod '{file_name}' has not been downloaded yet")));
+        }
+    }
+    let new_state = entry.state;
+    write_json(modlist_file(&instance_dir), &modlist)?;
+    info!("Toggled mod '{file_name}' to {new_state:?} in instance '{instance_id}'");
     Ok(())
 }
