@@ -3,12 +3,12 @@ use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, IntoView, view, web_sys};
 use wasm_bindgen::JsCast;
-use yaminabe_launcher_shared::datatypes::{AppSettings, DownloadSource, ModProjectInfo};
+use yaminabe_launcher_shared::datatypes::{AppSettings, DownloadSource, ModProjectInfo, ProjectClass, SearchOption};
 use crate::components::card::result_card::ResultCard;
 use crate::components::modal::install_modpack_modal::{InstallModpackModal, InstallState};
 use crate::components::pagination::Pagination;
 use crate::components::ui::*;
-use crate::curseforge::{call_get_files, call_install_modpack, call_search_modpacks, InstallModpackArgs};
+use crate::curseforge::{call_get_files, call_install_modpack, call_search_projects, InstallModpackArgs};
 use crate::ipc;
 
 const PAGE_SIZE: usize = 50;
@@ -64,8 +64,14 @@ pub fn SearchPage() -> impl IntoView {
             s.error = None;
         });
         let index = (q.page * PAGE_SIZE) as u32;
+        let option = SearchOption {
+            query: q.query,
+            index,
+            class: ProjectClass::Modpack,
+            ..Default::default()
+        };
         leptos::task::spawn_local(async move {
-            match call_search_modpacks(q.query, index).await {
+            match call_search_projects(option).await {
                 Ok(data) => {
                     search_state.update(|s| {
                         s.total = data.total;

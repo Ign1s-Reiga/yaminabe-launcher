@@ -4,7 +4,7 @@ use tauri::State;
 use crate::AppState;
 use crate::http_utils::{download_resource, fetch_json};
 use serde::Deserialize;
-use yaminabe_launcher_shared::datatypes::{DownloadSource, ModListEntry, ModState};
+use yaminabe_launcher_shared::datatypes::{DownloadSource, ModListEntry, ModProjectSearchResults, ModState, SearchOption};
 use yaminabe_launcher_shared::error::Error;
 
 #[derive(Deserialize)]
@@ -69,10 +69,6 @@ struct Hashes {
     sha1: String,
 }
 
-pub async fn search_mods() {
-    unimplemented!()
-}
-
 /// Download the Modrinth file matching `sha1` to `dest_path` (a full path,
 /// including the file name), so a caller mirroring another platform's file can
 /// keep that platform's on-disk name. Verifies against the Modrinth hash.
@@ -90,7 +86,7 @@ pub async fn download_file_by_sha1(
     Ok(())
 }
 
-pub async fn download_mod(
+pub async fn download_project_file(
     version_id: String,
     mods_dir: &Path,
     client: &reqwest::Client,
@@ -101,7 +97,12 @@ pub async fn download_mod(
     download_version_file(version, mods_dir, client).await
 }
 
-pub fn search_modpacks() {
+#[allow(unused_variables)]
+pub async fn search_projects(
+    option: &SearchOption,
+    client: &reqwest::Client,
+    api_key: &str,
+) -> Result<ModProjectSearchResults, Error> {
     unimplemented!()
 }
 

@@ -2,16 +2,15 @@ use crate::ipc;
 use leptos::web_sys;
 use serde::Serialize;
 use yaminabe_launcher_shared::datatypes::{
-    DownloadSource, GameVersion, LoaderVersion, ModListEntry, ModLoader, ModProjectSearchResults,
-    ModProjectFile,
+    DownloadSource, GameVersion, LoaderVersion, ModListEntry, ModProjectSearchResults,
+    ModProjectFile, SearchOption,
 };
 
 // ── IPC ───────────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
-struct SearchModpackArgs {
-    query: String,
-    index: u32,
+struct SearchProjectsArgs {
+    option: SearchOption,
 }
 
 #[derive(Serialize)]
@@ -20,8 +19,8 @@ struct GetFilesArgs {
     mod_id: u32,
 }
 
-pub async fn call_search_modpacks(query: String, index: u32) -> Result<ModProjectSearchResults, String> {
-    ipc::call("search_curseforge_modpacks", SearchModpackArgs { query, index }).await
+pub async fn call_search_projects(option: SearchOption) -> Result<ModProjectSearchResults, String> {
+    ipc::call("search_projects", SearchProjectsArgs { option }).await
 }
 
 pub async fn call_get_files(mod_id: u32) -> Result<Vec<ModProjectFile>, String> {
@@ -111,24 +110,6 @@ pub async fn call_pick_jar_files() -> Result<Vec<String>, String> {
 }
 
 // ── Manual mod management (issue #29) ───────────────────────────────────────────
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SearchModsArgs {
-    query: String,
-    mc_version: String,
-    mod_loader: ModLoader,
-    index: u32,
-}
-
-pub async fn call_search_mods(
-    query: String,
-    mc_version: String,
-    mod_loader: ModLoader,
-    index: u32,
-) -> Result<ModProjectSearchResults, String> {
-    ipc::call("search_mods", SearchModsArgs { query, mc_version, mod_loader, index }).await
-}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

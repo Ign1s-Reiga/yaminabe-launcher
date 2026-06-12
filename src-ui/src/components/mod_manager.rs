@@ -3,10 +3,10 @@ use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, web_sys, IntoView, view};
-use yaminabe_launcher_shared::datatypes::{DownloadSource, ModListEntry, ModLoader, ModProjectInfo, ModState};
+use yaminabe_launcher_shared::datatypes::{DownloadSource, ModListEntry, ModLoader, ModProjectInfo, ModState, ProjectClass, SearchOption};
 use crate::components::card::link_notice_card::LinkNoticeCard;
 use crate::components::ui::*;
-use crate::curseforge::{call_delete_mod, call_download_mods, call_list_mods, call_search_mods};
+use crate::curseforge::{call_delete_mod, call_download_mods, call_list_mods, call_search_projects};
 
 /// Human-readable file size.
 fn format_size(bytes: u64) -> String {
@@ -198,10 +198,15 @@ fn AddModModal(
         if q.trim().is_empty() { return; }
         loading.set(true);
         error.set(None);
-        let mcv = game_version.get_value();
-        let loader = mod_loader.get_value();
+        let option = SearchOption {
+            query: q,
+            index: 0,
+            class: ProjectClass::Mod,
+            game_version: Some(game_version.get_value()),
+            mod_loader: Some(mod_loader.get_value()),
+        };
         leptos::task::spawn_local(async move {
-            match call_search_mods(q, mcv, loader, 0).await {
+            match call_search_projects(option).await {
                 Ok(res) => {
                     results.set(res.items);
                     searched.set(true);

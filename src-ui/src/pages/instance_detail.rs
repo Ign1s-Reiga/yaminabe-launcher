@@ -61,29 +61,26 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     let navigate = StoredValue::new(use_navigate());
     // Allow deep-linking to a tab via `?tab=` (used by the library card's
     // context-menu "Settings" entry); fall back to Description otherwise.
-    let initial_tab = use_query_map()
+    let active_tab = RwSignal::new(use_query_map()
         .with_untracked(|q| q.get("tab"))
         .filter(|t| TABS.contains(&t.as_str()))
-        .unwrap_or_else(|| TABS[0].to_string());
-    let active_tab = RwSignal::new(initial_tab);
+        .unwrap_or_else(|| TABS[0].to_string()));
     let save_state: RwSignal<SaveState> = RwSignal::new(SaveState::Idle);
 
-    let is_managed = instance.origin.is_managed();
     // `(project_id, file_id)` when this is a CurseForge instance, enabling the
-    // modpack Upgrade action in the read-only Mods tab.
+    // modpack Upgrade action in the read-only Mods tab. Kept as a binding (not
+    // inlined) because it is read by two separate view closures.
     let cf_origin = instance.origin.curseforge_ids();
     let show_upgrade: RwSignal<bool> = RwSignal::new(false);
-    // Manual + non-Vanilla instances get the add/remove mod manager (#29);
-    // Vanilla just shows an empty state. StoredValue so the Mods-tab `<Show>`
-    // children closure can reuse them across re-renders.
-    let is_vanilla = instance.mod_loader == ModLoader::Vanilla;
+    // Mod-loader pieces the Mods-tab `<Show>` children closure needs across
+    // re-renders, held as StoredValue so the closure can copy them.
     let mods_game_version = StoredValue::new(instance.game_version.clone());
     let mods_loader = StoredValue::new(instance.mod_loader.clone());
     let header_bg = format!("background-color: {}", &instance.mod_loader.mod_loader_color());
     let instance_name = instance.name.clone();
-    let category_label = if instance.category.is_empty() { "Default".to_string() } else { instance.category.clone() };
+    let category_label = if instance.category.is_empty() { "Default" } else { instance.category.as_str() };
     let meta_text = format!("MC {}  ·  {}  ·  {}", instance.game_version, instance.mod_loader, category_label);
-    
+
     let instance_id = StoredValue::new(instance.id.clone());
     let dropdown_open: RwSignal<bool> = RwSignal::new(false);
     let launch_mode: RwSignal<LaunchMode> = RwSignal::new(LaunchMode::Online);
@@ -192,13 +189,13 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
 
         // ── Mods tab ──────────────────────────────────────────────────────────
         <Show when=move || active_tab.get() == "Mods">
-            {if is_managed {
+            {if instance.origin.is_managed() {
                 view! {
                     <ManagedNoticeCard
                         can_upgrade=cf_origin.is_some()
                         on_upgrade=Callback::new(move |_| show_upgrade.set(true))
                     />
-                    {(!is_vanilla).then(move || view! {
+                    {(instance.mod_loader != ModLoader::Vanilla).then(move || view! {
                         <div style="margin-top: 20px;">
                             <ModManager
                                 instance_id=instance_id.get_value()
@@ -209,7 +206,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
                         </div>
                     })}
                 }.into_any()
-            } else if is_vanilla {
+            } else if instance.mod_loader == ModLoader::Vanilla {
                 view! { <p style="opacity: 0.45; font-size: 0.9rem;">"No mods installed."</p> }.into_any()
             } else {
                 view! {

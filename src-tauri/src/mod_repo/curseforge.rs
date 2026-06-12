@@ -8,10 +8,10 @@ use serde::Deserialize;
 use tauri::State;
 use yaminabe_launcher_shared::datatypes::{
     DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModProjectInfo,
-    ModProjectSearchResults, ModProjectFile, ModState,
+    ModProjectSearchResults, ModProjectFile, ModState, ProjectClass, SearchOption,
 };
 use yaminabe_launcher_shared::error::Error;
-use crate::{emit_progress, AppState};
+use crate::{caches_dir, emit_progress, AppState};
 use crate::commands::instance::{
     instance_meta_file, modlist_file, replace_modlist_entries_for_file_ids, upsert_modlist_entries,
 };
@@ -195,64 +195,62 @@ fn to_search_results(
     ModProjectSearchResults { items, total }
 }
 
-pub async fn search_modpacks(
-    query: &str,
-    index: u32,
-    http_client: &reqwest::Client,
-    api_key: &str,
-) -> Result<ModProjectSearchResults, Error> {
-    if query.trim().is_empty() {
-        return Ok(ModProjectSearchResults { items: vec![], total: 0 });
+/// CurseForge `classId` for a project class.
+fn class_id(class: ProjectClass) -> &'static str {
+    match class {
+        ProjectClass::Mod => "6",
+        ProjectClass::Modpack => "4471",
+        ProjectClass::ResourcePack => "12",
     }
-
-    let body = fetch_json(http_client, "https://api.curseforge.com/v1/mods/search")
-        .header("x-api-key", api_key)
-        .query(&[
-            ("gameId", "432"),
-            ("classId", "4471"),
-            ("searchFilter", query),
-            ("sortField", "2"),
-            ("pageSize", "50"),
-            ("sortOrder", "desc"),
-            ("index", &index.to_string()),
-        ])
-        .send::<CurseForgeArrayResponse<SearchModsEntry>>()
-        .await?;
-
-    Ok(to_search_results(body, None))
 }
 
-/// Search CurseForge mods (classId 6) pre-filtered to a Minecraft version and
-/// mod loader, so only files compatible with the instance are offered.
-pub async fn search_mods(
-    query: &str,
-    index: u32,
-    mc_version: &str,
-    mod_loader: &ModLoader,
+/// Unified CurseForge search for any project class. Mods can be narrowed to a
+/// Minecraft version and/or mod loader (so only compatible files are offered);
+/// modpacks and resource packs search broadly. When both a version and loader
+/// are given, the per-result `file_id` is the matching file rather than the
+/// latest.
+pub async fn search_projects(
+    option: &SearchOption,
     http_client: &reqwest::Client,
     api_key: &str,
 ) -> Result<ModProjectSearchResults, Error> {
-    if query.trim().is_empty() {
+    if option.query.trim().is_empty() {
         return Ok(ModProjectSearchResults { items: vec![], total: 0 });
+    }
+
+    let index = option.index.to_string();
+    let mut query: Vec<(&str, &str)> = vec![
+        ("gameId", "432"),
+        ("classId", class_id(option.class)),
+        ("searchFilter", option.query.as_str()),
+        ("sortField", "2"),
+        ("pageSize", "50"),
+        ("sortOrder", "desc"),
+        ("index", &index),
+    ];
+    if let Some(game_version) = option.game_version.as_deref() {
+        query.push(("gameVersion", game_version));
+    }
+    // `mod_loader_id` is `None` for Vanilla, which has no loader filter.
+    let loader_id;
+    if let Some(id) = option.mod_loader.as_ref().and_then(ModLoader::mod_loader_id) {
+        loader_id = id.to_string();
+        query.push(("modLoaderType", &loader_id));
     }
 
     let body = fetch_json(http_client, "https://api.curseforge.com/v1/mods/search")
         .header("x-api-key", api_key)
-        .query(&[
-            ("gameId", "432"),
-            ("classId", "6"),
-            ("searchFilter", query),
-            ("gameVersion", mc_version),
-            ("modLoaderType", &mod_loader.mod_loader_id().unwrap_or_default().to_string()),
-            ("sortField", "2"),
-            ("pageSize", "50"),
-            ("sortOrder", "desc"),
-            ("index", &index.to_string()),
-        ])
+        .query(&query)
         .send::<CurseForgeArrayResponse<SearchModsEntry>>()
         .await?;
 
-    Ok(to_search_results(body, Some((mc_version, mod_loader))))
+    // Pick the version/loader-matching file only when both are known (mod
+    // search); otherwise keep the latest file.
+    let compat = match (option.game_version.as_deref(), option.mod_loader.as_ref()) {
+        (Some(version), Some(loader)) => Some((version, loader)),
+        _ => None,
+    };
+    Ok(to_search_results(body, compat))
 }
 
 pub async fn get_modpack_files(
@@ -327,7 +325,7 @@ fn manifest_mod_sources(manifest: &ModpackManifest) -> Vec<DownloadSource> {
         .collect()
 }
 
-pub async fn download_mod(
+pub async fn download_project_file(
     project_id: u32,
     file_id: u32,
     mods_dir: &Path,
@@ -467,10 +465,11 @@ struct PreparedModpack {
 }
 
 /// Shared install/upgrade prefix: resolve the modpack zip URL from
-/// `(project_id, file_id)`, download and open it, read the manifest, ensure the
-/// game + loader are installed, and extract `overrides/` into `instance_path`.
-/// Mod-list handling and instance metadata differ between install and upgrade,
-/// so they stay with the caller.
+/// `(project_id, file_id)`, download it to the caches dir, read the manifest,
+/// ensure the game + loader are installed, and extract `overrides/` into
+/// `instance_path`. The cached zip is processed from disk (not held in memory)
+/// and deleted once its overrides are extracted. Mod-list handling and instance
+/// metadata differ between install and upgrade, so they stay with the caller.
 async fn prepare_modpack(
     app_handle: &tauri::AppHandle,
     id: &str,
@@ -489,8 +488,37 @@ async fn prepare_modpack(
     if !resp.status().is_success() {
         return Err(rejected_status(resp.status(), &download_url));
     }
-    let zip_bytes = resp.bytes().await.map_err(Error::InvalidResponse)?.to_vec();
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes))
+
+    // Stage the zip in the caches dir (keyed by the install id, so concurrent
+    // installs don't collide) and process it from disk rather than memory.
+    let cache_path = caches_dir().join(format!("{id}.zip"));
+    {
+        let zip_bytes = resp.bytes().await.map_err(Error::InvalidResponse)?;
+        std::fs::write(&cache_path, &zip_bytes)?;
+    }
+
+    let prepared = prepare_from_cached_zip(
+        app_handle, id, instance_name, instance_path, &cache_path, state,
+    ).await;
+
+    // Always drop the staged zip — its overrides are now in the instance and
+    // its mods are fetched separately from the manifest.
+    std::fs::remove_file(&cache_path).ok();
+    prepared
+}
+
+/// Read the cached modpack zip from disk: parse the manifest, ensure the game +
+/// loader, and extract overrides into the instance. Split out so `prepare_modpack`
+/// can delete the cache file on every exit path.
+async fn prepare_from_cached_zip(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    instance_path: &Path,
+    cache_path: &Path,
+    state: &State<'_, AppState>,
+) -> Result<PreparedModpack, Error> {
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(cache_path)?)
         .map_err(|e| Error::Invalid(format!("modpack zip is invalid: {e}")))?;
 
     let manifest = read_manifest(&mut archive)?;

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use reqwest::Client;
 use tauri::State;
 use yaminabe_launcher_shared::datatypes::{
-    DownloadSource, ModListEntry, ModLoader, ModProjectSearchResults, ModProjectFile,
+    DownloadSource, ModListEntry, ModProjectSearchResults, ModProjectFile, SearchOption,
 };
 use yaminabe_launcher_shared::error::Error;
 use crate::AppState;
@@ -12,13 +12,12 @@ use crate::AppState;
 mod curseforge;
 mod modrinth;
 
-pub async fn search_modpacks(
-    query: &str,
-    index: u32,
+pub async fn search_projects(
+    option: &SearchOption,
     client: &Client,
     api_key: &str,
 ) -> Result<ModProjectSearchResults, Error> {
-    curseforge::search_modpacks(query, index, client, api_key).await
+    curseforge::search_projects(option, client, api_key).await
 }
 
 pub async fn get_modpack_files(
@@ -71,19 +70,9 @@ pub async fn upgrade_modpack(
     }
 }
 
-pub async fn search_mods(
-    query: &str,
-    index: u32,
-    mc_version: &str,
-    mod_loader: &ModLoader,
-    client: &Client,
-    api_key: &str,
-) -> Result<ModProjectSearchResults, Error> {
-    curseforge::search_mods(query, index, mc_version, mod_loader, client, api_key).await
-}
-
 /// Dispatch a single download on its source variant. The CurseForge → Modrinth
-/// (by SHA-1) fallback for opted-out files lives inside `curseforge::download_mod`.
+/// (by SHA-1) fallback for opted-out files lives inside
+/// `curseforge::download_project_file`.
 ///
 /// A failure to fetch the jar does not error here: the platform fn returns a
 /// `ModListEntry` with `state = DownloadFailed` (keeping its real source) so the
@@ -97,10 +86,10 @@ async fn download_from_source(
 ) -> Result<ModListEntry, Error> {
     match source {
         DownloadSource::CurseForge { project_id, file_id } => {
-            curseforge::download_mod(project_id, file_id, mods_dir, api_key, client).await
+            curseforge::download_project_file(project_id, file_id, mods_dir, api_key, client).await
         }
         DownloadSource::Modrinth { version_id, .. } => {
-            modrinth::download_mod(version_id, mods_dir, client).await
+            modrinth::download_project_file(version_id, mods_dir, client).await
         }
         DownloadSource::Manual => Err(Error::Invalid(
             "cannot download a Manual source; this mod must be installed by hand".to_string(),

@@ -156,6 +156,36 @@ impl Default for InstanceMeta {
     }
 }
 
+/// Which kind of CurseForge project a search targets. Maps to the API's
+/// `classId`; modpack manifests reference projects across these classes (a pack
+/// bundles both mods and resource packs), so a unified search needs to say
+/// which class it wants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectClass {
+    #[default]
+    Mod,
+    Modpack,
+    ResourcePack,
+}
+
+/// Parameters for a project search. `Default` so a caller sets only the fields
+/// it cares about; intentionally a struct (not positional args) so future
+/// advanced-search filters can be added without breaking every call site.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchOption {
+    pub query: String,
+    pub index: u32,
+    pub class: ProjectClass,
+    /// Restrict to a Minecraft version (mod search); `None` searches all.
+    #[serde(default)]
+    pub game_version: Option<String>,
+    /// Restrict to a mod loader (mod search); `None` searches all.
+    #[serde(default)]
+    pub mod_loader: Option<ModLoader>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModProjectInfo {
     pub id: u32,

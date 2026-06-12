@@ -2,7 +2,7 @@ use std::path::Path;
 use serde::Serialize;
 use tauri::State;
 use yaminabe_launcher_shared::datatypes::{
-    DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModProjectSearchResults, ModProjectFile, ModState,
+    DownloadSource, InstanceMeta, ModListEntry, ModProjectSearchResults, ModProjectFile, ModState, SearchOption,
 };
 use yaminabe_launcher_shared::error::Error;
 use crate::{emit_progress, ActivityGuard, AppState, InstanceActivity};
@@ -12,13 +12,12 @@ use crate::json::{read_json, read_json_or_default, write_json};
 use crate::mod_repo;
 
 #[tauri::command]
-pub async fn search_curseforge_modpacks(
-    query: String,
-    index: u32,
+pub async fn search_projects(
+    option: SearchOption,
     state: State<'_, AppState>,
 ) -> Result<ModProjectSearchResults, Error> {
     let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
-    mod_repo::search_modpacks(&query, index, &state.http_client, &api_key).await
+    mod_repo::search_projects(&option, &state.http_client, &api_key).await
 }
 
 #[tauri::command]
@@ -95,18 +94,6 @@ pub async fn upgrade_modpack(
             Err(e)
         }
     }
-}
-
-#[tauri::command]
-pub async fn search_mods(
-    query: String,
-    mc_version: String,
-    mod_loader: ModLoader,
-    index: u32,
-    state: State<'_, AppState>,
-) -> Result<ModProjectSearchResults, Error> {
-    let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
-    mod_repo::search_mods(&query, index, &mc_version, &mod_loader, &state.http_client, &api_key).await
 }
 
 #[tauri::command]
