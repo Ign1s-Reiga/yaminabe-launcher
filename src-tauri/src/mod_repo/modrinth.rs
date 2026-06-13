@@ -1,10 +1,11 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use tauri::State;
 use crate::AppState;
 use crate::http_utils::{download_resource, fetch_json};
+use crate::mod_repo::{ProjectFileDownload, ProjectFileTarget};
 use serde::Deserialize;
-use yaminabe_launcher_shared::datatypes::{DownloadSource, ModListEntry, ModProjectSearchResults, ModState, SearchOption};
+use tauri::State;
+use yaminabe_launcher_shared::datatypes::{DownloadSource, ModProjectSearchResults, SearchOption};
 use yaminabe_launcher_shared::error::Error;
 
 #[derive(Deserialize)]
@@ -18,19 +19,26 @@ struct Version {
 }
 
 impl Version {
-    fn to_modlist_entry(self: &Version, state: ModState) -> ModListEntry {
-        let version_file = selected_file(self).unwrap();
-
-        ModListEntry {
-            file_name: version_file.filename.clone(),
-            sha1: version_file.hashes.sha1.clone(),
+    fn to_project_file_download(&self) -> Result<ProjectFileDownload, Error> {
+        let version_file = selected_file(self).ok_or_else(|| {
+            Error::NotExists(format!(
+                "Modrinth version-file {} does not exists.",
+                self.id
+            ))
+        })?;
+        Ok(ProjectFileDownload {
             source: DownloadSource::Modrinth {
                 project_id: self.project_id.clone(),
                 version_id: self.id.clone(),
             },
+            file_name: version_file.filename.clone(),
+            sha1: version_file.hashes.sha1.clone(),
             size: version_file.size,
-            state,
-        }
+            download_url: Some(version_file.url.clone()),
+            target: ProjectFileTarget::Mods,
+            fallback_to_modrinth: false,
+            require_sha1: false,
+        })
     }
 }
 
@@ -77,24 +85,33 @@ pub async fn download_file_by_sha1(
     dest_path: PathBuf,
     client: &reqwest::Client,
 ) -> Result<(), Error> {
-    let version = fetch_json(client, &format!("https://api.modrinth.com/v2/version_file/{sha1}"))
-        .send::<Version>()
-        .await?;
-    let file = selected_file(&version)
-        .ok_or_else(|| Error::NotExists(format!("Modrinth version-file {} does not exists.", version.id)))?;
+    let version = fetch_json(
+        client,
+        &format!("https://api.modrinth.com/v2/version_file/{sha1}"),
+    )
+    .send::<Version>()
+    .await?;
+    let file = selected_file(&version).ok_or_else(|| {
+        Error::NotExists(format!(
+            "Modrinth version-file {} does not exists.",
+            version.id
+        ))
+    })?;
     download_resource(client, &file.url, &file.hashes.sha1, dest_path).await?;
     Ok(())
 }
 
-pub async fn download_project_file(
+pub(crate) async fn resolve_project_file(
     version_id: String,
-    mods_dir: &Path,
     client: &reqwest::Client,
-) -> Result<ModListEntry, Error> {
-    let version = fetch_json(client, &format!("https://api.modrinth.com/v2/version/{version_id}"))
-        .send::<Version>()
-        .await?;
-    download_version_file(version, mods_dir, client).await
+) -> Result<ProjectFileDownload, Error> {
+    let version = fetch_json(
+        client,
+        &format!("https://api.modrinth.com/v2/version/{version_id}"),
+    )
+    .send::<Version>()
+    .await?;
+    version.to_project_file_download()
 }
 
 #[allow(unused_variables)]
@@ -134,25 +151,10 @@ pub async fn upgrade_modpack(
     unimplemented!()
 }
 
-async fn download_version_file(
-    version: Version,
-    mods_dir: &Path,
-    client: &reqwest::Client,
-) -> Result<ModListEntry, Error> {
-    let file = selected_file(&version)
-        .ok_or_else(|| Error::NotExists(format!("Modrinth version-file {} does not exists.", version.id)))?;
-    // A failed jar fetch is recorded as `DownloadFailed` (not aborted) so a
-    // batch download can continue and the user can link the jar by hand.
-    let state = match download_resource(client, &file.url, &file.hashes.sha1, mods_dir.join(&file.filename)).await {
-        Ok(()) => ModState::Enabled,
-        Err(e) => {
-            log::warn!("download failed for {}: {e}; marking for manual install", file.filename);
-            ModState::DownloadFailed
-        }
-    };
-    Ok(version.to_modlist_entry(state))
-}
-
 fn selected_file(version: &Version) -> Option<&VersionFile> {
-    version.files.iter().find(|f| f.primary).or_else(|| version.files.first())
+    version
+        .files
+        .iter()
+        .find(|f| f.primary)
+        .or_else(|| version.files.first())
 }

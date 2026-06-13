@@ -2,15 +2,15 @@ mod fabric_like;
 mod forge_v1;
 mod forge_v2;
 
-use std::path::PathBuf;
-use log::info;
-use serde::Deserialize;
-use yaminabe_launcher_shared::datatypes::ModLoader;
-use yaminabe_launcher_shared::error::Error;
-use crate::{temp_dir, versions_dir};
+use super::installer_archive;
 use crate::http_utils::fetch_json;
 use crate::maven::MavenCoords;
-use super::installer_archive;
+use crate::{temp_dir, versions_dir};
+use log::info;
+use serde::Deserialize;
+use std::path::PathBuf;
+use yaminabe_launcher_shared::datatypes::ModLoader;
+use yaminabe_launcher_shared::error::Error;
 
 // ── Path helpers (visible to submodules and other commands) ──────────────────
 
@@ -18,7 +18,9 @@ use super::installer_archive;
 /// canonical Mojang version manifest for a given installed version. Used by
 /// every consumer that reads or writes a per-version JSON, which is many.
 pub fn version_manifest_path(version_id: &str) -> PathBuf {
-    versions_dir().join(version_id).join(format!("{version_id}.json"))
+    versions_dir()
+        .join(version_id)
+        .join(format!("{version_id}.json"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,19 +37,20 @@ async fn ensure_fabric_like(
     client: &reqwest::Client,
 ) -> Result<String, Error> {
     let installer_coords = fetch_json(client, &format!("{meta_url}installer/"))
-        .send::<Vec<FabricLikeMetadata>>()
-        .await?
-        .into_iter().next()
+        .send::<Vec<FabricLikeMetadata>>().await?
+        .into_iter()
+        .next()
         .ok_or_else(|| Error::Invalid(format!("No {loader} installer metadata available")))?
         .maven;
 
-    let installer_path = MavenCoords::new(maven_url, &installer_coords).download(client, temp_dir()).await?;
+    let installer_path = MavenCoords::new(maven_url, &installer_coords)
+        .download(client, temp_dir()).await?;
 
-    fabric_like::run_installer(&loader, installer_path, mc_version, loader_version, client).await?;
-    let version_id = fetch_json(client, &format!("{meta_url}loader/{mc_version}/{loader_version}/profile/json/"))
-        .send::<VersionInfo>()
-        .await?
-        .id;
+    fabric_like::run_installer(&loader, installer_path, mc_version, loader_version).await?;
+    let version_id = fetch_json(
+        client,
+        &format!("{meta_url}loader/{mc_version}/{loader_version}/profile/json/"),
+    ).send::<VersionInfo>().await?.id;
     fabric_like::pre_download_libraries(&version_id, client).await?;
 
     info!("Installed {loader} - {loader_version} for MC {mc_version}");
@@ -99,13 +102,17 @@ pub async fn ensure_forge(
     loader_version: &str,
     client: &reqwest::Client,
 ) -> Result<String, Error> {
-    let forge_build = loader_version.strip_prefix("forge-").unwrap_or(loader_version);
+    let forge_build = loader_version
+        .strip_prefix("forge-")
+        .unwrap_or(loader_version);
     let forge_version = forge_maven_version(mc_version, forge_build);
 
     // Pre-1.6 (jar-mod era) is unsupported; the installer download 404s for
     // those MC versions, surfacing as a clean network error.
-    let installer_path = MavenCoords::new("https://maven.minecraftforge.net/", &format!("net.minecraftforge:forge:{forge_version}"))
-        .resource_suffix("installer")
+    let installer_path = MavenCoords::new(
+        "https://maven.minecraftforge.net/",
+        &format!("net.minecraftforge:forge:{forge_version}"),
+    ).resource_suffix("installer")
         .download(client, temp_dir()).await?;
     let install_type = detect_install_type(&installer_path)?;
 
@@ -142,12 +149,16 @@ pub async fn ensure_neoforge(
     loader_version: &str,
     client: &reqwest::Client,
 ) -> Result<String, Error> {
-    let nf_version = loader_version.strip_prefix("neoforge-").unwrap_or(loader_version);
+    let nf_version = loader_version
+        .strip_prefix("neoforge-")
+        .unwrap_or(loader_version);
 
     // Download the installer once up front so we can read the authoritative
     // version_id out of its `version.json` before deciding to skip.
-    let installer_path = MavenCoords::new("https://maven.neoforged.net/releases/", &format!("net.neoforged:neoforge:{nf_version}"))
-        .resource_suffix("installer")
+    let installer_path = MavenCoords::new(
+        "https://maven.neoforged.net/releases/",
+        &format!("net.neoforged:neoforge:{nf_version}"),
+    ).resource_suffix("installer")
         .download(client, temp_dir()).await?;
 
     let version_id = read_v2_version(&installer_path)?;

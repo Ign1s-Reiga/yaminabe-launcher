@@ -2,29 +2,27 @@ use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Arc;
 
-use log::{info, warn};
-use serde::Deserialize;
-use tauri::State;
-use yaminabe_launcher_shared::datatypes::{
-    DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModProjectInfo,
-    ModProjectSearchResults, ModProjectFile, ModState, ProjectClass, SearchOption,
-};
-use yaminabe_launcher_shared::error::Error;
-use crate::{caches_dir, emit_progress, AppState};
 use crate::commands::instance::{
     instance_meta_file, modlist_file, replace_modlist_entries_for_file_ids, upsert_modlist_entries,
 };
-use crate::http_utils::{download_resource, fetch_json, rejected_status};
+use crate::http_utils::{fetch_json, rejected_status};
 use crate::install_task::ensure_game_and_loader;
 use crate::json::{read_json, read_json_or_default, write_json};
-use crate::mod_repo::modrinth;
+use crate::mod_repo::{ProjectFileDownload, ProjectFileTarget};
+use crate::{AppState, caches_dir, emit_progress};
+use log::info;
+use serde::Deserialize;
+use tauri::State;
+use yaminabe_launcher_shared::datatypes::{
+    DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModProjectFile, ModProjectInfo,
+    ModProjectSearchResults, ModState, ProjectClass, SearchOption,
+};
+use yaminabe_launcher_shared::error::Error;
 
 #[derive(Debug, Deserialize)]
-struct CurseForgeResponse<T>
-{
-    data: T
+struct CurseForgeResponse<T> {
+    data: T,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,10 +56,44 @@ impl ModFile {
     fn to_modlist_entry(self: &ModFile, state: ModState) -> ModListEntry {
         ModListEntry {
             file_name: self.file_name.clone(),
-            sha1: self.hashes.iter().find(|h| h.algo == 1).map(|h| h.value.clone()).unwrap_or_default(),
-            source: DownloadSource::CurseForge { project_id: self.mod_id, file_id: self.id },
+            sha1: self
+                .hashes
+                .iter()
+                .find(|h| h.algo == 1)
+                .map(|h| h.value.clone())
+                .unwrap_or_default(),
+            source: DownloadSource::CurseForge {
+                project_id: self.mod_id,
+                file_id: self.id,
+            },
             size: self.file_size_on_disk,
             state,
+        }
+    }
+
+    fn to_project_file_download(
+        &self,
+        target: ProjectFileTarget,
+        fallback_to_modrinth: bool,
+        require_sha1: bool,
+    ) -> ProjectFileDownload {
+        ProjectFileDownload {
+            source: DownloadSource::CurseForge {
+                project_id: self.mod_id,
+                file_id: self.id,
+            },
+            file_name: self.file_name.clone(),
+            sha1: self
+                .hashes
+                .iter()
+                .find(|h| h.algo == 1)
+                .map(|h| h.value.clone())
+                .unwrap_or_default(),
+            size: self.file_size_on_disk,
+            download_url: self.download_url.clone(),
+            target,
+            fallback_to_modrinth,
+            require_sha1,
         }
     }
 }
@@ -126,7 +158,9 @@ struct ManifestFilesItem {
     required: bool,
 }
 
-fn default_overrides_dir() -> String { "overrides".to_string() }
+fn default_overrides_dir() -> String {
+    "overrides".to_string()
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -147,9 +181,17 @@ struct ModLoaderVersion {
 /// agnostic entries (no `modLoader`) are accepted for any loader. `None` when
 /// nothing listed fits, so the project is left non-installable rather than
 /// offering a file for the wrong version or loader.
-fn compatible_file_id(indexes: &[FilesIndex], mc_version: &str, mod_loader: &ModLoader) -> Option<u32> {
-    indexes.iter()
-        .find(|f| f.game_version == mc_version && (f.mod_loader == mod_loader.mod_loader_id() || f.mod_loader.is_none()))
+fn compatible_file_id(
+    indexes: &[FilesIndex],
+    mc_version: &str,
+    mod_loader: &ModLoader,
+) -> Option<u32> {
+    indexes
+        .iter()
+        .find(|f| {
+            f.game_version == mc_version
+                && (f.mod_loader == mod_loader.mod_loader_id() || f.mod_loader.is_none())
+        })
         .map(|f| f.file_id)
         .filter(|id| *id != 0)
 }
@@ -159,39 +201,51 @@ fn to_search_results(
     compat: Option<(&str, &ModLoader)>,
 ) -> ModProjectSearchResults {
     let total = body.pagination.total_count;
-    let items: Vec<ModProjectInfo> = body.data.into_iter().map(|m| {
-        let mut versions: Vec<String> = m.latest_files_indexes.iter()
-            .map(|f| f.game_version.clone())
-            .collect();
-        versions.sort();
-        versions.dedup();
+    let items: Vec<ModProjectInfo> = body
+        .data
+        .into_iter()
+        .map(|m| {
+            let mut versions: Vec<String> = m
+                .latest_files_indexes
+                .iter()
+                .map(|f| f.game_version.clone())
+                .collect();
+            versions.sort();
+            versions.dedup();
 
-        let primary_category_id = m.primary_category_id;
-        let mut categories = m.categories;
-        // Stable sort so the entry whose id matches `primary_category_id`
-        // comes first; remaining categories keep their original order.
-        categories.sort_by_key(|c| if c.id == primary_category_id { 0 } else { 1 });
-        let category: Vec<String> = categories.into_iter().map(|c| c.name).collect();
+            let primary_category_id = m.primary_category_id;
+            let mut categories = m.categories;
+            // Stable sort so the entry whose id matches `primary_category_id`
+            // comes first; remaining categories keep their original order.
+            categories.sort_by_key(|c| if c.id == primary_category_id { 0 } else { 1 });
+            let category: Vec<String> = categories.into_iter().map(|c| c.name).collect();
 
-        // Mods: pick the file matching the searched version/loader. Modpack
-        // search has no such filter, so fall back to the latest file.
-        let file_id = match compat {
-            Some((mc_version, mod_loader)) => compatible_file_id(&m.latest_files_indexes, mc_version, mod_loader),
-            None => m.latest_files_indexes.first().map(|f| f.file_id).filter(|id| *id != 0),
-        };
+            // Mods: pick the file matching the searched version/loader. Modpack
+            // search has no such filter, so fall back to the latest file.
+            let file_id = match compat {
+                Some((mc_version, mod_loader)) => {
+                    compatible_file_id(&m.latest_files_indexes, mc_version, mod_loader)
+                }
+                None => m
+                    .latest_files_indexes
+                    .first()
+                    .map(|f| f.file_id)
+                    .filter(|id| *id != 0),
+            };
 
-        ModProjectInfo {
-            id: m.id,
-            file_id,
-            name: m.name,
-            summary: m.summary,
-            logo_url: m.logo.map(|l| l.url),
-            download_count: m.download_count,
-            game_versions: versions,
-            category,
-            primary_category_id,
-        }
-    }).collect();
+            ModProjectInfo {
+                id: m.id,
+                file_id,
+                name: m.name,
+                summary: m.summary,
+                logo_url: m.logo.map(|l| l.url),
+                download_count: m.download_count,
+                game_versions: versions,
+                category,
+                primary_category_id,
+            }
+        })
+        .collect();
 
     ModProjectSearchResults { items, total }
 }
@@ -216,7 +270,10 @@ pub async fn search_projects(
     api_key: &str,
 ) -> Result<ModProjectSearchResults, Error> {
     if option.query.trim().is_empty() {
-        return Ok(ModProjectSearchResults { items: vec![], total: 0 });
+        return Ok(ModProjectSearchResults {
+            items: vec![],
+            total: 0,
+        });
     }
 
     let index = option.index.to_string();
@@ -234,7 +291,11 @@ pub async fn search_projects(
     }
     // `mod_loader_id` is `None` for Vanilla, which has no loader filter.
     let loader_id;
-    if let Some(id) = option.mod_loader.as_ref().and_then(ModLoader::mod_loader_id) {
+    if let Some(id) = option
+        .mod_loader
+        .as_ref()
+        .and_then(ModLoader::mod_loader_id)
+    {
         loader_id = id.to_string();
         query.push(("modLoaderType", &loader_id));
     }
@@ -261,32 +322,37 @@ pub async fn list_project_files(
 ) -> Result<Vec<ModProjectFile>, Error> {
     let mut entries = fetch_json(
         http_client,
-        &format!("https://api.curseforge.com/v1/mods/{mod_id}/files")
+        &format!("https://api.curseforge.com/v1/mods/{mod_id}/files"),
     )
-        .header("x-api-key", api_key)
-        .query(&[("pageSize", "50")])
-        .send::<CurseForgeArrayResponse<ModFile>>().await?
-        .data;
-    
+    .header("x-api-key", api_key)
+    .query(&[("pageSize", "50")])
+    .send::<CurseForgeArrayResponse<ModFile>>()
+    .await?
+    .data;
+
     entries.sort_by(|a, b| b.id.cmp(&a.id));
 
-    let versions = entries.into_iter().filter_map(|f| {
-        let download_url = f.download_url?;
-        let release_type = match f.release_type {
-            1 => "Stable",
-            2 => "Beta",
-            3 => "Alpha",
-            _ => "Unknown",
-        }.to_string();
-        Some(ModProjectFile {
-            id: f.id,
-            mod_id: f.mod_id,
-            release_type,
-            file_name: f.file_name,
-            download_url,
-            display_name: f.display_name,
+    let versions = entries
+        .into_iter()
+        .filter_map(|f| {
+            let download_url = f.download_url?;
+            let release_type = match f.release_type {
+                1 => "Stable",
+                2 => "Beta",
+                3 => "Alpha",
+                _ => "Unknown",
+            }
+            .to_string();
+            Some(ModProjectFile {
+                id: f.id,
+                mod_id: f.mod_id,
+                release_type,
+                file_name: f.file_name,
+                download_url,
+                display_name: f.display_name,
+            })
         })
-    }).collect();
+        .collect();
 
     Ok(versions)
 }
@@ -294,7 +360,8 @@ pub async fn list_project_files(
 fn read_manifest<R: std::io::Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
 ) -> Result<ModpackManifest, Error> {
-    let mut file = archive.by_name("manifest.json")
+    let mut file = archive
+        .by_name("manifest.json")
         .map_err(|_| Error::Invalid("modpack zip is missing manifest.json".to_string()))?;
     let mut content = String::new();
     file.read_to_string(&mut content)?;
@@ -304,19 +371,28 @@ fn read_manifest<R: std::io::Read + std::io::Seek>(
 /// Resolve the modpack's primary mod loader and its version. CurseForge
 /// manifest loader ids are `{name}-{version}` (e.g. `neoforge-21.1.228`).
 fn resolve_loader(manifest: &ModpackManifest) -> Result<(ModLoader, Option<String>), Error> {
-    let mod_loader_id = manifest.minecraft.mod_loaders.iter()
+    let mod_loader_id = manifest
+        .minecraft
+        .mod_loaders
+        .iter()
         .find(|l| l.primary)
         .or_else(|| manifest.minecraft.mod_loaders.first())
         .map(|l| l.id.to_ascii_lowercase())
         .unwrap_or("vanilla".to_string());
-    let (loader_name, loader_version) = mod_loader_id.split_once('-')
+    let (loader_name, loader_version) = mod_loader_id
+        .split_once('-')
         .map(|(n, v)| (n, Some(v.to_string())))
         .unwrap_or((mod_loader_id.as_str(), None));
     Ok((ModLoader::from_str(loader_name)?, loader_version))
 }
 
 fn manifest_file_ids(manifest: &ModpackManifest) -> Vec<u32> {
-    manifest.files.iter().filter(|f| f.required).map(|f| f.file_id).collect()
+    manifest
+        .files
+        .iter()
+        .filter(|f| f.required)
+        .map(|f| f.file_id)
+        .collect()
 }
 
 /// Download a modpack's required files into the instance. A CurseForge manifest
@@ -332,105 +408,35 @@ async fn download_modpack_files(
     client: &reqwest::Client,
 ) -> Result<Vec<ModListEntry>, Error> {
     let files = fetch_file_entries(file_ids, api_key, client).await?;
-
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(3));
-    let mut handles: Vec<tokio::task::JoinHandle<Result<Option<ModListEntry>, Error>>> = Vec::new();
-    for file in files {
-        let client = client.clone();
-        let instance_path = instance_path.to_path_buf();
-        let semaphore = Arc::clone(&semaphore);
-        handles.push(tokio::spawn(async move {
-            let permit = semaphore.acquire_owned().await
-                .map_err(|e| Error::ChildProcess(format!("semaphore acquire: {e}")))?;
-            let result = download_modpack_file(&file, &instance_path, &client).await;
-            drop(permit);
-            result
-        }));
-    }
-
-    let mut modlist = Vec::new();
-    for handle in handles {
-        if let Some(entry) = handle.await
-            .map_err(|e| Error::ChildProcess(format!("download task panicked: {e}")))?? {
-            modlist.push(entry);
-        }
-    }
-    Ok(modlist)
+    let project_files = files
+        .iter()
+        .map(|file| {
+            let target = if file.file_name.to_ascii_lowercase().ends_with(".zip") {
+                ProjectFileTarget::ResourcePacks
+            } else {
+                ProjectFileTarget::Mods
+            };
+            file.to_project_file_download(target, false, false)
+        })
+        .collect();
+    super::download_project_files(project_files, instance_path, client).await
 }
 
-/// Download one modpack file to its type-appropriate subdir (no Modrinth
-/// fallback). Returns `Some(entry)` for a mod (tracked in the modlist), `None`
-/// for a resource pack (downloaded but untracked). A restricted or failed
-/// download yields a `DownloadFailed` entry rather than an error.
-async fn download_modpack_file(
-    file: &ModFile,
-    instance_path: &Path,
-    client: &reqwest::Client,
-) -> Result<Option<ModListEntry>, Error> {
-    let is_resourcepack = file.file_name.to_ascii_lowercase().ends_with(".zip");
-    let dir = instance_path.join(if is_resourcepack { "resourcepacks" } else { "mods" });
-    std::fs::create_dir_all(&dir)?;
-    let dest = dir.join(&file.file_name);
-    let sha1 = file.hashes.iter().find(|h| h.algo == 1).map(|h| h.value.as_str()).unwrap_or("");
-
-    let download_state = match &file.download_url {
-        Some(url) => match download_resource(client, url, sha1, dest).await {
-            Ok(()) => ModState::Enabled,
-            Err(e) => {
-                warn!("modpack file {} failed to download: {e}; marking for manual install", file.file_name);
-                ModState::DownloadFailed
-            }
-        },
-        None => {
-            warn!("modpack file {} has no download URL (third-party downloads disabled); marking for manual install", file.file_name);
-            ModState::DownloadFailed
-        }
-    };
-
-    // Resource packs aren't tracked in the modlist; only mods are.
-    Ok((!is_resourcepack).then(|| file.to_modlist_entry(download_state)))
-}
-
-pub async fn download_project_file(
+pub(crate) async fn resolve_project_file(
     project_id: u32,
     file_id: u32,
-    mods_dir: &Path,
     api_key: &str,
     client: &reqwest::Client,
-) -> Result<ModListEntry, Error> {
-    let file = fetch_json(client, &format!("https://api.curseforge.com/v1/mods/{project_id}/files/{file_id}"))
-        .header("x-api-key", api_key)
-        .send::<CurseForgeResponse<ModFile>>()
-        .await?
-        .data;
-
-    let sha1 = file.hashes.iter()
-        .find(|v| v.algo == 1)
-        .map(|v| v.value.as_str())
-        .ok_or_else(|| Error::Invalid(format!("CurseForge file {} has no SHA-1 hash", file.file_name)))?;
-
-    // The metadata fetch above already succeeded, so we know what this mod is.
-    // A failure to fetch the *jar* itself (opt-out with no Modrinth mirror, a
-    // checksum mismatch, a transient error) is recorded as `DownloadFailed`
-    // rather than aborting the whole batch — the user can link a jar by hand.
-    let dest = mods_dir.join(&file.file_name);
-    let download_result = if let Some(url) = &file.download_url {
-        download_resource(client, url, sha1, dest).await
-    } else {
-        warn!("CurseForge restricts downloads for file {}, falling back to Modrinth lookup by SHA-1", file.file_name);
-        // Save the mirrored Modrinth jar under the CurseForge file name so the
-        // returned entry, the Mods tab, and upgrade cleanup all agree on disk.
-        modrinth::download_file_by_sha1(sha1, dest, client).await
-    };
-
-    let state = match download_result {
-        Ok(()) => ModState::Enabled,
-        Err(e) => {
-            warn!("download failed for {}: {e}; marking for manual install", file.file_name);
-            ModState::DownloadFailed
-        }
-    };
-    Ok(file.to_modlist_entry(state))
+) -> Result<ProjectFileDownload, Error> {
+    let file = fetch_json(
+        client,
+        &format!("https://api.curseforge.com/v1/mods/{project_id}/files/{file_id}"),
+    )
+    .header("x-api-key", api_key)
+    .send::<CurseForgeResponse<ModFile>>()
+    .await?
+    .data;
+    Ok(file.to_project_file_download(ProjectFileTarget::Mods, true, true))
 }
 
 /// CurseForge file ids currently recorded in the instance's modlist — the set
@@ -440,8 +446,10 @@ pub async fn download_project_file(
 /// Empty when the modlist is missing, degrading to "download everything,
 /// remove nothing".
 fn installed_curseforge_file_ids(instance_path: &Path) -> Vec<u32> {
-    let modlist: Vec<ModListEntry> = read_json_or_default(modlist_file(instance_path)).unwrap_or_default();
-    modlist.iter()
+    let modlist: Vec<ModListEntry> =
+        read_json_or_default(modlist_file(instance_path)).unwrap_or_default();
+    modlist
+        .iter()
         .filter_map(|entry| entry.source.curseforge_ids().map(|(_, file_id)| file_id))
         .collect()
 }
@@ -455,14 +463,20 @@ fn extract_overrides<R: std::io::Read + std::io::Seek>(
     instance_path: &Path,
 ) -> Result<(), Error> {
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i)
+        let mut file = archive
+            .by_index(i)
             .map_err(|e| Error::Invalid(format!("reading zip entry at index {i}: {e}")))?;
 
         let entry_name = file.name().to_string();
-        let Some(rel) = entry_name.strip_prefix(overrides_prefix) else { continue };
-        if rel.is_empty() { continue }
+        let Some(rel) = entry_name.strip_prefix(overrides_prefix) else {
+            continue;
+        };
+        if rel.is_empty() {
+            continue;
+        }
 
-        let dest = rel.split('/')
+        let dest = rel
+            .split('/')
             .filter(|c| !c.is_empty() && *c != "..")
             .fold(instance_path.to_path_buf(), |p, c| p.join(c));
 
@@ -493,11 +507,17 @@ async fn fetch_file_entries(
             .post("https://api.curseforge.com/v1/mods/files")
             .header("x-api-key", api_key)
             .json(&body)
-            .send().await?;
+            .send()
+            .await?;
         if !resp.status().is_success() {
-            return Err(rejected_status(resp.status(), "https://api.curseforge.com/v1/mods/files"));
+            return Err(rejected_status(
+                resp.status(),
+                "https://api.curseforge.com/v1/mods/files",
+            ));
         }
-        let data = resp.json::<CurseForgeArrayResponse<ModFile>>().await
+        let data = resp
+            .json::<CurseForgeArrayResponse<ModFile>>()
+            .await
             .map_err(Error::InvalidResponse)?;
         entries.extend(data.data);
     }
@@ -511,13 +531,20 @@ async fn fetch_file_download_url(
     api_key: &str,
     client: &reqwest::Client,
 ) -> Result<String, Error> {
-    let file = fetch_json(client, &format!("https://api.curseforge.com/v1/mods/{project_id}/files/{file_id}"))
-        .header("x-api-key", api_key)
-        .send::<CurseForgeResponse<ModFile>>()
-        .await?
-        .data;
-    file.download_url
-        .ok_or_else(|| Error::Invalid(format!("CurseForge modpack file {} has no download URL", file.file_name)))
+    let file = fetch_json(
+        client,
+        &format!("https://api.curseforge.com/v1/mods/{project_id}/files/{file_id}"),
+    )
+    .header("x-api-key", api_key)
+    .send::<CurseForgeResponse<ModFile>>()
+    .await?
+    .data;
+    file.download_url.ok_or_else(|| {
+        Error::Invalid(format!(
+            "CurseForge modpack file {} has no download URL",
+            file.file_name
+        ))
+    })
 }
 
 /// The game/loader/manifest state produced by [`prepare_modpack`], handed back so
@@ -547,7 +574,14 @@ async fn prepare_modpack(
     state: &State<'_, AppState>,
 ) -> Result<PreparedModpack, Error> {
     let http_client = &state.http_client;
-    emit_progress(app_handle, id, instance_name, "Downloading modpack", false, None);
+    emit_progress(
+        app_handle,
+        id,
+        instance_name,
+        "Downloading modpack",
+        false,
+        None,
+    );
 
     let download_url = fetch_file_download_url(project_id, file_id, api_key, http_client).await?;
     let resp = http_client.get(&download_url).send().await?;
@@ -564,8 +598,14 @@ async fn prepare_modpack(
     }
 
     let prepared = prepare_from_cached_zip(
-        app_handle, id, instance_name, instance_path, &cache_path, state,
-    ).await;
+        app_handle,
+        id,
+        instance_name,
+        instance_path,
+        &cache_path,
+        state,
+    )
+    .await;
 
     // Always drop the staged zip — its overrides are now in the instance and
     // its mods are fetched separately from the manifest.
@@ -592,14 +632,34 @@ async fn prepare_from_cached_zip(
     let (mod_loader, loader_version) = resolve_loader(&manifest)?;
 
     let version_id = ensure_game_and_loader(
-        app_handle, id, instance_name, &mc_version, &mod_loader, &loader_version, state,
-    ).await?;
+        app_handle,
+        id,
+        instance_name,
+        &mc_version,
+        &mod_loader,
+        &loader_version,
+        state,
+    )
+    .await?;
 
-    emit_progress(app_handle, id, instance_name, "Extracting files", false, None);
+    emit_progress(
+        app_handle,
+        id,
+        instance_name,
+        "Extracting files",
+        false,
+        None,
+    );
     let overrides_prefix = format!("{}/", manifest.overrides.trim_end_matches('/'));
     extract_overrides(&mut archive, &overrides_prefix, instance_path)?;
 
-    Ok(PreparedModpack { manifest, mc_version, mod_loader, loader_version, version_id })
+    Ok(PreparedModpack {
+        manifest,
+        mc_version,
+        mod_loader,
+        loader_version,
+        version_id,
+    })
 }
 
 pub async fn install_modpack(
@@ -610,23 +670,43 @@ pub async fn install_modpack(
     source: DownloadSource,
     state: &State<'_, AppState>,
 ) -> Result<(), Error> {
-    let (project_id, file_id) = source.curseforge_ids()
+    let (project_id, file_id) = source
+        .curseforge_ids()
         .ok_or_else(|| Error::Unsupported("not a CurseForge modpack source".to_string()))?;
     let (api_key, install_dir) = {
         let settings = state.settings.read().unwrap();
-        (settings.curseforge_api_key.clone(), settings.instance_install_dir.clone())
+        (
+            settings.curseforge_api_key.clone(),
+            settings.instance_install_dir.clone(),
+        )
     };
 
     let instance_path = PathBuf::from(&install_dir).join(instance_name.to_lowercase());
     std::fs::create_dir_all(&instance_path)?;
 
     let prepared = prepare_modpack(
-        app_handle, id, instance_name, &instance_path, project_id, file_id, &api_key, state,
-    ).await?;
+        app_handle,
+        id,
+        instance_name,
+        &instance_path,
+        project_id,
+        file_id,
+        &api_key,
+        state,
+    )
+    .await?;
 
-    emit_progress(app_handle, id, instance_name, "Downloading mods", false, None);
+    emit_progress(
+        app_handle,
+        id,
+        instance_name,
+        "Downloading mods",
+        false,
+        None,
+    );
     let file_ids = manifest_file_ids(&prepared.manifest);
-    let modlist_entries = download_modpack_files(&file_ids, &instance_path, &api_key, &state.http_client).await?;
+    let modlist_entries =
+        download_modpack_files(&file_ids, &instance_path, &api_key, &state.http_client).await?;
 
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
     upsert_modlist_entries(&instance_path, modlist_entries)?;
@@ -643,7 +723,13 @@ pub async fn install_modpack(
     };
     write_json(instance_meta_file(&instance_path), &meta)?;
 
-    info!("Installed '{}' (MC {}, {}) → {}", instance_name, prepared.mc_version, prepared.mod_loader, instance_path.display());
+    info!(
+        "Installed '{}' (MC {}, {}) → {}",
+        instance_name,
+        prepared.mc_version,
+        prepared.mod_loader,
+        instance_path.display()
+    );
     Ok(())
 }
 
@@ -660,7 +746,8 @@ pub async fn upgrade_modpack(
     source: DownloadSource,
     state: &State<'_, AppState>,
 ) -> Result<(), Error> {
-    let (project_id, file_id) = source.curseforge_ids()
+    let (project_id, file_id) = source
+        .curseforge_ids()
         .ok_or_else(|| Error::Unsupported("not a CurseForge modpack source".to_string()))?;
     let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
     let http_client = &state.http_client;
@@ -670,8 +757,16 @@ pub async fn upgrade_modpack(
     let old_ids = installed_curseforge_file_ids(&instance_path);
 
     let prepared = prepare_modpack(
-        app_handle, id, instance_name, &instance_path, project_id, file_id, &api_key, state,
-    ).await?;
+        app_handle,
+        id,
+        instance_name,
+        &instance_path,
+        project_id,
+        file_id,
+        &api_key,
+        state,
+    )
+    .await?;
 
     // Diff the mod list by file id: download additions, remove drops, skip
     // unchanged files already on disk.
@@ -679,8 +774,16 @@ pub async fn upgrade_modpack(
     let new_ids = manifest_file_ids(&prepared.manifest);
     let old_set: HashSet<u32> = old_ids.iter().copied().collect();
     let new_set: HashSet<u32> = new_ids.iter().copied().collect();
-    let to_remove: Vec<u32> = old_ids.iter().copied().filter(|fid| !new_set.contains(fid)).collect();
-    let to_add: Vec<u32> = new_ids.iter().copied().filter(|fid| !old_set.contains(fid)).collect();
+    let to_remove: Vec<u32> = old_ids
+        .iter()
+        .copied()
+        .filter(|fid| !new_set.contains(fid))
+        .collect();
+    let to_add: Vec<u32> = new_ids
+        .iter()
+        .copied()
+        .filter(|fid| !old_set.contains(fid))
+        .collect();
 
     let mut old_file_names = Vec::new();
     if !to_remove.is_empty() {
@@ -698,14 +801,17 @@ pub async fn upgrade_modpack(
     // `to_add` mixes new mods and (all) resource packs — resource packs are never
     // in `old_ids`, since the modlist tracks only mods. `download_modpack_files`
     // routes each to the right dir and returns entries for mods alone.
-    let downloaded_modlist_entries = download_modpack_files(&to_add, &instance_path, &api_key, http_client).await?;
+    let downloaded_modlist_entries =
+        download_modpack_files(&to_add, &instance_path, &api_key, http_client).await?;
     // Baseline the new modlist from the full file set, but keep only mods — the
     // downloaded entries (with real state) overwrite their baseline below.
-    let mut new_modlist_entries: Vec<ModListEntry> = fetch_file_entries(&new_ids, &api_key, http_client).await?
-        .into_iter()
-        .filter(|entry| !entry.file_name.to_ascii_lowercase().ends_with(".zip"))
-        .map(|entry| entry.to_modlist_entry(ModState::Enabled))
-        .collect();
+    let mut new_modlist_entries: Vec<ModListEntry> =
+        fetch_file_entries(&new_ids, &api_key, http_client)
+            .await?
+            .into_iter()
+            .filter(|entry| !entry.file_name.to_ascii_lowercase().ends_with(".zip"))
+            .map(|entry| entry.to_modlist_entry(ModState::Enabled))
+            .collect();
     for entry in downloaded_modlist_entries {
         new_modlist_entries.retain(|existing| existing.file_name != entry.file_name);
         new_modlist_entries.push(entry);
@@ -727,6 +833,9 @@ pub async fn upgrade_modpack(
     meta.origin = source;
     write_json(instance_meta_file(&instance_path), &meta)?;
 
-    info!("Upgraded '{}' to file {} (MC {}, {})", instance_name, file_id, prepared.mc_version, prepared.mod_loader);
+    info!(
+        "Upgraded '{}' to file {} (MC {}, {})",
+        instance_name, file_id, prepared.mc_version, prepared.mod_loader
+    );
     Ok(())
 }
