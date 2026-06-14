@@ -2,29 +2,49 @@ use crate::ipc;
 use leptos::web_sys;
 use serde::Serialize;
 use yaminabe_launcher_shared::datatypes::{
-    DownloadSource, GameVersion, LoaderVersion, ModListEntry, ModProjectSearchResults,
-    ModProjectFile, SearchOption,
+    DownloadSource, GameVersion, LoaderVersion, ModListEntry, ModLoader, ModProjectSearchResults,
+    ProjectFileInfo, ProjectFileTarget, SearchOptions,
 };
 
 // ── IPC ───────────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 struct SearchProjectsArgs {
-    option: SearchOption,
+    option: SearchOptions,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GetFilesArgs {
     mod_id: u32,
+    target: ProjectFileTarget,
+    game_version: Option<String>,
+    mod_loader: Option<ModLoader>,
+    index: u32,
 }
 
-pub async fn call_search_projects(option: SearchOption) -> Result<ModProjectSearchResults, String> {
+pub async fn call_search_projects(option: SearchOptions) -> Result<ModProjectSearchResults, String> {
     ipc::call("search_projects", SearchProjectsArgs { option }).await
 }
 
-pub async fn call_list_project_files(mod_id: u32) -> Result<Vec<ModProjectFile>, String> {
-    ipc::call("list_project_files", GetFilesArgs { mod_id }).await
+pub async fn call_list_project_files(
+    mod_id: u32,
+    target: ProjectFileTarget,
+    game_version: Option<String>,
+    mod_loader: Option<ModLoader>,
+    index: u32,
+) -> Result<Vec<ProjectFileInfo>, String> {
+    ipc::call(
+        "list_project_files",
+        GetFilesArgs {
+            mod_id,
+            target,
+            game_version,
+            mod_loader,
+            index,
+        },
+    )
+    .await
 }
 
 #[derive(Serialize)]
@@ -39,7 +59,9 @@ impl InstallModpackArgs {
     pub fn from_form_data(source: DownloadSource, data: &web_sys::FormData) -> Option<Self> {
         let get = |k: &str| data.get(k).as_string().unwrap_or_default();
         let instance_name = get("instance_name");
-        if instance_name.trim().is_empty() { return None; }
+        if instance_name.trim().is_empty() {
+            return None;
+        }
         Some(Self {
             instance_name,
             category: get("category"),
@@ -48,9 +70,7 @@ impl InstallModpackArgs {
     }
 }
 
-pub async fn call_install_modpack(
-    args: InstallModpackArgs
-) -> Result<(), String> {
+pub async fn call_install_modpack(args: InstallModpackArgs) -> Result<(), String> {
     ipc::call("install_modpack", args).await
 }
 
@@ -65,21 +85,28 @@ pub async fn call_upgrade_modpack(
     instance_id: String,
     source: DownloadSource,
 ) -> Result<(), String> {
-    ipc::call("upgrade_modpack", UpgradeModpackArgs { instance_id, source }).await
+    ipc::call(
+        "upgrade_modpack",
+        UpgradeModpackArgs {
+            instance_id,
+            source,
+        },
+    )
+    .await
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DownloadModsArgs {
-    mod_files: Vec<DownloadSource>,
+    files: Vec<ProjectFileInfo>,
     instance_id: String,
 }
 
 pub async fn call_download_mods(
-    mod_files: Vec<DownloadSource>,
+    files: Vec<ProjectFileInfo>,
     instance_id: String,
 ) -> Result<(), String> {
-    ipc::call("download_mods", DownloadModsArgs { mod_files, instance_id }).await
+    ipc::call("download_mods", DownloadModsArgs { files, instance_id }).await
 }
 
 #[derive(Serialize)]
@@ -102,7 +129,14 @@ pub async fn call_link_mods(
     instance_id: String,
     file_paths: Vec<String>,
 ) -> Result<LinkOutcome, String> {
-    ipc::call("link_mods", LinkModsArgs { instance_id, file_paths }).await
+    ipc::call(
+        "link_mods",
+        LinkModsArgs {
+            instance_id,
+            file_paths,
+        },
+    )
+    .await
 }
 
 pub async fn call_pick_jar_files() -> Result<Vec<String>, String> {
@@ -129,7 +163,14 @@ struct ToggleModStateArgs {
 }
 
 pub async fn call_toggle_mod_state(instance_id: String, file_name: String) -> Result<(), String> {
-    ipc::call("toggle_state_instance_mod", ToggleModStateArgs { instance_id, file_name }).await
+    ipc::call(
+        "toggle_state_instance_mod",
+        ToggleModStateArgs {
+            instance_id,
+            file_name,
+        },
+    )
+    .await
 }
 
 pub async fn call_get_minecraft_versions() -> Result<Vec<GameVersion>, String> {
@@ -143,8 +184,15 @@ struct LoaderVersionsArgs<'a> {
     mc_version: &'a str,
 }
 
-pub async fn call_get_modloader_versions(kind: &str, mc_version: &str) -> Result<Vec<LoaderVersion>, String> {
-    ipc::call("get_modloader_versions", LoaderVersionsArgs { kind, mc_version }).await
+pub async fn call_get_modloader_versions(
+    kind: &str,
+    mc_version: &str,
+) -> Result<Vec<LoaderVersion>, String> {
+    ipc::call(
+        "get_modloader_versions",
+        LoaderVersionsArgs { kind, mc_version },
+    )
+    .await
 }
 
 pub fn fmt_downloads(n: u32) -> String {

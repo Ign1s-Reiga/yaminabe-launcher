@@ -1,11 +1,20 @@
+use crate::components::ui::*;
+use crate::curseforge::{call_list_project_files, call_upgrade_modpack};
 use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
-use leptos::{component, IntoView, view};
+use leptos::{IntoView, component, view, web_sys};
 use leptos_router::hooks::use_navigate;
-use yaminabe_launcher_shared::datatypes::{DownloadSource, ModProjectFile};
-use crate::components::ui::*;
-use crate::curseforge::{call_list_project_files, call_upgrade_modpack};
+use wasm_bindgen::JsCast;
+use yaminabe_launcher_shared::datatypes::{DownloadSource, ProjectFileInfo, ProjectFileTarget};
+
+const PAGE_SIZE: usize = 50;
+
+/// The CurseForge file id behind a resolved file. Upgrade is CurseForge-only,
+/// so a (never-expected) non-CurseForge source sorts as 0.
+fn file_id(file: &ProjectFileInfo) -> u32 {
+    file.source.curseforge_ids().map(|(_, id)| id).unwrap_or(0)
+}
 
 /// Version picker for upgrading a CurseForge-origin instance to a newer modpack
 /// file. Fetches the project's file list, lets the user pick a newer file (older
@@ -18,19 +27,26 @@ pub fn UpgradeModpackModal(
     current_file_id: u32,
     on_close: Callback<()>,
 ) -> impl IntoView {
-    let files: RwSignal<Vec<ModProjectFile>> = RwSignal::new(vec![]);
+    let files: RwSignal<Vec<ProjectFileInfo>> = RwSignal::new(vec![]);
     let loading: RwSignal<bool> = RwSignal::new(true);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
+    let done: RwSignal<bool> = RwSignal::new(false);
     let selected: RwSignal<u32> = RwSignal::new(0);
     let instance_id = StoredValue::new(instance_id);
     let navigate = StoredValue::new(use_navigate());
 
     leptos::task::spawn_local(async move {
-        match call_list_project_files(project_id).await {
+        match call_list_project_files(project_id, ProjectFileTarget::Modpack, None, None, 0).await {
             Ok(list) => {
                 // Default to the newest file strictly newer than the installed one.
-                let default = list.iter().map(|f| f.id).filter(|id| *id > current_file_id).max().unwrap_or(0);
+                let default = list
+                    .iter()
+                    .map(file_id)
+                    .filter(|id| *id > current_file_id)
+                    .max()
+                    .unwrap_or(0);
                 selected.set(default);
+                done.set(list.len() < PAGE_SIZE);
                 files.set(list);
                 loading.set(false);
             }
@@ -41,17 +57,48 @@ pub fn UpgradeModpackModal(
         }
     });
 
+    let load_more = move || {
+        if loading.get_untracked() || done.get_untracked() {
+            return;
+        }
+        let index = files.get_untracked().len() as u32;
+        loading.set(true);
+        error.set(None);
+        leptos::task::spawn_local(async move {
+            match call_list_project_files(project_id, ProjectFileTarget::Modpack, None, None, index)
+                .await
+            {
+                Ok(mut list) => {
+                    done.set(list.len() < PAGE_SIZE);
+                    files.update(|existing| existing.append(&mut list));
+                    loading.set(false);
+                }
+                Err(e) => {
+                    error.set(Some(e));
+                    loading.set(false);
+                }
+            }
+        });
+    };
+
     // Loaded, with nothing newer than the installed file to offer.
     let up_to_date = Signal::derive(move || {
-        !loading.get() && error.get().is_none() && files.get().iter().all(|f| f.id <= current_file_id)
+        !loading.get()
+            && error.get().is_none()
+            && files.get().iter().all(|f| file_id(f) <= current_file_id)
     });
     let can_upgrade = Signal::derive(move || selected.get() > current_file_id);
 
     let on_confirm = move |_ev: leptos::web_sys::MouseEvent| {
         let target_id = selected.get_untracked();
-        if target_id <= current_file_id { return; }
+        if target_id <= current_file_id {
+            return;
+        }
         let iid = instance_id.get_value();
-        let source = DownloadSource::CurseForge { project_id, file_id: target_id };
+        let source = DownloadSource::CurseForge {
+            project_id,
+            file_id: target_id,
+        };
         on_close.run(());
         // An upgrade is a whole-instance rewrite: send the user back to the
         // library and let the activity dock track progress, rather than leaving
@@ -96,19 +143,34 @@ pub fn UpgradeModpackModal(
                                     let cur = current_file_id;
                                     let sel = selected.get_untracked();
                                     view! {
-                                        <SelectInput on_change=Callback::new(move |v: String| selected.set(v.parse().unwrap_or(0)))>
+                                        <select
+                                            class=select_class()
+                                            size="8"
+                                            prop:value=sel.to_string()
+                                            on:change=move |ev| selected.set(event_target_value(&ev).parse().unwrap_or(0))
+                                            on:scroll=move |ev| {
+                                                let Some(select) = ev.target()
+                                                    .and_then(|target| target.dyn_into::<web_sys::HtmlSelectElement>().ok())
+                                                else { return; };
+                                                let remaining = select.scroll_height() - select.scroll_top() - select.client_height();
+                                                if remaining <= 8 {
+                                                    load_more();
+                                                }
+                                            }
+                                        >
                                             {files.get().into_iter().map(|f| {
-                                                let suffix = if f.id == cur { "  (current)" }
-                                                    else if f.id < cur { "  (older)" }
+                                                let fid = file_id(&f);
+                                                let suffix = if fid == cur { "  (current)" }
+                                                    else if fid < cur { "  (older)" }
                                                     else { "" };
                                                 let label = format!("{}  [{}]{}", f.display_name, f.release_type, suffix);
-                                                let is_selected = f.id == sel;
-                                                let disabled = f.id <= cur;
+                                                let is_selected = fid == sel;
+                                                let disabled = fid <= cur;
                                                 view! {
-                                                    <option value=f.id.to_string() selected=is_selected disabled=disabled>{label}</option>
+                                                    <option value=fid.to_string() selected=is_selected disabled=disabled>{label}</option>
                                                 }
                                             }).collect_view()}
-                                        </SelectInput>
+                                        </select>
                                     }.into_any()
                                 }
                             }}

@@ -1,15 +1,19 @@
-use bamboo_css_macro::css;
-use leptos::control_flow::Show;
-use leptos::prelude::*;
-use leptos::{component, IntoView, view, web_sys};
-use wasm_bindgen::JsCast;
-use yaminabe_launcher_shared::datatypes::{AppSettings, DownloadSource, ModProjectInfo, ProjectClass, SearchOption};
 use crate::components::card::result_card::ResultCard;
 use crate::components::modal::install_modpack_modal::{InstallModpackModal, InstallState};
 use crate::components::pagination::Pagination;
 use crate::components::ui::*;
-use crate::curseforge::{call_install_modpack, call_list_project_files, call_search_projects, InstallModpackArgs};
+use crate::curseforge::{
+    InstallModpackArgs, call_install_modpack, call_list_project_files, call_search_projects,
+};
 use crate::ipc;
+use bamboo_css_macro::css;
+use leptos::control_flow::Show;
+use leptos::prelude::*;
+use leptos::{IntoView, component, view, web_sys};
+use wasm_bindgen::JsCast;
+use yaminabe_launcher_shared::datatypes::{
+    AppSettings, ModProjectInfo, ProjectFileTarget, SearchOptions,
+};
 
 const PAGE_SIZE: usize = 50;
 
@@ -64,10 +68,10 @@ pub fn SearchPage() -> impl IntoView {
             s.error = None;
         });
         let index = (q.page * PAGE_SIZE) as u32;
-        let option = SearchOption {
+        let option = SearchOptions {
             query: q.query,
             index,
-            class: ProjectClass::Modpack,
+            target: ProjectFileTarget::Modpack,
             ..Default::default()
         };
         leptos::task::spawn_local(async move {
@@ -103,14 +107,20 @@ pub fn SearchPage() -> impl IntoView {
             versions: vec![],
             versions_loading: true,
             versions_error: None,
+            versions_done: false,
         }));
         leptos::task::spawn_local(async move {
-            match call_list_project_files(mod_id).await {
+            match call_list_project_files(mod_id, ProjectFileTarget::Modpack, None, None, 0).await {
                 Ok(files) => {
-                    let first_version = files.first().map(|f| f.id.to_string()).unwrap_or_default();
+                    let first_version = files
+                        .first()
+                        .and_then(|f| f.source.curseforge_ids())
+                        .map(|(_, id)| id.to_string())
+                        .unwrap_or_default();
                     install.update(|opt| {
                         if let Some(s) = opt {
                             s.version = first_version;
+                            s.versions_done = files.len() < PAGE_SIZE;
                             s.versions = files;
                             s.versions_loading = false;
                         }
@@ -130,25 +140,89 @@ pub fn SearchPage() -> impl IntoView {
 
     let close_install = move || install.set(None);
 
+    let load_more_versions = move || {
+        let Some(state) = install.get_untracked() else {
+            return;
+        };
+        if state.versions_loading || state.versions_done {
+            return;
+        }
+        let mod_id = state.pack.id;
+        let index = state.versions.len() as u32;
+        install.update(|opt| {
+            if let Some(s) = opt {
+                s.versions_loading = true;
+                s.versions_error = None;
+            }
+        });
+        leptos::task::spawn_local(async move {
+            match call_list_project_files(mod_id, ProjectFileTarget::Modpack, None, None, index)
+                .await
+            {
+                Ok(mut files) => {
+                    install.update(|opt| {
+                        if let Some(s) = opt {
+                            s.versions_done = files.len() < PAGE_SIZE;
+                            s.versions.append(&mut files);
+                            s.versions_loading = false;
+                        }
+                    });
+                }
+                Err(e) => {
+                    install.update(|opt| {
+                        if let Some(s) = opt {
+                            s.versions_error = Some(e);
+                            s.versions_loading = false;
+                        }
+                    });
+                }
+            }
+        });
+    };
+
     // ── install form submit ───────────────────────────────────────────────────
     let on_install = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default();
-        let Some(state) = install.get_untracked() else { return };
-        if state.versions_loading { return; }
-        let Some(form) = ev.target()
+        let Some(state) = install.get_untracked() else {
+            return;
+        };
+        if state.versions_loading {
+            return;
+        }
+        let Some(form) = ev
+            .target()
             .and_then(|t| t.dyn_into::<web_sys::HtmlFormElement>().ok())
-        else { return };
-        let Ok(data) = web_sys::FormData::new_with_form(&form) else { return };
+        else {
+            return;
+        };
+        let Ok(data) = web_sys::FormData::new_with_form(&form) else {
+            return;
+        };
 
         // The backend reads the install dir from settings now; still gate on a
         // configured location so we don't kick off an install with none set.
-        if default_location.get_untracked().trim().is_empty() { return; }
+        if default_location.get_untracked().trim().is_empty() {
+            return;
+        }
 
-        let version_id: u32 = data.get("version").as_string().unwrap_or_default().parse().unwrap_or(0);
-        let Some(ver) = state.versions.into_iter().find(|v| v.id == version_id) else { return };
-        let source = DownloadSource::CurseForge { project_id: ver.mod_id, file_id: ver.id };
+        let version_id: u32 = data
+            .get("version")
+            .as_string()
+            .unwrap_or_default()
+            .parse()
+            .unwrap_or(0);
+        let Some(ver) = state
+            .versions
+            .into_iter()
+            .find(|v| v.source.curseforge_ids().map(|(_, id)| id) == Some(version_id))
+        else {
+            return;
+        };
+        let source = ver.source;
 
-        let Some(args) = InstallModpackArgs::from_form_data(source, &data) else { return };
+        let Some(args) = InstallModpackArgs::from_form_data(source, &data) else {
+            return;
+        };
         install.set(None);
 
         leptos::task::spawn_local(async move {
@@ -165,7 +239,11 @@ pub fn SearchPage() -> impl IntoView {
     // the last page (so a 50-item set with PAGE_SIZE=20 has last_page=2).
     let last_page: Signal<usize> = Signal::derive(move || {
         let total = search_state.get().total as usize;
-        if total == 0 { 0 } else { (total - 1) / PAGE_SIZE }
+        if total == 0 {
+            0
+        } else {
+            (total - 1) / PAGE_SIZE
+        }
     });
     let current_page: Signal<usize> = Signal::derive(move || search_query.get().page);
     let is_loading: Signal<bool> = Signal::derive(move || search_state.get().is_loading);
@@ -282,6 +360,7 @@ pub fn SearchPage() -> impl IntoView {
                 install=install
                 install_name=install_name
                 on_submit=Callback::new(on_install)
+                on_load_more=Callback::new(move |_: ()| load_more_versions())
                 on_close=Callback::new(move |_: ()| close_install())
             />
         </Show>

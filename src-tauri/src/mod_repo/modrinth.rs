@@ -2,16 +2,18 @@ use std::path::PathBuf;
 
 use crate::AppState;
 use crate::http_utils::{download_resource, fetch_json};
-use crate::mod_repo::{ProjectFileDownload, ProjectFileTarget};
 use serde::Deserialize;
 use tauri::State;
-use yaminabe_launcher_shared::datatypes::{DownloadSource, ModProjectSearchResults, SearchOption};
+use yaminabe_launcher_shared::datatypes::{
+    DownloadSource, ModProjectSearchResults, ProjectFileInfo, ProjectFileTarget, SearchOptions,
+};
 use yaminabe_launcher_shared::error::Error;
 
 #[derive(Deserialize)]
 struct Version {
     id: String,
     project_id: String,
+    version_type: String,
     #[serde(default)]
     files: Vec<VersionFile>,
     #[serde(default)]
@@ -19,26 +21,31 @@ struct Version {
 }
 
 impl Version {
-    fn to_project_file_download(&self) -> Result<ProjectFileDownload, Error> {
+    fn to_project_file_info(&self, project_type: &str) -> Result<ProjectFileInfo, Error> {
         let version_file = selected_file(self).ok_or_else(|| {
-            Error::NotExists(format!(
-                "Modrinth version-file {} does not exists.",
-                self.id
-            ))
+            Error::NotExists(format!("Modrinth version-file {} does not exists.", self.id))
         })?;
-        Ok(ProjectFileDownload {
+        Ok(ProjectFileInfo {
             source: DownloadSource::Modrinth {
                 project_id: self.project_id.clone(),
                 version_id: self.id.clone(),
             },
+            target: target_from_project_type(project_type),
+            release_type: self.version_type.clone().into(),
             file_name: version_file.filename.clone(),
+            download_url: Some(version_file.url.clone()),
+            display_name: version_file.filename.clone(),
             sha1: version_file.hashes.sha1.clone(),
             size: version_file.size,
-            download_url: Some(version_file.url.clone()),
-            target: ProjectFileTarget::Mods,
-            fallback_to_modrinth: false,
-            require_sha1: false,
         })
+    }
+}
+
+fn target_from_project_type(project_type: &str) -> ProjectFileTarget {
+    match project_type {
+        "resourcepack" => ProjectFileTarget::ResourcePack,
+        "modpack" => ProjectFileTarget::Modpack,
+        _ => ProjectFileTarget::Mod,
     }
 }
 
@@ -101,22 +108,9 @@ pub async fn download_file_by_sha1(
     Ok(())
 }
 
-pub(crate) async fn resolve_project_file(
-    version_id: String,
-    client: &reqwest::Client,
-) -> Result<ProjectFileDownload, Error> {
-    let version = fetch_json(
-        client,
-        &format!("https://api.modrinth.com/v2/version/{version_id}"),
-    )
-    .send::<Version>()
-    .await?;
-    version.to_project_file_download()
-}
-
 #[allow(unused_variables)]
 pub async fn search_projects(
-    option: &SearchOption,
+    option: &SearchOptions,
     client: &reqwest::Client,
     api_key: &str,
 ) -> Result<ModProjectSearchResults, Error> {

@@ -1,19 +1,22 @@
-use std::path::Path;
-use serde::Serialize;
-use tauri::State;
-use yaminabe_launcher_shared::datatypes::{
-    DownloadSource, InstanceMeta, ModListEntry, ModProjectSearchResults, ModProjectFile, ModState, SearchOption,
+use crate::commands::instance::{
+    find_instance_dir, instance_meta_file, modlist_file, upsert_modlist_entries,
 };
-use yaminabe_launcher_shared::error::Error;
-use crate::{emit_progress, ActivityGuard, AppState, InstanceActivity};
-use crate::commands::instance::{find_instance_dir, instance_meta_file, modlist_file, upsert_modlist_entries};
 use crate::http_utils::sha1_hex;
 use crate::json::{read_json, read_json_or_default, write_json};
 use crate::mod_repo;
+use crate::{ActivityGuard, AppState, InstanceActivity, emit_progress};
+use serde::Serialize;
+use std::path::Path;
+use tauri::State;
+use yaminabe_launcher_shared::datatypes::{
+    DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModProjectSearchResults, ModState,
+    ProjectFileInfo, ProjectFileTarget, SearchOptions,
+};
+use yaminabe_launcher_shared::error::Error;
 
 #[tauri::command]
 pub async fn search_projects(
-    option: SearchOption,
+    option: SearchOptions,
     state: State<'_, AppState>,
 ) -> Result<ModProjectSearchResults, Error> {
     let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
@@ -23,10 +26,23 @@ pub async fn search_projects(
 #[tauri::command]
 pub async fn list_project_files(
     mod_id: u32,
+    target: ProjectFileTarget,
+    game_version: Option<String>,
+    mod_loader: Option<ModLoader>,
+    index: u32,
     state: State<'_, AppState>,
-) -> Result<Vec<ModProjectFile>, Error> {
+) -> Result<Vec<ProjectFileInfo>, Error> {
     let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
-    mod_repo::list_project_files(mod_id, &state.http_client, &api_key).await
+    mod_repo::list_project_files(
+        mod_id,
+        target,
+        game_version,
+        mod_loader,
+        index,
+        &state.http_client,
+        &api_key,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -43,9 +59,8 @@ pub async fn install_modpack(
         .as_millis()
         .to_string();
 
-    let result = mod_repo::install_modpack(
-        &app_handle, &id, &instance_name, category, source, &state,
-    ).await;
+    let result =
+        mod_repo::install_modpack(&app_handle, &id, &instance_name, category, source, &state).await;
 
     match result {
         Ok(()) => {
@@ -53,7 +68,14 @@ pub async fn install_modpack(
             Ok(())
         }
         Err(e) => {
-            emit_progress(&app_handle, &id, &instance_name, "Failed", false, Some(e.to_string()));
+            emit_progress(
+                &app_handle,
+                &id,
+                &instance_name,
+                "Failed",
+                false,
+                Some(e.to_string()),
+            );
             Err(e)
         }
     }
@@ -66,8 +88,14 @@ pub async fn upgrade_modpack(
     source: DownloadSource,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
-    let Some(_activity) = ActivityGuard::claim(&state.instance_activity, &instance_id, InstanceActivity::Upgrading) else {
-        return Err(Error::Busy(format!("instance '{instance_id}' is already busy")));
+    let Some(_activity) = ActivityGuard::claim(
+        &state.instance_activity,
+        &instance_id,
+        InstanceActivity::Upgrading,
+    ) else {
+        return Err(Error::Busy(format!(
+            "instance '{instance_id}' is already busy"
+        )));
     };
 
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
@@ -75,22 +103,51 @@ pub async fn upgrade_modpack(
 
     let meta: InstanceMeta = read_json(instance_meta_file(&instance_dir))?;
     if meta.origin.curseforge_ids().is_none() {
-        return Err(Error::Invalid("instance is not a CurseForge modpack instance".to_string()));
+        return Err(Error::Invalid(
+            "instance is not a CurseForge modpack instance".to_string(),
+        ));
     }
     let instance_name = meta.name.clone();
 
-    emit_progress(&app_handle, &instance_id, &instance_name, "Preparing upgrade", false, None);
+    emit_progress(
+        &app_handle,
+        &instance_id,
+        &instance_name,
+        "Preparing upgrade",
+        false,
+        None,
+    );
     let result = mod_repo::upgrade_modpack(
-        &app_handle, &instance_id, &instance_name, instance_dir, source, &state,
-    ).await;
+        &app_handle,
+        &instance_id,
+        &instance_name,
+        instance_dir,
+        source,
+        &state,
+    )
+    .await;
 
     match result {
         Ok(()) => {
-            emit_progress(&app_handle, &instance_id, &instance_name, "Done", true, None);
+            emit_progress(
+                &app_handle,
+                &instance_id,
+                &instance_name,
+                "Done",
+                true,
+                None,
+            );
             Ok(())
         }
         Err(e) => {
-            emit_progress(&app_handle, &instance_id, &instance_name, "Failed", false, Some(e.to_string()));
+            emit_progress(
+                &app_handle,
+                &instance_id,
+                &instance_name,
+                "Failed",
+                false,
+                Some(e.to_string()),
+            );
             Err(e)
         }
     }
@@ -98,24 +155,14 @@ pub async fn upgrade_modpack(
 
 #[tauri::command]
 pub async fn download_mods(
-    mod_files: Vec<DownloadSource>,
+    files: Vec<ProjectFileInfo>,
     instance_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
-    let (install_dir, api_key) = {
-        let settings = state.settings.read().unwrap();
-        (
-            settings.instance_install_dir.clone(),
-            settings.curseforge_api_key.clone(),
-        )
-    };
+    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
     let instance_path = find_instance_dir(Path::new(&install_dir), &instance_id)?;
-    let entries = mod_repo::download_mods(
-        mod_files,
-        &instance_path,
-        &api_key,
-        &state.http_client,
-    ).await?;
+    let entries =
+        mod_repo::download_project_files(files, &instance_path, &state.http_client).await?;
     upsert_modlist_entries(&instance_path, entries)
 }
 
@@ -138,8 +185,14 @@ pub fn link_mods(
     file_paths: Vec<String>,
     state: State<'_, AppState>,
 ) -> Result<LinkOutcome, Error> {
-    let Some(_activity) = ActivityGuard::claim(&state.instance_activity, &instance_id, InstanceActivity::Modifying) else {
-        return Err(Error::Busy(format!("instance '{instance_id}' is already busy")));
+    let Some(_activity) = ActivityGuard::claim(
+        &state.instance_activity,
+        &instance_id,
+        InstanceActivity::Modifying,
+    ) else {
+        return Err(Error::Busy(format!(
+            "instance '{instance_id}' is already busy"
+        )));
     };
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
     let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
@@ -156,7 +209,8 @@ pub fn link_mods(
             continue;
         };
         let sha1 = sha1_hex(&bytes);
-        let matched = modlist.iter_mut()
+        let matched = modlist
+            .iter_mut()
             .find(|e| e.state == ModState::DownloadFailed && !e.sha1.is_empty() && e.sha1 == sha1);
         match matched {
             Some(entry) => {

@@ -1,8 +1,8 @@
+use crate::error::Error;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fmt::Display;
 use std::str::FromStr;
-use crate::error::Error;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,8 +78,14 @@ impl ModLoader {
 pub enum DownloadSource {
     #[default]
     Manual,
-    CurseForge { project_id: u32, file_id: u32 },
-    Modrinth { project_id: String, version_id: String },
+    CurseForge {
+        project_id: u32,
+        file_id: u32,
+    },
+    Modrinth {
+        project_id: String,
+        version_id: String,
+    },
 }
 
 impl DownloadSource {
@@ -93,7 +99,10 @@ impl DownloadSource {
     /// modpack upgrade flow. `None` for any other source.
     pub fn curseforge_ids(&self) -> Option<(u32, u32)> {
         match self {
-            DownloadSource::CurseForge { project_id, file_id } => Some((*project_id, *file_id)),
+            DownloadSource::CurseForge {
+                project_id,
+                file_id,
+            } => Some((*project_id, *file_id)),
             _ => None,
         }
     }
@@ -156,17 +165,45 @@ impl Default for InstanceMeta {
     }
 }
 
-/// Which kind of CurseForge project a search targets. Maps to the API's
-/// `classId`; modpack manifests reference projects across these classes (a pack
-/// bundles both mods and resource packs), so a unified search needs to say
-/// which class it wants.
+/// Which kind of project file is being searched, listed, or downloaded.
+/// Directory values are instance-relative and are joined onto `instance_path`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum ProjectClass {
+pub enum ProjectFileTarget {
     #[default]
     Mod,
-    Modpack,
     ResourcePack,
+    Modpack,
+}
+
+impl ProjectFileTarget {
+    pub fn directory(&self) -> &'static str {
+        match self {
+            ProjectFileTarget::Mod => "mods",
+            ProjectFileTarget::ResourcePack => "resourcepacks",
+            ProjectFileTarget::Modpack => ".launcher/cache",
+        }
+    }
+
+    pub fn tracks_modlist(&self) -> bool {
+        matches!(self, ProjectFileTarget::Mod)
+    }
+
+    pub fn curseforge_type(&self) -> &'static str {
+        match self {
+            ProjectFileTarget::Mod => "6",
+            ProjectFileTarget::ResourcePack => "12",
+            ProjectFileTarget::Modpack => "4471",
+        }
+    }
+
+    pub fn modrinth_type(&self) -> &'static str {
+        match self {
+            ProjectFileTarget::Mod => "mod",
+            ProjectFileTarget::ResourcePack => "resourcepack",
+            ProjectFileTarget::Modpack => "modpack",
+        }
+    }
 }
 
 /// Parameters for a project search. `Default` so a caller sets only the fields
@@ -174,10 +211,10 @@ pub enum ProjectClass {
 /// advanced-search filters can be added without breaking every call site.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SearchOption {
+pub struct SearchOptions {
     pub query: String,
     pub index: u32,
-    pub class: ProjectClass,
+    pub target: ProjectFileTarget,
     /// Restrict to a Minecraft version (mod search); `None` searches all.
     #[serde(default)]
     pub game_version: Option<String>,
@@ -206,14 +243,76 @@ pub struct ModProjectSearchResults {
     pub total: u32,
 }
 
+/// A resolved project file: enough to display in a version picker and to
+/// download. `source` is the cross-platform identity (a CurseForge file or a
+/// Modrinth version); `download_url` is `None` when the platform forbids
+/// third-party downloads, in which case the backend may mirror by `sha1`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModProjectFile {
-    pub id: u32,
-    pub mod_id: u32,
-    pub release_type: String,
+pub struct ProjectFileInfo {
+    pub source: DownloadSource,
+    pub target: ProjectFileTarget,
+    pub release_type: ProjectReleaseType,
     pub file_name: String,
-    pub download_url: String,
+    pub download_url: Option<String>,
     pub display_name: String,
+    #[serde(default)]
+    pub sha1: String,
+    #[serde(default)]
+    pub size: u64,
+}
+
+impl ProjectFileInfo {
+    pub fn to_modlist_entry(&self, state: ModState) -> ModListEntry {
+        ModListEntry {
+            file_name: self.file_name.clone(),
+            sha1: self.sha1.clone(),
+            source: self.source.clone(),
+            size: self.size,
+            state,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectReleaseType {
+    Release,
+    Beta,
+    Alpha,
+    Unknown,
+}
+
+impl Display for ProjectReleaseType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProjectReleaseType::Release => write!(f, "Release"),
+            ProjectReleaseType::Beta => write!(f, "Beta"),
+            ProjectReleaseType::Alpha => write!(f, "Alpha"),
+            ProjectReleaseType::Unknown => write!(f, "Unknown"),
+        }
+    }
+}
+
+impl Into<ProjectReleaseType> for u32 {
+    fn into(self) -> ProjectReleaseType {
+        match self {
+            1 => ProjectReleaseType::Release,
+            2 => ProjectReleaseType::Beta,
+            3 => ProjectReleaseType::Alpha,
+            _ => ProjectReleaseType::Unknown,
+        }
+    }
+}
+
+impl Into<ProjectReleaseType> for String {
+    fn into(self) -> ProjectReleaseType {
+        match self.as_str() {
+            "release" => ProjectReleaseType::Release,
+            "beta" => ProjectReleaseType::Beta,
+            "alpha" => ProjectReleaseType::Alpha,
+            _ => ProjectReleaseType::Unknown,
+        }
+    }
 }
 
 /// Lifecycle state of a mod tracked in the modlist. `DownloadFailed` keeps the
@@ -377,32 +476,41 @@ mod tests {
         let json = serde_json::to_string(&DownloadSource::CurseForge {
             project_id: 1198207,
             file_id: 8186745,
-        }).unwrap();
+        })
+        .unwrap();
 
-        assert_eq!(json, r#"{"type":"curseForge","project_id":1198207,"file_id":8186745}"#);
+        assert_eq!(
+            json,
+            r#"{"type":"curseForge","project_id":1198207,"file_id":8186745}"#
+        );
     }
 
     #[test]
     fn deserializes_typed_object_sources() {
-        let manual: DownloadSource = serde_json::from_str(
-            r#"{"type":"manual"}"#,
-        ).unwrap();
-        let curseforge: DownloadSource = serde_json::from_str(
-            r#"{"type":"curseForge","project_id":1198207,"file_id":8186745}"#,
-        ).unwrap();
+        let manual: DownloadSource = serde_json::from_str(r#"{"type":"manual"}"#).unwrap();
+        let curseforge: DownloadSource =
+            serde_json::from_str(r#"{"type":"curseForge","project_id":1198207,"file_id":8186745}"#)
+                .unwrap();
         let modrinth: DownloadSource = serde_json::from_str(
             r#"{"type":"modrinth","project_id":"AANobbMI","version_id":"IIJjncsf"}"#,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(manual, DownloadSource::Manual);
-        assert_eq!(curseforge, DownloadSource::CurseForge {
-            project_id: 1198207,
-            file_id: 8186745,
-        });
-        assert_eq!(modrinth, DownloadSource::Modrinth {
-            project_id: "AANobbMI".to_string(),
-            version_id: "IIJjncsf".to_string(),
-        });
+        assert_eq!(
+            curseforge,
+            DownloadSource::CurseForge {
+                project_id: 1198207,
+                file_id: 8186745,
+            }
+        );
+        assert_eq!(
+            modrinth,
+            DownloadSource::Modrinth {
+                project_id: "AANobbMI".to_string(),
+                version_id: "IIJjncsf".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -410,10 +518,14 @@ mod tests {
         let json = serde_json::to_string(&ModListEntry {
             file_name: "example.jar".to_string(),
             sha1: "abc123".to_string(),
-            source: DownloadSource::CurseForge { project_id: 10, file_id: 20 },
+            source: DownloadSource::CurseForge {
+                project_id: 10,
+                file_id: 20,
+            },
             size: 1024,
             state: ModState::Enabled,
-        }).unwrap();
+        })
+        .unwrap();
 
         assert_eq!(
             json,
@@ -425,7 +537,8 @@ mod tests {
     fn modlist_entry_defaults_state_to_enabled() {
         let entry: ModListEntry = serde_json::from_str(
             r#"{"fileName":"old.jar","sha1":"x","source":{"type":"manual"},"size":1}"#,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(entry.state, ModState::Enabled);
     }

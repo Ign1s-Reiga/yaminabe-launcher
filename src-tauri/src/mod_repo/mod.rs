@@ -8,7 +8,8 @@ use reqwest::Client;
 use tauri::State;
 use yaminabe_launcher_shared::datatypes::ModState;
 use yaminabe_launcher_shared::datatypes::{
-    DownloadSource, ModListEntry, ModProjectFile, ModProjectSearchResults, SearchOption,
+    DownloadSource, ModListEntry, ModLoader, ModProjectSearchResults, ProjectFileInfo,
+    ProjectFileTarget, SearchOptions,
 };
 use yaminabe_launcher_shared::error::Error;
 
@@ -16,7 +17,7 @@ mod curseforge;
 mod modrinth;
 
 pub async fn search_projects(
-    option: &SearchOption,
+    option: &SearchOptions,
     client: &Client,
     api_key: &str,
 ) -> Result<ModProjectSearchResults, Error> {
@@ -25,10 +26,23 @@ pub async fn search_projects(
 
 pub async fn list_project_files(
     mod_id: u32,
+    target: ProjectFileTarget,
+    game_version: Option<String>,
+    mod_loader: Option<ModLoader>,
+    index: u32,
     client: &Client,
     api_key: &str,
-) -> Result<Vec<ModProjectFile>, Error> {
-    curseforge::list_project_files(mod_id, client, api_key).await
+) -> Result<Vec<ProjectFileInfo>, Error> {
+    curseforge::list_project_files(
+        mod_id,
+        target,
+        game_version.as_deref(),
+        mod_loader.as_ref(),
+        index,
+        client,
+        api_key,
+    )
+    .await
 }
 
 pub async fn install_modpack(
@@ -76,85 +90,24 @@ pub async fn upgrade_modpack(
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum ProjectFileTarget {
-    Mods,
-    ResourcePacks,
-}
-
-impl ProjectFileTarget {
-    fn directory(self) -> &'static str {
-        match self {
-            ProjectFileTarget::Mods => "mods",
-            ProjectFileTarget::ResourcePacks => "resourcepacks",
-        }
-    }
-
-    fn tracks_modlist(self) -> bool {
-        matches!(self, ProjectFileTarget::Mods)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ProjectFileDownload {
-    pub source: DownloadSource,
-    pub file_name: String,
-    pub sha1: String,
-    pub size: u64,
-    pub download_url: Option<String>,
-    pub target: ProjectFileTarget,
-    pub fallback_to_modrinth: bool,
-    pub require_sha1: bool,
-}
-
-impl ProjectFileDownload {
-    fn to_modlist_entry(&self, state: ModState) -> ModListEntry {
-        ModListEntry {
-            file_name: self.file_name.clone(),
-            sha1: self.sha1.clone(),
-            source: self.source.clone(),
-            size: self.size,
-            state,
-        }
-    }
-}
-
-pub async fn resolve_download_sources(
-    sources: Vec<DownloadSource>,
-    api_key: &str,
-    client: &Client,
-) -> Result<Vec<ProjectFileDownload>, Error> {
-    let mut files = Vec::new();
-    for source in sources {
-        let resolved = match source {
-            DownloadSource::CurseForge { project_id, file_id } => {
-                curseforge::resolve_project_file(project_id, file_id, api_key, client).await
-            }
-            DownloadSource::Modrinth { version_id, .. } => {
-                modrinth::resolve_project_file(version_id, client).await
-            }
-            DownloadSource::Manual => Err(Error::Invalid(
-                "cannot download a Manual source; this mod must be installed by hand".to_string(),
-            )),
-        }?;
-        files.push(resolved);
-    }
-    Ok(files)
-}
-
+/// Download already-resolved project files into the instance, three at a time.
+/// Per-file failures never abort the batch: a file that can't be fetched yields
+/// a `DownloadFailed` modlist entry (mods only) so the user can link a jar by
+/// hand. Resource packs are downloaded but not returned (the modlist is mods
+/// only). Only a task panic propagates as `Err`.
 pub async fn download_project_files(
-    project_files: Vec<ProjectFileDownload>,
+    files: Vec<ProjectFileInfo>,
     instance_path: &Path,
     client: &Client,
 ) -> Result<Vec<ModListEntry>, Error> {
-    if project_files.is_empty() {
+    if files.is_empty() {
         return Ok(vec![]);
     }
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(3));
     let mut handles: Vec<tokio::task::JoinHandle<Result<Option<ModListEntry>, Error>>> = Vec::new();
 
-    for project_file in project_files {
+    for file in files {
         let instance_path = instance_path.to_path_buf();
         let client = client.clone();
         let semaphore = Arc::clone(&semaphore);
@@ -164,7 +117,7 @@ pub async fn download_project_files(
                 .acquire_owned()
                 .await
                 .map_err(|e| Error::ChildProcess(format!("semaphore acquire: {e}")))?;
-            let result = download_project_file(project_file, &instance_path, &client).await;
+            let result = download_project_file(file, &instance_path, &client).await;
             drop(permit);
             result
         }));
@@ -182,48 +135,37 @@ pub async fn download_project_files(
     Ok(modlist)
 }
 
+/// Download one resolved file to its type-appropriate subdir. A missing SHA-1,
+/// a CurseForge file with downloads disabled (mirrored from Modrinth by SHA-1
+/// when possible), or a failed fetch all yield a `DownloadFailed` entry rather
+/// than an error. Returns `None` for resource packs (downloaded, untracked).
 async fn download_project_file(
-    project_file: ProjectFileDownload,
+    file: ProjectFileInfo,
     instance_path: &Path,
     client: &Client,
 ) -> Result<Option<ModListEntry>, Error> {
-    if project_file.require_sha1 && project_file.sha1.is_empty() {
-        return Err(Error::Invalid(format!(
-            "project file {} has no SHA-1 hash",
-            project_file.file_name
-        )));
-    }
-
-    let dir = instance_path.join(project_file.target.directory());
+    let dir = instance_path.join(file.target.directory());
     std::fs::create_dir_all(&dir)?;
-    let dest = dir.join(&project_file.file_name);
+    let dest = dir.join(&file.file_name);
 
-    let download_result = match &project_file.download_url {
-        Some(url) => download_resource(client, url, &project_file.sha1, dest).await,
-        None if project_file.fallback_to_modrinth => {
-            warn!(
-                "CurseForge restricts downloads for file {}, falling back to Modrinth lookup by SHA-1",
-                project_file.file_name
-            );
-            if project_file.sha1.is_empty() {
-                Err(Error::Invalid(format!(
-                    "project file {} has no SHA-1 hash",
-                    project_file.file_name
-                )))
-            } else {
-                modrinth::download_file_by_sha1(&project_file.sha1, dest, client).await
-            }
-        }
-        None => {
-            warn!(
-                "project file {} has no download URL; marking for manual install",
-                project_file.file_name
-            );
-            Err(Error::Invalid(format!(
-                "project file {} has no download URL",
-                project_file.file_name
-            )))
-        }
+    let download_result = if file.sha1.is_empty() {
+        Err(Error::Invalid(format!(
+            "project file {} has no SHA-1 hash",
+            file.file_name
+        )))
+    } else if let Some(url) = &file.download_url {
+        download_resource(client, url, &file.sha1, dest).await
+    } else if matches!(file.source, DownloadSource::CurseForge { .. }) {
+        warn!(
+            "CurseForge restricts downloads for file {}, falling back to Modrinth lookup by SHA-1",
+            file.file_name
+        );
+        modrinth::download_file_by_sha1(&file.sha1, dest, client).await
+    } else {
+        Err(Error::Invalid(format!(
+            "project file {} has no download URL",
+            file.file_name
+        )))
     };
 
     let state = match download_result {
@@ -231,24 +173,14 @@ async fn download_project_file(
         Err(e) => {
             warn!(
                 "download failed for {}: {e}; marking for manual install",
-                project_file.file_name
+                file.file_name
             );
             ModState::DownloadFailed
         }
     };
 
-    Ok(project_file
+    Ok(file
         .target
         .tracks_modlist()
-        .then(|| project_file.to_modlist_entry(state)))
-}
-
-pub async fn download_mods(
-    mod_files: Vec<DownloadSource>,
-    instance_path: &Path,
-    api_key: &str,
-    client: &Client,
-) -> Result<Vec<ModListEntry>, Error> {
-    let project_files = resolve_download_sources(mod_files, api_key, client).await?;
-    download_project_files(project_files, instance_path, client).await
+        .then(|| file.to_modlist_entry(state)))
 }

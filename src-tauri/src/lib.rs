@@ -1,52 +1,63 @@
 mod auth;
 mod commands;
+mod http_utils;
 mod install_task;
 mod json;
-mod mod_repo;
-mod http_utils;
 mod maven;
+mod mod_repo;
 
+use crate::auth::{AccountStore, load_account_store};
+use crate::commands::auth::{
+    cancel_microsoft_login, get_accounts, get_selected_account, remove_account,
+    set_selected_account, start_microsoft_login,
+};
+use crate::commands::instance::{
+    create_instance, delete_instance, get_instances, list_instance_mods, save_instance_settings,
+    toggle_state_instance_mod,
+};
+use crate::commands::java::{detect_java_installs, get_java_installs};
+use crate::commands::launch::{kill_instance, launch_instance};
+use crate::commands::minecraft::{
+    VersionManifest, fetch_minecraft_versions, get_minecraft_versions, get_modloader_versions,
+};
+use crate::commands::modfile::{
+    download_mods, install_modpack, link_mods, list_project_files, search_projects, upgrade_modpack,
+};
+use crate::commands::settings::{
+    get_instance_subfolders, get_settings, open_instance_subfolder, pick_folder, pick_jar_files,
+    save_settings,
+};
+use log::warn;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
-use log::warn;
 use tauri::{Emitter, Manager};
 use yaminabe_launcher_shared::datatypes::{AppSettings, JavaInstall};
 use yaminabe_launcher_shared::error::InitializationError;
 use yaminabe_launcher_shared::ipc::InstallProgress;
-use crate::auth::{load_account_store, AccountStore};
-use crate::commands::auth::{
-    cancel_microsoft_login, get_accounts, get_selected_account,
-    remove_account, set_selected_account, start_microsoft_login,
-};
-use crate::commands::modfile::{
-    download_mods, install_modpack, link_mods,
-    list_project_files, search_projects, upgrade_modpack,
-};
-use crate::commands::minecraft::{
-    fetch_minecraft_versions, get_minecraft_versions, get_modloader_versions, VersionManifest,
-};
-use crate::commands::instance::{
-    create_instance, delete_instance, get_instances, list_instance_mods,
-    save_instance_settings, toggle_state_instance_mod,
-};
-use crate::commands::launch::{kill_instance, launch_instance};
-use crate::commands::java::{detect_java_installs, get_java_installs};
-use crate::commands::settings::{get_instance_subfolders, get_settings, open_instance_subfolder, pick_folder, pick_jar_files, save_settings};
 
-pub fn emit_progress(app: &tauri::AppHandle, id: &str, name: &str, step: &str, done: bool, error: Option<String>) {
-    if let Err(e) = app.emit("instance-install-progress", InstallProgress {
-        id: id.to_string(),
-        name: name.to_string(),
-        step: step.to_string(),
-        done,
-        error,
-    }) {
+pub fn emit_progress(
+    app: &tauri::AppHandle,
+    id: &str,
+    name: &str,
+    step: &str,
+    done: bool,
+    error: Option<String>,
+) {
+    if let Err(e) = app.emit(
+        "instance-install-progress",
+        InstallProgress {
+            id: id.to_string(),
+            name: name.to_string(),
+            step: step.to_string(),
+            done,
+            error,
+        },
+    ) {
         warn!("failed to emit instance-install-progress for {id}: {e}");
     }
 }
-
 
 /// What an instance id is currently busy with. Its presence in
 /// [`AppState::instance_activity`] makes launching, a second launch,
@@ -86,7 +97,10 @@ impl ActivityGuard {
             return None;
         }
         guarded.insert(id.to_string(), activity);
-        Some(Self { map: map.clone(), id: id.to_string() })
+        Some(Self {
+            map: map.clone(),
+            id: id.to_string(),
+        })
     }
 }
 
@@ -124,23 +138,45 @@ static LIBRARIES_DIR: OnceLock<PathBuf> = OnceLock::new();
 static RUNTIMES_DIR: OnceLock<PathBuf> = OnceLock::new();
 static CACHES_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-fn settings_path() -> &'static PathBuf { SETTINGS_PATH.get().unwrap() }
-pub fn accounts_path() -> &'static PathBuf { ACCOUNTS_PATH.get().unwrap() }
-pub fn temp_dir() -> &'static PathBuf { TEMP_DIR.get().unwrap() }
-pub fn bin_dir() -> &'static PathBuf { BIN_DIR.get().unwrap() }
-pub fn versions_dir() -> &'static PathBuf { VERSIONS_DIR.get().unwrap() }
-pub fn assets_dir() -> &'static PathBuf { ASSETS_DIR.get().unwrap() }
-pub fn libraries_dir() -> &'static PathBuf { LIBRARIES_DIR.get().unwrap() }
-pub fn runtimes_dir() -> &'static PathBuf { RUNTIMES_DIR.get().unwrap() }
+fn settings_path() -> &'static PathBuf {
+    SETTINGS_PATH.get().unwrap()
+}
+pub fn accounts_path() -> &'static PathBuf {
+    ACCOUNTS_PATH.get().unwrap()
+}
+pub fn temp_dir() -> &'static PathBuf {
+    TEMP_DIR.get().unwrap()
+}
+pub fn bin_dir() -> &'static PathBuf {
+    BIN_DIR.get().unwrap()
+}
+pub fn versions_dir() -> &'static PathBuf {
+    VERSIONS_DIR.get().unwrap()
+}
+pub fn assets_dir() -> &'static PathBuf {
+    ASSETS_DIR.get().unwrap()
+}
+pub fn libraries_dir() -> &'static PathBuf {
+    LIBRARIES_DIR.get().unwrap()
+}
+pub fn runtimes_dir() -> &'static PathBuf {
+    RUNTIMES_DIR.get().unwrap()
+}
 /// Scratch directory under `.yaminabe/caches` for transient downloads (e.g. a
 /// modpack zip) that are consumed and then deleted.
-pub fn caches_dir() -> &'static PathBuf { CACHES_DIR.get().unwrap() }
+pub fn caches_dir() -> &'static PathBuf {
+    CACHES_DIR.get().unwrap()
+}
 
 fn init_dirs(app: &tauri::App) -> Result<(), InitializationError> {
     fn path_err(e: tauri::Error) -> InitializationError {
         InitializationError::PathResolution(e.to_string())
     }
-    let app_dir = app.path().local_data_dir().map_err(path_err)?.join(".yaminabe");
+    let app_dir = app
+        .path()
+        .local_data_dir()
+        .map_err(path_err)?
+        .join(".yaminabe");
     let bin_dir = app_dir.join("bin");
     TEMP_DIR.set(app.path().temp_dir().map_err(path_err)?)?;
     VERSIONS_DIR.set(bin_dir.join("versions"))?;
@@ -151,7 +187,13 @@ fn init_dirs(app: &tauri::App) -> Result<(), InitializationError> {
     CACHES_DIR.set(app_dir.join("caches"))?;
     SETTINGS_PATH.set(app_dir.join("settings.json"))?;
     ACCOUNTS_PATH.set(app_dir.join("accounts.json"))?;
-    for p in [versions_dir(), libraries_dir(), assets_dir(), runtimes_dir(), caches_dir()] {
+    for p in [
+        versions_dir(),
+        libraries_dir(),
+        assets_dir(),
+        runtimes_dir(),
+        caches_dir(),
+    ] {
         std::fs::create_dir_all(p)?;
     }
     Ok(())

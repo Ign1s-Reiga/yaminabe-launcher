@@ -1,12 +1,19 @@
-use std::collections::HashSet;
+use crate::components::card::link_notice_card::LinkNoticeCard;
+use crate::components::ui::*;
+use crate::curseforge::{
+    call_download_mods, call_list_mods, call_list_project_files, call_search_projects,
+    call_toggle_mod_state,
+};
 use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
-use leptos::{component, web_sys, IntoView, view};
-use yaminabe_launcher_shared::datatypes::{DownloadSource, ModListEntry, ModLoader, ModProjectInfo, ModState, ProjectClass, SearchOption};
-use crate::components::card::link_notice_card::LinkNoticeCard;
-use crate::components::ui::*;
-use crate::curseforge::{call_download_mods, call_list_mods, call_search_projects, call_toggle_mod_state};
+use leptos::{IntoView, component, view, web_sys};
+use std::collections::HashSet;
+use wasm_bindgen::JsCast;
+use yaminabe_launcher_shared::datatypes::{
+    ModListEntry, ModLoader, ModProjectInfo, ModState, ProjectFileInfo, ProjectFileTarget,
+    SearchOptions,
+};
 
 /// Human-readable file size.
 fn format_size(bytes: u64) -> String {
@@ -49,7 +56,11 @@ pub fn ModManager(
     // instances can still have failures to repair.
     let failed_mods: Signal<Vec<ModListEntry>> = Signal::derive(move || {
         mods.get()
-            .map(|list| list.into_iter().filter(|m| m.state == ModState::DownloadFailed).collect())
+            .map(|list| {
+                list.into_iter()
+                    .filter(|m| m.state == ModState::DownloadFailed)
+                    .collect()
+            })
             .unwrap_or_default()
     });
 
@@ -204,19 +215,79 @@ fn AddModModal(
     let loading: RwSignal<bool> = RwSignal::new(false);
     let searched: RwSignal<bool> = RwSignal::new(false);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
-    // Per-project install lifecycle, keyed by CurseForge project id.
+    let selected_project: RwSignal<Option<ModProjectInfo>> = RwSignal::new(None);
+    let versions: RwSignal<Vec<ProjectFileInfo>> = RwSignal::new(vec![]);
+    let versions_loading: RwSignal<bool> = RwSignal::new(false);
+    let versions_error: RwSignal<Option<String>> = RwSignal::new(None);
+    let versions_done: RwSignal<bool> = RwSignal::new(false);
+    let selected_file_id: RwSignal<String> = RwSignal::new(String::new());
     let installing: RwSignal<HashSet<u32>> = RwSignal::new(HashSet::new());
     let installed: RwSignal<HashSet<u32>> = RwSignal::new(HashSet::new());
 
+    let load_versions = move |project_id: u32, append: bool| {
+        if versions_loading.get_untracked() || (append && versions_done.get_untracked()) {
+            return;
+        }
+        let index = if append {
+            versions.get_untracked().len() as u32
+        } else {
+            0
+        };
+        versions_loading.set(true);
+        versions_error.set(None);
+        if !append {
+            versions.set(vec![]);
+            selected_file_id.set(String::new());
+            versions_done.set(false);
+        }
+        let game_version = Some(game_version.get_value());
+        let mod_loader = Some(mod_loader.get_value());
+        leptos::task::spawn_local(async move {
+            match call_list_project_files(
+                project_id,
+                ProjectFileTarget::Mod,
+                game_version,
+                mod_loader,
+                index,
+            )
+            .await
+            {
+                Ok(mut files) => {
+                    if files.len() < 50 {
+                        versions_done.set(true);
+                    }
+                    if append {
+                        versions.update(|existing| existing.append(&mut files));
+                    } else {
+                        let first_id = files
+                            .first()
+                            .and_then(|file| file.source.curseforge_ids())
+                            .map(|(_, file_id)| file_id.to_string())
+                            .unwrap_or_default();
+                        selected_file_id.set(first_id);
+                        versions.set(files);
+                    }
+                    versions_loading.set(false);
+                }
+                Err(e) => {
+                    versions_error.set(Some(e));
+                    versions_loading.set(false);
+                }
+            }
+        });
+    };
+
     let do_search = move || {
         let q = query.get_untracked();
-        if q.trim().is_empty() { return; }
+        if q.trim().is_empty() {
+            return;
+        }
         loading.set(true);
         error.set(None);
-        let option = SearchOption {
+        let option = SearchOptions {
             query: q,
             index: 0,
-            class: ProjectClass::Mod,
+            target: ProjectFileTarget::Mod,
             game_version: Some(game_version.get_value()),
             mod_loader: Some(mod_loader.get_value()),
         };
@@ -235,26 +306,41 @@ fn AddModModal(
         });
     };
 
-    let on_add = move |project_id: u32, file_id: u32| {
-        if installing.get_untracked().contains(&project_id) || installed.get_untracked().contains(&project_id) {
+    let on_details = move |project: ModProjectInfo| {
+        let project_id = project.id;
+        selected_project.set(Some(project));
+        load_versions(project_id, false);
+    };
+
+    let on_add = move |project_id: u32| {
+        if installing.get_untracked().contains(&project_id)
+            || installed.get_untracked().contains(&project_id)
+        {
             return;
         }
-        installing.update(|s| { s.insert(project_id); });
+        let file_id = selected_file_id.get_untracked();
+        let Some(file) = versions.get_untracked().into_iter().find(|file| {
+            file.source.curseforge_ids().map(|(_, id)| id.to_string()) == Some(file_id.clone())
+        }) else {
+            return;
+        };
+        installing.update(|s| {
+            s.insert(project_id);
+        });
         let id = instance_id.get_value();
         leptos::task::spawn_local(async move {
-            match call_download_mods(
-                vec![DownloadSource::CurseForge { project_id, file_id }],
-                id,
-            ).await {
+            let result = call_download_mods(vec![file], id).await;
+            installing.update(|s| {
+                s.remove(&project_id);
+            });
+            match result {
                 Ok(()) => {
-                    installing.update(|s| { s.remove(&project_id); });
-                    installed.update(|s| { s.insert(project_id); });
+                    installed.update(|s| {
+                        s.insert(project_id);
+                    });
                     on_installed.run(());
                 }
-                Err(e) => {
-                    installing.update(|s| { s.remove(&project_id); });
-                    log::error!("download_mods failed: {e}");
-                }
+                Err(e) => log::error!("add mod failed: {e}"),
             }
         });
     };
@@ -342,7 +428,87 @@ fn AddModModal(
                     </div>
 
                     {move || {
-                        if loading.get() {
+                        if let Some(project) = selected_project.get() {
+                            let pid = project.id;
+                            let logo_view = if let Some(url) = project.logo_url.clone() {
+                                view! { <img class=logo src=url alt="" /> }.into_any()
+                            } else {
+                                view! { <div class=logo_ph>"📦"</div> }.into_any()
+                            };
+                            view! {
+                                <div class=results_list>
+                                    <div class=card>
+                                        {logo_view}
+                                        <div class=body>
+                                            <div class=name>{project.name}</div>
+                                            <div class=summary>{project.summary}</div>
+                                        </div>
+                                    </div>
+                                    {move || {
+                                        if let Some(e) = versions_error.get() {
+                                            view! { <div class=status_area>{e}</div> }.into_any()
+                                        } else if versions_loading.get() && versions.get().is_empty() {
+                                            view! { <div class=status_area>"Loading versions…"</div> }.into_any()
+                                        } else if versions.get().is_empty() {
+                                            view! { <div class=status_area>"No compatible versions found."</div> }.into_any()
+                                        } else {
+                                            view! {
+                                                <select
+                                                    class=select_class()
+                                                    size="8"
+                                                    prop:value=move || selected_file_id.get()
+                                                    on:change=move |ev| selected_file_id.set(event_target_value(&ev))
+                                                    on:scroll=move |ev| {
+                                                        let Some(select) = ev.target()
+                                                            .and_then(|target| target.dyn_into::<web_sys::HtmlSelectElement>().ok())
+                                                        else { return; };
+                                                        let remaining = select.scroll_height() - select.scroll_top() - select.client_height();
+                                                        if remaining <= 8 {
+                                                            load_versions(pid, true);
+                                                        }
+                                                    }
+                                                >
+                                                    {move || versions.get().into_iter().map(|file| {
+                                                        let val = file.source.curseforge_ids()
+                                                            .map(|(_, id)| id.to_string())
+                                                            .unwrap_or_default();
+                                                        let label = format!("{}  [{}]", file.display_name, file.release_type);
+                                                        let is_selected = val == selected_file_id.get();
+                                                        view! { <option value=val selected=is_selected>{label}</option> }
+                                                    }).collect_view()}
+                                                </select>
+                                                <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+                                                    <Button
+                                                        variant=ButtonVariant::Secondary
+                                                        on_click=Callback::new(move |_| selected_project.set(None))
+                                                    >
+                                                        "Back"
+                                                    </Button>
+                                                    <Button
+                                                        variant=ButtonVariant::Primary
+                                                        disabled=Signal::derive(move || {
+                                                            selected_file_id.get().is_empty()
+                                                                || versions_loading.get()
+                                                                || installing.get().contains(&pid)
+                                                                || installed.get().contains(&pid)
+                                                        })
+                                                        on_click=Callback::new(move |_| on_add(pid))
+                                                    >
+                                                        {move || if installed.get().contains(&pid) {
+                                                            "Added"
+                                                        } else if installing.get().contains(&pid) {
+                                                            "Adding…"
+                                                        } else {
+                                                            "Add"
+                                                        }}
+                                                    </Button>
+                                                </div>
+                                            }.into_any()
+                                        }
+                                    }}
+                                </div>
+                            }.into_any()
+                        } else if loading.get() {
                             view! { <div class=status_area>"Searching…"</div> }.into_any()
                         } else if let Some(e) = error.get() {
                             view! { <div class=status_area>{e}</div> }.into_any()
@@ -353,7 +519,6 @@ fn AddModModal(
                                 <div class=results_list>
                                     {move || results.get().into_iter().map(|pack| {
                                         let pid = pack.id;
-                                        let file_id = pack.file_id;
                                         let logo_view = if let Some(url) = pack.logo_url.clone() {
                                             view! { <img class=logo src=url alt="" /> }.into_any()
                                         } else {
@@ -369,21 +534,11 @@ fn AddModModal(
                                                 <Button
                                                     variant=ButtonVariant::Primary
                                                     disabled=Signal::derive(move || {
-                                                        file_id.is_none() || installing.get().contains(&pid) || installed.get().contains(&pid)
+                                                        installing.get().contains(&pid) || installed.get().contains(&pid)
                                                     })
-                                                    on_click=Callback::new(move |_| {
-                                                        if let Some(file_id) = file_id {
-                                                            on_add(pid, file_id);
-                                                        }
-                                                    })
+                                                    on_click=Callback::new(move |_| on_details(pack.clone()))
                                                 >
-                                                    {move || if installed.get().contains(&pid) {
-                                                        "Added"
-                                                    } else if installing.get().contains(&pid) {
-                                                        "Adding…"
-                                                    } else {
-                                                        "Add"
-                                                    }}
+                                                    "Details"
                                                 </Button>
                                             </div>
                                         }

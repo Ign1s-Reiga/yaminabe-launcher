@@ -1,17 +1,19 @@
+use crate::components::ui::*;
 use bamboo_css_macro::css;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
-use leptos::{component, IntoView, view};
-use yaminabe_launcher_shared::datatypes::{ModProjectInfo, ModProjectFile};
-use crate::components::ui::*;
+use leptos::{IntoView, component, view, web_sys};
+use wasm_bindgen::JsCast;
+use yaminabe_launcher_shared::datatypes::{ModProjectInfo, ProjectFileInfo};
 
 #[derive(Clone)]
 pub struct InstallState {
     pub pack: ModProjectInfo,
     pub version: String,
-    pub versions: Vec<ModProjectFile>,
+    pub versions: Vec<ProjectFileInfo>,
     pub versions_loading: bool,
     pub versions_error: Option<String>,
+    pub versions_done: bool,
 }
 
 #[component]
@@ -19,6 +21,7 @@ pub fn InstallModpackModal(
     install: RwSignal<Option<InstallState>>,
     install_name: RwSignal<String>,
     on_submit: Callback<SubmitEvent>,
+    on_load_more: Callback<()>,
     on_close: Callback<()>,
 ) -> impl IntoView {
     let pack_strip = css! {
@@ -115,21 +118,34 @@ pub fn InstallModpackModal(
                                     } else {
                                         let selected_ver = s.version.clone();
                                         view! {
-                                            <SelectInput
+                                            <select
+                                                class=select_class()
                                                 name="version"
-                                                on_change=Callback::new(move |v: String| {
+                                                size="8"
+                                                prop:value=selected_ver.clone()
+                                                on:change=move |ev| {
+                                                    let value = event_target_value(&ev);
                                                     install.update(|opt| {
-                                                        if let Some(st) = opt { st.version = v; }
+                                                        if let Some(st) = opt { st.version = value; }
                                                     });
-                                                })
+                                                }
+                                                on:scroll=move |ev| {
+                                                    let Some(select) = ev.target()
+                                                        .and_then(|target| target.dyn_into::<web_sys::HtmlSelectElement>().ok())
+                                                    else { return; };
+                                                    let remaining = select.scroll_height() - select.scroll_top() - select.client_height();
+                                                    if remaining <= 8 {
+                                                        on_load_more.run(());
+                                                    }
+                                                }
                                             >
                                                 {s.versions.iter().map(|v| {
-                                                    let val = v.id.to_string();
+                                                    let val = v.source.curseforge_ids().map(|(_, id)| id).unwrap_or(0).to_string();
                                                     let label = format!("{}  [{}]", v.display_name, v.release_type);
                                                     let is_selected = val == selected_ver;
                                                     view! { <option value=val selected=is_selected>{label}</option> }
                                                 }).collect_view()}
-                                            </SelectInput>
+                                            </select>
                                         }.into_any()
                                     }
                                 })}
