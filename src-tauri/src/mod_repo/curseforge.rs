@@ -631,10 +631,7 @@ pub async fn install_modpack(
         .ok_or_else(|| Error::Unsupported("not a CurseForge modpack source".to_string()))?;
     let (api_key, install_dir) = {
         let settings = state.settings.read().unwrap();
-        (
-            settings.curseforge_api_key.clone(),
-            settings.instance_install_dir.clone(),
-        )
+        (settings.curseforge_api_key.clone(), settings.instance_install_dir.clone())
     };
 
     let instance_path = PathBuf::from(&install_dir).join(instance_name.to_lowercase());
@@ -648,8 +645,7 @@ pub async fn install_modpack(
         file_id,
         &api_key,
         state,
-    )
-    .await?;
+    ).await?;
 
     emit_progress(
         app_handle,
@@ -661,8 +657,7 @@ pub async fn install_modpack(
     );
     let file_ids = manifest_file_ids(&prepared.manifest);
     let files = resolve_project_files(&file_ids, &api_key, &state.http_client).await?;
-    let modlist_entries =
-        super::download_project_files(files, &instance_path, &state.http_client).await?;
+    let modlist_entries = super::download_project_files(files, &instance_path, &state.http_client).await?;
 
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
     upsert_modlist_entries(&instance_path, modlist_entries)?;
