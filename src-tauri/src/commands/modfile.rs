@@ -8,7 +8,7 @@ use crate::{ActivityGuard, AppState, InstanceActivity, emit_progress};
 use serde::Serialize;
 use std::path::Path;
 use tauri::State;
-use yaminabe_launcher_shared::datatypes::{
+use yaminabe_launcher_shared::datamodels::{
     DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModProjectSearchResults, ModState,
     ProjectFileInfo, ProjectFileTarget, SearchOptions,
 };

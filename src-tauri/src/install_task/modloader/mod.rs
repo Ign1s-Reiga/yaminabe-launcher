@@ -9,7 +9,7 @@ use crate::{temp_dir, versions_dir};
 use log::info;
 use serde::Deserialize;
 use std::path::PathBuf;
-use yaminabe_launcher_shared::datatypes::ModLoader;
+use yaminabe_launcher_shared::datamodels::ModLoader;
 use yaminabe_launcher_shared::error::Error;
 
 // ── Path helpers (visible to submodules and other commands) ──────────────────

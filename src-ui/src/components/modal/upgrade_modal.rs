@@ -6,7 +6,7 @@ use leptos::prelude::*;
 use leptos::{IntoView, component, view, web_sys};
 use leptos_router::hooks::use_navigate;
 use wasm_bindgen::JsCast;
-use yaminabe_launcher_shared::datatypes::{DownloadSource, ProjectFileInfo, ProjectFileTarget};
+use yaminabe_launcher_shared::datamodels::{DownloadSource, ProjectFileInfo, ProjectFileTarget};
 
 const PAGE_SIZE: usize = 50;
 

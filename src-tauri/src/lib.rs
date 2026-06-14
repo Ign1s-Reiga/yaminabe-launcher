@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use tauri::{Emitter, Manager};
-use yaminabe_launcher_shared::datatypes::{AppSettings, JavaInstall};
+use yaminabe_launcher_shared::datamodels::{AppSettings, JavaInstall};
 use yaminabe_launcher_shared::error::InitializationError;
 use yaminabe_launcher_shared::ipc::InstallProgress;
 

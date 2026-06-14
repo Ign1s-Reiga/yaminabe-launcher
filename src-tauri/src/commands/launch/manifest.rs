@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use yaminabe_launcher_shared::error::Error;
-use yaminabe_launcher_shared::version_manifest::ClientManifest;
+use yaminabe_launcher_shared::datamodels::ClientManifest;
 use crate::install_task::version_manifest_path;
 
 pub(super) fn load_manifest(version_id: &str) -> Result<ClientManifest, Error> {

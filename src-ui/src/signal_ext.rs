@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use yaminabe_launcher_shared::datatypes::InstanceMeta;
+use yaminabe_launcher_shared::datamodels::InstanceMeta;
 
 /// Types carrying a stable string id, so a `RwSignal<Vec<_>>` of them can be
 /// looked up by id through [`VecSignalExt`].

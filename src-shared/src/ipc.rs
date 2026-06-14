@@ -53,5 +53,5 @@ pub struct MsLoginPrompt {
 pub struct MsLoginResult {
     pub kind: String,
     pub message: String,
-    pub account: Option<crate::datatypes::AccountSummary>,
+    pub account: Option<crate::datamodels::AccountSummary>,
 }

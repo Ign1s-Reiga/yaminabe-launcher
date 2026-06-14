@@ -9,7 +9,7 @@ use leptos::prelude::*;
 use leptos::{IntoView, component, view};
 use leptos_router::hooks::{use_navigate, use_params, use_query_map};
 use leptos_router::params::Params;
-use yaminabe_launcher_shared::datatypes::{InstanceMeta, LaunchMode};
+use yaminabe_launcher_shared::datamodels::{InstanceMeta, LaunchMode};
 
 #[derive(PartialEq, Clone, Params)]
 struct PlayParams {

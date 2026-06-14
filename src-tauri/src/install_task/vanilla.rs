@@ -1,6 +1,6 @@
 use log::info;
 use yaminabe_launcher_shared::error::Error;
-use yaminabe_launcher_shared::version_manifest::{ArgRule, ClientManifest};
+use yaminabe_launcher_shared::datamodels::{ArgRule, ClientManifest};
 use crate::{assets_dir, libraries_dir};
 use crate::http_utils::download_resource;
 use super::version_manifest_path;

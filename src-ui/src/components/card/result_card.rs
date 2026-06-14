@@ -4,7 +4,7 @@ use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
-use yaminabe_launcher_shared::datatypes::ModProjectInfo;
+use yaminabe_launcher_shared::datamodels::ModProjectInfo;
 
 #[component]
 pub fn ResultCard(

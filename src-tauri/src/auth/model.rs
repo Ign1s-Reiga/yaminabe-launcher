@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
-use yaminabe_launcher_shared::datatypes::AccountSummary;
+use yaminabe_launcher_shared::datamodels::AccountSummary;
 use yaminabe_launcher_shared::error::Error;
 use crate::accounts_path;
 

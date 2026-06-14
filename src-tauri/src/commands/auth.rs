@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime};
 use log::warn;
 use tauri::{AppHandle, Emitter, State};
 use tokio::time::sleep;
-use yaminabe_launcher_shared::datatypes::AccountSummary;
+use yaminabe_launcher_shared::datamodels::AccountSummary;
 use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::ipc::{MsLoginPrompt, MsLoginResult};
 use crate::AppState;

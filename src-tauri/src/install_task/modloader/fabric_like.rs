@@ -4,9 +4,9 @@ use crate::maven::MavenCoords;
 use crate::{bin_dir, libraries_dir};
 use log::info;
 use std::path::PathBuf;
-use yaminabe_launcher_shared::datatypes::ModLoader;
+use yaminabe_launcher_shared::datamodels::ModLoader;
 use yaminabe_launcher_shared::error::Error;
-use yaminabe_launcher_shared::version_manifest::ClientManifest;
+use yaminabe_launcher_shared::datamodels::ClientManifest;
 
 pub async fn run_installer(
     loader: &ModLoader,

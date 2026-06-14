@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use log::info;
 use tauri::{AppHandle, Emitter, State};
-use yaminabe_launcher_shared::datatypes::{InstanceMeta, LaunchMode};
+use yaminabe_launcher_shared::datamodels::{InstanceMeta, LaunchMode};
 use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::ipc::LogLine;
-use yaminabe_launcher_shared::version_manifest::ClientManifest;
+use yaminabe_launcher_shared::datamodels::ClientManifest;
 use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, ActivityGuard, AppState, InstanceActivity};
 use crate::auth::{
     hydrate_account, persist_account, refresh_account_tokens, MinecraftAccount,

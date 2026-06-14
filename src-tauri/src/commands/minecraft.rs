@@ -1,7 +1,7 @@
 use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tauri::State;
-use yaminabe_launcher_shared::datatypes::{GameVersion, LoaderVersion, ReleaseType};
+use yaminabe_launcher_shared::datamodels::{GameVersion, LoaderVersion, ReleaseType};
 use yaminabe_launcher_shared::error::Error;
 use crate::{versions_dir, AppState};
 use crate::http_utils::{fetch_json, rejected_status};

@@ -5,7 +5,7 @@ use leptos::{component, view, IntoView};
 use leptos_router::components::A;
 use phosphor_leptos::{Icon, IconWeight, CARET_DOWN, CARET_UP, STOP, X};
 use serde::Serialize;
-use yaminabe_launcher_shared::datatypes::{InstanceMeta, LaunchMode, ModLoader};
+use yaminabe_launcher_shared::datamodels::{InstanceMeta, LaunchMode, ModLoader};
 use yaminabe_launcher_shared::ipc::InstallProgress;
 use crate::ipc;
 use crate::signal_ext::HasId;

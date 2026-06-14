@@ -3,7 +3,7 @@ use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
 use serde::Deserialize;
-use yaminabe_launcher_shared::datatypes::ModListEntry;
+use yaminabe_launcher_shared::datamodels::ModListEntry;
 use crate::components::ui::*;
 use crate::curseforge::{call_link_mods, call_pick_jar_files};
 use crate::ipc;

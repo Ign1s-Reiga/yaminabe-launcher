@@ -10,7 +10,7 @@ use leptos::prelude::*;
 use leptos::{IntoView, component, view, web_sys};
 use std::collections::HashSet;
 use wasm_bindgen::JsCast;
-use yaminabe_launcher_shared::datatypes::{
+use yaminabe_launcher_shared::datamodels::{
     ModListEntry, ModLoader, ModProjectInfo, ModState, ProjectFileInfo, ProjectFileTarget,
     SearchOptions,
 };

@@ -6,8 +6,8 @@ use crate::http_utils::download_resource;
 use log::warn;
 use reqwest::Client;
 use tauri::State;
-use yaminabe_launcher_shared::datatypes::ModState;
-use yaminabe_launcher_shared::datatypes::{
+use yaminabe_launcher_shared::datamodels::ModState;
+use yaminabe_launcher_shared::datamodels::{
     DownloadSource, ModListEntry, ModLoader, ModProjectSearchResults, ProjectFileInfo,
     ProjectFileTarget, SearchOptions,
 };

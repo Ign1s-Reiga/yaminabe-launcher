@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use log::info;
 use tauri::State;
-use yaminabe_launcher_shared::datatypes::{DownloadSource, InstanceMeta, ModListEntry, ModState};
+use yaminabe_launcher_shared::datamodels::{DownloadSource, InstanceMeta, ModListEntry, ModState};
 use yaminabe_launcher_shared::error::Error;
 use crate::{emit_progress, libraries_dir, versions_dir, ActivityGuard, AppState, InstanceActivity};
 use crate::commands::java::download_java_runtime;

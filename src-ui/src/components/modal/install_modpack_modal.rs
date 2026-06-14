@@ -4,7 +4,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::{IntoView, component, view, web_sys};
 use wasm_bindgen::JsCast;
-use yaminabe_launcher_shared::datatypes::{ModProjectInfo, ProjectFileInfo};
+use yaminabe_launcher_shared::datamodels::{ModProjectInfo, ProjectFileInfo};
 
 #[derive(Clone)]
 pub struct InstallState {

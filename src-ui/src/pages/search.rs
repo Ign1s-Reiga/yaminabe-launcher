@@ -11,7 +11,7 @@ use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{IntoView, component, view, web_sys};
 use wasm_bindgen::JsCast;
-use yaminabe_launcher_shared::datatypes::{
+use yaminabe_launcher_shared::datamodels::{
     AppSettings, ModProjectInfo, ProjectFileTarget, SearchOptions,
 };
 

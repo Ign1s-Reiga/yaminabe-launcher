@@ -1,7 +1,7 @@
 use crate::ipc;
 use leptos::web_sys;
 use serde::Serialize;
-use yaminabe_launcher_shared::datatypes::{
+use yaminabe_launcher_shared::datamodels::{
     DownloadSource, GameVersion, LoaderVersion, ModListEntry, ModLoader, ModProjectSearchResults,
     ProjectFileInfo, ProjectFileTarget, SearchOptions,
 };

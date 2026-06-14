@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use yaminabe_launcher_shared::error::Error;
-use yaminabe_launcher_shared::version_manifest::Library;
+use yaminabe_launcher_shared::datamodels::Library;
 use crate::install_task::maven_coord_to_path;
 use super::args::eval_rules;
 

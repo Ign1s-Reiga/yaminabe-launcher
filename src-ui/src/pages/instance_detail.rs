@@ -15,7 +15,7 @@ use leptos::{component, view, IntoView};
 use leptos_router::hooks::{use_navigate, use_params, use_query_map};
 use leptos_router::params::Params;
 use serde::Serialize;
-use yaminabe_launcher_shared::datatypes::{InstanceMeta, JavaInstall, LaunchMode, ModLoader};
+use yaminabe_launcher_shared::datamodels::{InstanceMeta, JavaInstall, LaunchMode, ModLoader};
 
 /// Detail-page tabs, in order; the first is the default. Single source for both
 /// the TabBar and the `?tab=` deep-link validation.

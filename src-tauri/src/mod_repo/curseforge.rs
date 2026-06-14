@@ -13,16 +13,11 @@ use crate::{AppState, emit_progress};
 use log::info;
 use serde::Deserialize;
 use tauri::State;
-use yaminabe_launcher_shared::datatypes::{
+use yaminabe_launcher_shared::datamodels::{
     DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModProjectInfo, ModProjectSearchResults,
     ModState, ProjectFileInfo, ProjectFileTarget, SearchOptions,
 };
 use yaminabe_launcher_shared::error::Error;
-
-#[derive(Debug, Deserialize)]
-struct CurseForgeResponse<T> {
-    data: T,
-}
 
 #[derive(Debug, Deserialize)]
 struct CurseForgeArrayResponse<T> {
@@ -260,7 +255,7 @@ pub async fn search_projects(
     let index = option.index.to_string();
     let mut query: Vec<(&str, &str)> = vec![
         ("gameId", "432"),
-        ("classId", option.target.curseforge_type()),
+        ("classId", option.target.into_curseforge_type()),
         ("searchFilter", option.query.as_str()),
         ("sortField", "2"),
         ("pageSize", "50"),
@@ -506,22 +501,6 @@ async fn fetch_project_targets(
     Ok(targets)
 }
 
-async fn fetch_project_file(
-    project_id: u32,
-    file_id: u32,
-    api_key: &str,
-    client: &reqwest::Client,
-) -> Result<ModFile, Error> {
-    Ok(fetch_json(
-        client,
-        &format!("https://api.curseforge.com/v1/mods/{project_id}/files/{file_id}"),
-    )
-    .header("x-api-key", api_key)
-    .send::<CurseForgeResponse<ModFile>>()
-    .await?
-    .data)
-}
-
 /// The game/loader/manifest state produced by [`prepare_modpack`], handed back so
 /// the install and upgrade paths can finish with their own mod handling.
 struct PreparedModpack {
@@ -543,7 +522,6 @@ async fn prepare_modpack(
     id: &str,
     instance_name: &str,
     instance_path: &Path,
-    project_id: u32,
     file_id: u32,
     api_key: &str,
     state: &State<'_, AppState>,
@@ -558,23 +536,21 @@ async fn prepare_modpack(
         None,
     );
 
-    let file = fetch_project_file(project_id, file_id, api_key, http_client).await?;
+    let file = resolve_project_files(&[file_id], api_key, http_client)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::NotExists(format!("CurseForge file {file_id}")))?;
     let download_url = file.download_url.as_deref().ok_or_else(|| {
         Error::Invalid(format!(
             "CurseForge modpack file {} has no download URL",
             file.file_name
         ))
     })?;
-    let sha1 = file
-        .hashes
-        .iter()
-        .find(|hash| hash.algo == 1)
-        .map(|hash| hash.value.as_str())
-        .unwrap_or("");
     let cache_path = instance_path
-        .join(ProjectFileTarget::Modpack.directory())
+        .join(file.target.directory())
         .join(&file.file_name);
-    download_resource(http_client, download_url, sha1, cache_path.clone()).await?;
+    download_resource(http_client, download_url, &file.sha1, cache_path.clone()).await?;
 
     let prepared = prepare_from_cached_zip(
         app_handle,
@@ -649,8 +625,9 @@ pub async fn install_modpack(
     source: DownloadSource,
     state: &State<'_, AppState>,
 ) -> Result<(), Error> {
-    let (project_id, file_id) = source
+    let file_id = source
         .curseforge_ids()
+        .map(|(_, file_id)| file_id)
         .ok_or_else(|| Error::Unsupported("not a CurseForge modpack source".to_string()))?;
     let (api_key, install_dir) = {
         let settings = state.settings.read().unwrap();
@@ -668,7 +645,6 @@ pub async fn install_modpack(
         id,
         instance_name,
         &instance_path,
-        project_id,
         file_id,
         &api_key,
         state,
@@ -726,8 +702,9 @@ pub async fn upgrade_modpack(
     source: DownloadSource,
     state: &State<'_, AppState>,
 ) -> Result<(), Error> {
-    let (project_id, file_id) = source
+    let file_id = source
         .curseforge_ids()
+        .map(|(_, file_id)| file_id)
         .ok_or_else(|| Error::Unsupported("not a CurseForge modpack source".to_string()))?;
     let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
     let http_client = &state.http_client;
@@ -741,7 +718,6 @@ pub async fn upgrade_modpack(
         id,
         instance_name,
         &instance_path,
-        project_id,
         file_id,
         &api_key,
         state,

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use serde::Deserialize;
 use yaminabe_launcher_shared::error::Error;
-use yaminabe_launcher_shared::version_manifest::AssetIndex;
+use yaminabe_launcher_shared::datamodels::AssetIndex;
 use crate::http_utils::{fetch_and_verify, sha1_hex};
 
 #[derive(Deserialize)]

@@ -4,7 +4,7 @@ use crate::AppState;
 use crate::http_utils::{download_resource, fetch_json};
 use serde::Deserialize;
 use tauri::State;
-use yaminabe_launcher_shared::datatypes::{
+use yaminabe_launcher_shared::datamodels::{
     DownloadSource, ModProjectSearchResults, ProjectFileInfo, ProjectFileTarget, SearchOptions,
 };
 use yaminabe_launcher_shared::error::Error;

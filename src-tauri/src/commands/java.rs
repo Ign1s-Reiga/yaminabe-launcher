@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use tauri::State;
 
-use yaminabe_launcher_shared::datatypes::JavaInstall;
+use yaminabe_launcher_shared::datamodels::JavaInstall;
 use yaminabe_launcher_shared::error::Error;
 use crate::{runtimes_dir, AppState};
 use crate::http_utils::{download_resource, fetch_json};

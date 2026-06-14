@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use yaminabe_launcher_shared::version_manifest::{ArgRule, ArgValue, ArgumentItem, DefaultJvmItem};
+use yaminabe_launcher_shared::datamodels::{ArgRule, ArgValue, ArgumentItem, DefaultJvmItem};
 
 pub(super) struct LaunchVars<'a> {
     pub natives_directory: &'a str,

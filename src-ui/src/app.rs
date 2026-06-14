@@ -18,7 +18,7 @@ use leptos_router::components::{Route, Router, Routes};
 use leptos_router::hooks::{use_location, use_navigate};
 use leptos_router::path;
 use phosphor_leptos::{Icon, IconData, IconWeight, BOOKS, GEAR_SIX, HOUSE, MAGNIFYING_GLASS, PLAY};
-use yaminabe_launcher_shared::datatypes::{AppSettings, InstanceMeta, LaunchMode};
+use yaminabe_launcher_shared::datamodels::{AppSettings, InstanceMeta, LaunchMode};
 use yaminabe_launcher_shared::ipc::LogLine;
 
 styled!(MainViewWrapper, div, {

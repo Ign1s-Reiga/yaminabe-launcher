@@ -3,7 +3,7 @@ use crate::components::ui::*;
 use bamboo_css_macro::css;
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
-use yaminabe_launcher_shared::datatypes::InstanceMeta;
+use yaminabe_launcher_shared::datamodels::InstanceMeta;
 use crate::components::card::instance_card::InstanceCard;
 
 fn matches_active_category(inst: &InstanceMeta, active: &str) -> bool {

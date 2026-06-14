@@ -1,7 +1,7 @@
 use std::path::Path;
 use serde::Deserialize;
 use yaminabe_launcher_shared::error::Error;
-use yaminabe_launcher_shared::version_manifest::ClientManifest;
+use yaminabe_launcher_shared::datamodels::ClientManifest;
 use crate::libraries_dir;
 use crate::maven::MavenCoords;
 use crate::install_task::{installer_archive, maven_coord_to_path};

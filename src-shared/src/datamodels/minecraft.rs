@@ -1,5 +1,109 @@
-use std::collections::HashMap;
+use crate::error::Error;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fmt;
+use std::fmt::Display;
+use std::str::FromStr;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ModLoader {
+    Vanilla,
+    Forge,
+    Fabric,
+    Quilt,
+    NeoForge,
+}
+
+impl Display for ModLoader {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ModLoader::Vanilla => write!(f, "Vanilla"),
+            ModLoader::Forge => write!(f, "Forge"),
+            ModLoader::Fabric => write!(f, "Fabric"),
+            ModLoader::Quilt => write!(f, "Quilt"),
+            ModLoader::NeoForge => write!(f, "NeoForge"),
+        }
+    }
+}
+
+impl FromStr for ModLoader {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "vanilla" => Ok(ModLoader::Vanilla),
+            "forge" => Ok(ModLoader::Forge),
+            "fabric" => Ok(ModLoader::Fabric),
+            "quilt" => Ok(ModLoader::Quilt),
+            "neoforge" => Ok(ModLoader::NeoForge),
+            other => Err(Error::Unsupported(format!("mod loader '{other}'"))),
+        }
+    }
+}
+
+impl ModLoader {
+    pub fn mod_loader_color(&self) -> &'static str {
+        match self {
+            ModLoader::Vanilla => "#406b50",
+            ModLoader::Forge => "#6b5040",
+            ModLoader::Fabric => "#40506b",
+            ModLoader::Quilt => "#50406b",
+            ModLoader::NeoForge => "#6b5b40",
+        }
+    }
+
+    pub fn mod_loader_id(&self) -> Option<u32> {
+        match self {
+            ModLoader::Forge => Some(1),
+            ModLoader::NeoForge => Some(6),
+            ModLoader::Fabric => Some(4),
+            ModLoader::Quilt => Some(5),
+            ModLoader::Vanilla => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReleaseType {
+    Release,
+    Snapshot,
+    #[serde(rename = "old_beta")]
+    Beta,
+    #[serde(rename = "old_alpha")]
+    Alpha,
+}
+
+impl Display for ReleaseType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ReleaseType::Release => write!(f, "Release"),
+            ReleaseType::Snapshot => write!(f, "Snapshot"),
+            ReleaseType::Beta => write!(f, "Beta"),
+            ReleaseType::Alpha => write!(f, "Alpha"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GameVersion {
+    pub id: u32,
+    #[serde(rename = "versionString")]
+    pub version_string: String,
+    #[serde(rename = "releaseType")]
+    pub release_type: ReleaseType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoaderVersion {
+    pub id: u32,
+    pub version: String,
+    pub game_version: String,
+    #[serde(rename = "type")]
+    pub loader_type: String,
+}
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,27 +120,20 @@ pub struct ClientManifest {
     pub inherits_from: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minimum_launcher_version: Option<u32>,
-
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub main_class: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minecraft_arguments: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arguments: Option<Arguments>,
-
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset_index: Option<AssetIndex>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub java_version: Option<JavaVersion>,
-
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub libraries: Vec<Library>,
-
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logging: Option<LoggingSection>,
-
-    /// Per-side download metadata (`client`, `client_mappings`, `server`, ...).
-    /// Populated by Mojang's vanilla manifest; empty for loader manifests.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub downloads: HashMap<String, DownloadEntry>,
 }
@@ -142,15 +239,10 @@ pub struct Library {
     pub downloads: Option<LibraryDownloads>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub natives: HashMap<String, String>,
-    /// Pre-1.13 / Fabric-style libraries: the maven *repo base* URL for the
-    /// bare `name` coordinate. Empty/`None` means the default Mojang repo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// Pre-1.13 Forge: `clientreq=false` libraries are server-only and skipped
-    /// on the client side.
     #[serde(default, rename = "clientreq", skip_serializing_if = "Option::is_none")]
     pub client_req: Option<bool>,
-    /// Pre-1.13 Forge: pre-computed sha1 of the artifact at `url`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checksums: Vec<String>,
 }
@@ -175,7 +267,9 @@ pub struct LibraryArtifact {
     pub size: u64,
 }
 
-fn is_zero_u64(n: &u64) -> bool { *n == 0 }
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DownloadEntry {

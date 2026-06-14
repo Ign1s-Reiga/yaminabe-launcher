@@ -5,7 +5,7 @@ use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
 use std::collections::{HashMap, HashSet};
-use yaminabe_launcher_shared::datatypes::LoaderVersion;
+use yaminabe_launcher_shared::datamodels::LoaderVersion;
 
 #[component]
 pub fn StepLoader(
