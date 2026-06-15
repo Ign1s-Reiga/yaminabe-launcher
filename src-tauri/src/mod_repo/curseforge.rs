@@ -227,14 +227,6 @@ fn to_search_results(
     ModProjectSearchResults { items, total }
 }
 
-fn target_from_class_id(class_id: u32) -> ProjectFileTarget {
-    match class_id {
-        12 => ProjectFileTarget::ResourcePack,
-        4471 => ProjectFileTarget::Modpack,
-        _ => ProjectFileTarget::Mod,
-    }
-}
-
 /// Unified CurseForge search for any project class. Mods can be narrowed to a
 /// Minecraft version and/or mod loader (so only compatible files are offered);
 /// modpacks and resource packs search broadly. When both a version and loader
@@ -255,9 +247,9 @@ pub async fn search_projects(
     let index = option.index.to_string();
     let mut query: Vec<(&str, &str)> = vec![
         ("gameId", "432"),
-        ("classId", option.target.into_curseforge_type()),
+        ("classId", option.target.to_curseforge_type()),
         ("searchFilter", option.query.as_str()),
-        ("sortField", "2"),
+        ("sortField", option.sort.to_curseforge_field()),
         ("pageSize", "50"),
         ("sortOrder", "desc"),
         ("index", &index),
@@ -267,11 +259,7 @@ pub async fn search_projects(
     }
     // `mod_loader_id` is `None` for Vanilla, which has no loader filter.
     let loader_id;
-    if let Some(id) = option
-        .mod_loader
-        .as_ref()
-        .and_then(ModLoader::mod_loader_id)
-    {
+    if let Some(id) = option.mod_loader.as_ref().and_then(ModLoader::mod_loader_id) {
         loader_id = id.to_string();
         query.push(("modLoaderType", &loader_id));
     }
@@ -376,8 +364,7 @@ fn manifest_file_ids(manifest: &ModpackManifest) -> Vec<u32> {
 /// Empty when the modlist is missing, degrading to "download everything,
 /// remove nothing".
 fn installed_curseforge_file_ids(instance_path: &Path) -> Vec<u32> {
-    let modlist: Vec<ModListEntry> =
-        read_json_or_default(modlist_file(instance_path)).unwrap_or_default();
+    let modlist: Vec<ModListEntry> = read_json_or_default(modlist_file(instance_path)).unwrap_or_default();
     modlist
         .iter()
         .filter_map(|entry| entry.source.curseforge_ids().map(|(_, file_id)| file_id))
@@ -495,7 +482,7 @@ async fn fetch_project_targets(
         targets.extend(
             data.data
                 .into_iter()
-                .map(|project| (project.id, target_from_class_id(project.class_id))),
+                .map(|project| (project.id, ProjectFileTarget::from_curseforge_type(project.class_id))),
         );
     }
     Ok(targets)
@@ -663,6 +650,7 @@ pub async fn install_modpack(
     upsert_modlist_entries(&instance_path, modlist_entries)?;
 
     let meta = InstanceMeta {
+        id: id.to_string(),
         name: instance_name.to_string(),
         game_version: prepared.mc_version.clone(),
         mod_loader: prepared.mod_loader.clone(),

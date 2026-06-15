@@ -178,7 +178,8 @@ pub struct LinkOutcome {
 /// Resolve `DownloadFailed` mods by linking jars the user supplies from disk.
 /// Each path is hashed and matched against a failed entry's recorded SHA-1
 /// (not its file name, so any local copy of the right jar works); a match is
-/// copied into `mods/` under the entry's name and flipped to `Enabled`.
+/// copied into the entry's target directory under the entry's name and flipped
+/// to `Enabled`.
 #[tauri::command]
 pub fn link_mods(
     instance_id: String,
@@ -197,9 +198,6 @@ pub fn link_mods(
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
     let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
     let mut modlist: Vec<ModListEntry> = read_json_or_default(modlist_file(&instance_dir))?;
-    let mods_dir = instance_dir.join("mods");
-    std::fs::create_dir_all(&mods_dir)?;
-
     let mut linked = Vec::new();
     let mut unmatched = Vec::new();
     for path in &file_paths {
@@ -214,7 +212,9 @@ pub fn link_mods(
             .find(|e| e.state == ModState::DownloadFailed && !e.sha1.is_empty() && e.sha1 == sha1);
         match matched {
             Some(entry) => {
-                std::fs::write(mods_dir.join(&entry.file_name), &bytes)?;
+                let target_dir = instance_dir.join(entry.target.directory());
+                std::fs::create_dir_all(&target_dir)?;
+                std::fs::write(target_dir.join(&entry.file_name), &bytes)?;
                 entry.state = ModState::Enabled;
                 linked.push(entry.file_name.clone());
             }

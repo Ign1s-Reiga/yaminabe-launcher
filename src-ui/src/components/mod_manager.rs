@@ -1,8 +1,8 @@
 use crate::components::card::link_notice_card::LinkNoticeCard;
+use crate::components::project_search::ProjectSearch;
 use crate::components::ui::*;
 use crate::curseforge::{
-    call_download_mods, call_list_mods, call_list_project_files, call_search_projects,
-    call_toggle_mod_state,
+    call_download_mods, call_list_mods, call_list_project_files, call_toggle_mod_state,
 };
 use bamboo_css_macro::css;
 use leptos::control_flow::Show;
@@ -12,7 +12,6 @@ use std::collections::HashSet;
 use wasm_bindgen::JsCast;
 use yaminabe_launcher_shared::datamodels::{
     ModListEntry, ModLoader, ModProjectInfo, ModState, ProjectFileInfo, ProjectFileTarget,
-    SearchOptions,
 };
 
 /// Human-readable file size.
@@ -210,11 +209,6 @@ fn AddModModal(
     let game_version = StoredValue::new(game_version);
     let mod_loader = StoredValue::new(mod_loader);
 
-    let query: RwSignal<String> = RwSignal::new(String::new());
-    let results: RwSignal<Vec<ModProjectInfo>> = RwSignal::new(vec![]);
-    let loading: RwSignal<bool> = RwSignal::new(false);
-    let searched: RwSignal<bool> = RwSignal::new(false);
-    let error: RwSignal<Option<String>> = RwSignal::new(None);
     let selected_project: RwSignal<Option<ModProjectInfo>> = RwSignal::new(None);
     let versions: RwSignal<Vec<ProjectFileInfo>> = RwSignal::new(vec![]);
     let versions_loading: RwSignal<bool> = RwSignal::new(false);
@@ -272,35 +266,6 @@ fn AddModModal(
                 Err(e) => {
                     versions_error.set(Some(e));
                     versions_loading.set(false);
-                }
-            }
-        });
-    };
-
-    let do_search = move || {
-        let q = query.get_untracked();
-        if q.trim().is_empty() {
-            return;
-        }
-        loading.set(true);
-        error.set(None);
-        let option = SearchOptions {
-            query: q,
-            index: 0,
-            target: ProjectFileTarget::Mod,
-            game_version: Some(game_version.get_value()),
-            mod_loader: Some(mod_loader.get_value()),
-        };
-        leptos::task::spawn_local(async move {
-            match call_search_projects(option).await {
-                Ok(res) => {
-                    results.set(res.items);
-                    searched.set(true);
-                    loading.set(false);
-                }
-                Err(e) => {
-                    error.set(Some(e));
-                    loading.set(false);
                 }
             }
         });
@@ -407,146 +372,109 @@ fn AddModModal(
 
     view! {
         <ModalOverlay>
-            <ModalBox>
+            <ModalBox size=ModalSize::Large>
                 <ModalBody>
                     <h2 style="margin: 0 0 16px 0;">"Add Mod"</h2>
-                    <div class=css! { display: flex; gap: 10px; }>
-                        <input
-                            class=input_class()
-                            style="flex: 1; width: auto;"
-                            type="text"
+
+                    // Hidden (not unmounted) while a project's versions are
+                    // shown, so the search results survive a Back.
+                    <div style=move || if selected_project.get().is_some() {
+                        "display: none;"
+                    } else {
+                        "display: flex; flex-direction: column; height: 440px;"
+                    }>
+                        <ProjectSearch
+                            target=ProjectFileTarget::Mod
+                            game_version=game_version.get_value()
+                            mod_loader=mod_loader.get_value()
                             placeholder="Search mods on CurseForge…"
-                            prop:value=move || query.get()
-                            on:input=move |ev| query.set(event_target_value(&ev))
-                            on:keydown=move |ev: web_sys::KeyboardEvent| {
-                                if ev.key() == "Enter" { do_search(); }
-                            }
+                            action_label="Details"
+                            empty_message="No compatible mods found."
+                            on_select=Callback::new(move |p: ModProjectInfo| on_details(p))
                         />
-                        <Button variant=ButtonVariant::Primary on_click=Callback::new(move |_| do_search())>
-                            "Search"
-                        </Button>
                     </div>
 
-                    {move || {
-                        if let Some(project) = selected_project.get() {
-                            let pid = project.id;
-                            let logo_view = if let Some(url) = project.logo_url.clone() {
-                                view! { <img class=logo src=url alt="" /> }.into_any()
-                            } else {
-                                view! { <div class=logo_ph>"📦"</div> }.into_any()
-                            };
-                            view! {
-                                <div class=results_list>
-                                    <div class=card>
-                                        {logo_view}
-                                        <div class=body>
-                                            <div class=name>{project.name}</div>
-                                            <div class=summary>{project.summary}</div>
-                                        </div>
-                                    </div>
-                                    {move || {
-                                        if let Some(e) = versions_error.get() {
-                                            view! { <div class=status_area>{e}</div> }.into_any()
-                                        } else if versions_loading.get() && versions.get().is_empty() {
-                                            view! { <div class=status_area>"Loading versions…"</div> }.into_any()
-                                        } else if versions.get().is_empty() {
-                                            view! { <div class=status_area>"No compatible versions found."</div> }.into_any()
-                                        } else {
-                                            view! {
-                                                <select
-                                                    class=select_class()
-                                                    size="8"
-                                                    prop:value=move || selected_file_id.get()
-                                                    on:change=move |ev| selected_file_id.set(event_target_value(&ev))
-                                                    on:scroll=move |ev| {
-                                                        let Some(select) = ev.target()
-                                                            .and_then(|target| target.dyn_into::<web_sys::HtmlSelectElement>().ok())
-                                                        else { return; };
-                                                        let remaining = select.scroll_height() - select.scroll_top() - select.client_height();
-                                                        if remaining <= 8 {
-                                                            load_versions(pid, true);
-                                                        }
-                                                    }
-                                                >
-                                                    {move || versions.get().into_iter().map(|file| {
-                                                        let val = file.source.curseforge_ids()
-                                                            .map(|(_, id)| id.to_string())
-                                                            .unwrap_or_default();
-                                                        let label = format!("{}  [{}]", file.display_name, file.release_type);
-                                                        let is_selected = val == selected_file_id.get();
-                                                        view! { <option value=val selected=is_selected>{label}</option> }
-                                                    }).collect_view()}
-                                                </select>
-                                                <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
-                                                    <Button
-                                                        variant=ButtonVariant::Secondary
-                                                        on_click=Callback::new(move |_| selected_project.set(None))
-                                                    >
-                                                        "Back"
-                                                    </Button>
-                                                    <Button
-                                                        variant=ButtonVariant::Primary
-                                                        disabled=Signal::derive(move || {
-                                                            selected_file_id.get().is_empty()
-                                                                || versions_loading.get()
-                                                                || installing.get().contains(&pid)
-                                                                || installed.get().contains(&pid)
-                                                        })
-                                                        on_click=Callback::new(move |_| on_add(pid))
-                                                    >
-                                                        {move || if installed.get().contains(&pid) {
-                                                            "Added"
-                                                        } else if installing.get().contains(&pid) {
-                                                            "Adding…"
-                                                        } else {
-                                                            "Add"
-                                                        }}
-                                                    </Button>
-                                                </div>
-                                            }.into_any()
-                                        }
-                                    }}
-                                </div>
-                            }.into_any()
-                        } else if loading.get() {
-                            view! { <div class=status_area>"Searching…"</div> }.into_any()
-                        } else if let Some(e) = error.get() {
-                            view! { <div class=status_area>{e}</div> }.into_any()
-                        } else if searched.get() && results.get().is_empty() {
-                            view! { <div class=status_area>"No compatible mods found."</div> }.into_any()
+                    {move || selected_project.get().map(|project| {
+                        let pid = project.id;
+                        let logo_view = if let Some(url) = project.logo_url.clone() {
+                            view! { <img class=logo src=url alt="" /> }.into_any()
                         } else {
-                            view! {
-                                <div class=results_list>
-                                    {move || results.get().into_iter().map(|pack| {
-                                        let pid = pack.id;
-                                        let logo_view = if let Some(url) = pack.logo_url.clone() {
-                                            view! { <img class=logo src=url alt="" /> }.into_any()
-                                        } else {
-                                            view! { <div class=logo_ph>"📦"</div> }.into_any()
-                                        };
+                            view! { <div class=logo_ph>"📦"</div> }.into_any()
+                        };
+                        view! {
+                            <div class=results_list>
+                                <div class=card>
+                                    {logo_view}
+                                    <div class=body>
+                                        <div class=name>{project.name}</div>
+                                        <div class=summary>{project.summary}</div>
+                                    </div>
+                                </div>
+                                {move || {
+                                    if let Some(e) = versions_error.get() {
+                                        view! { <div class=status_area>{e}</div> }.into_any()
+                                    } else if versions_loading.get() && versions.get().is_empty() {
+                                        view! { <div class=status_area>"Loading versions…"</div> }.into_any()
+                                    } else if versions.get().is_empty() {
+                                        view! { <div class=status_area>"No compatible versions found."</div> }.into_any()
+                                    } else {
                                         view! {
-                                            <div class=card>
-                                                {logo_view}
-                                                <div class=body>
-                                                    <div class=name>{pack.name.clone()}</div>
-                                                    <div class=summary>{pack.summary.clone()}</div>
-                                                </div>
+                                            <select
+                                                class=select_class()
+                                                size="8"
+                                                prop:value=move || selected_file_id.get()
+                                                on:change=move |ev| selected_file_id.set(event_target_value(&ev))
+                                                on:scroll=move |ev| {
+                                                    let Some(select) = ev.target()
+                                                        .and_then(|target| target.dyn_into::<web_sys::HtmlSelectElement>().ok())
+                                                    else { return; };
+                                                    let remaining = select.scroll_height() - select.scroll_top() - select.client_height();
+                                                    if remaining <= 8 {
+                                                        load_versions(pid, true);
+                                                    }
+                                                }
+                                            >
+                                                {move || versions.get().into_iter().map(|file| {
+                                                    let val = file.source.curseforge_ids()
+                                                        .map(|(_, id)| id.to_string())
+                                                        .unwrap_or_default();
+                                                    let label = format!("{}  [{}]", file.display_name, file.release_type);
+                                                    let is_selected = val == selected_file_id.get();
+                                                    view! { <option value=val selected=is_selected>{label}</option> }
+                                                }).collect_view()}
+                                            </select>
+                                            <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+                                                <Button
+                                                    variant=ButtonVariant::Secondary
+                                                    on_click=Callback::new(move |_| selected_project.set(None))
+                                                >
+                                                    "Back"
+                                                </Button>
                                                 <Button
                                                     variant=ButtonVariant::Primary
                                                     disabled=Signal::derive(move || {
-                                                        installing.get().contains(&pid) || installed.get().contains(&pid)
+                                                        selected_file_id.get().is_empty()
+                                                            || versions_loading.get()
+                                                            || installing.get().contains(&pid)
+                                                            || installed.get().contains(&pid)
                                                     })
-                                                    on_click=Callback::new(move |_| on_details(pack.clone()))
+                                                    on_click=Callback::new(move |_| on_add(pid))
                                                 >
-                                                    "Details"
+                                                    {move || if installed.get().contains(&pid) {
+                                                        "Added"
+                                                    } else if installing.get().contains(&pid) {
+                                                        "Adding…"
+                                                    } else {
+                                                        "Add"
+                                                    }}
                                                 </Button>
                                             </div>
-                                        }
-                                    }).collect_view()}
-                                </div>
-                            }.into_any()
+                                        }.into_any()
+                                    }
+                                }}
+                            </div>
                         }
-                    }}
+                    })}
                 </ModalBody>
                 <ModalFooter>
                     <Button variant=ButtonVariant::Secondary on_click=Callback::new(move |_| on_close.run(()))>

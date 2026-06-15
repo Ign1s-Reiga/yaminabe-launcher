@@ -4,6 +4,7 @@ pub mod mod_manager;
 pub mod modal;
 pub mod open_in_file_manager;
 pub mod pagination;
+pub mod project_search;
 pub mod ui;
 pub mod settings;
 pub mod card;

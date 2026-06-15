@@ -165,9 +165,19 @@ pub async fn download_resource(
     let tmp_path = dest_path.with_file_name(tmp_name);
 
     std::fs::write(&tmp_path, &bytes)?;
-    if let Err(e) = std::fs::rename(&tmp_path, &dest_path) {
-        std::fs::remove_file(&tmp_path).ok();
-        return Err(e.into());
+    if std::fs::rename(&tmp_path, &dest_path).is_err() {
+        if dest_path.exists() {
+            let mut perms = std::fs::metadata(&dest_path)?.permissions();
+            if perms.readonly() {
+                perms.set_readonly(false);
+                std::fs::set_permissions(&dest_path, perms)?;
+            }
+            std::fs::remove_file(&dest_path)?;
+        }
+        if let Err(e) = std::fs::rename(&tmp_path, &dest_path) {
+            std::fs::remove_file(&tmp_path).ok();
+            return Err(e.into());
+        }
     }
     Ok(())
 }

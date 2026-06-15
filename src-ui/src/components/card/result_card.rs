@@ -9,7 +9,8 @@ use yaminabe_launcher_shared::datamodels::ModProjectInfo;
 #[component]
 pub fn ResultCard(
     pack: ModProjectInfo,
-    on_install: Callback<ModProjectInfo>,
+    #[prop(into, default = "Install".to_string())] action_label: String,
+    on_select: Callback<ModProjectInfo>,
 ) -> impl IntoView {
     let card = css! {
         display: flex;
@@ -113,9 +114,9 @@ pub fn ResultCard(
             </div>
             <Button
                 variant=ButtonVariant::Primary
-                on_click=Callback::new(move |_| on_install.run(pack_for_click.clone()))
+                on_click=Callback::new(move |_| on_select.run(pack_for_click.clone()))
             >
-                "Install"
+                {action_label}
             </Button>
         </div>
     }

@@ -1,102 +1,27 @@
-use crate::components::card::result_card::ResultCard;
 use crate::components::modal::install_modpack_modal::{InstallModpackModal, InstallState};
-use crate::components::pagination::Pagination;
-use crate::components::ui::*;
-use crate::curseforge::{
-    InstallModpackArgs, call_install_modpack, call_list_project_files, call_search_projects,
-};
+use crate::components::project_search::ProjectSearch;
+use crate::curseforge::{InstallModpackArgs, call_install_modpack, call_list_project_files};
 use crate::ipc;
 use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{IntoView, component, view, web_sys};
 use wasm_bindgen::JsCast;
-use yaminabe_launcher_shared::datamodels::{
-    AppSettings, ModProjectInfo, ProjectFileTarget, SearchOptions,
-};
+use yaminabe_launcher_shared::datamodels::{AppSettings, ModProjectInfo, ProjectFileTarget};
 
 const PAGE_SIZE: usize = 50;
 
-#[derive(Clone, Default)]
-struct SearchQuery {
-    query: String,
-    page: usize,
-}
-
-#[derive(Clone, Default)]
-struct SearchState {
-    is_loading: bool,
-    error: Option<String>,
-    results: Vec<ModProjectInfo>,
-    total: u32,
-}
-
 #[component]
 pub fn SearchPage() -> impl IntoView {
-    let search_input: RwSignal<String> = RwSignal::new(String::new());
-    let search_query: RwSignal<SearchQuery> = RwSignal::new(SearchQuery::default());
-    let search_state: RwSignal<SearchState> = RwSignal::new(SearchState::default());
     let install: RwSignal<Option<InstallState>> = RwSignal::new(None);
     let install_name: RwSignal<String> = RwSignal::new(String::new());
     let default_location: RwSignal<String> = RwSignal::new(String::new());
-    let results_wrapper_ref: NodeRef<leptos::html::Div> = NodeRef::new();
-
-    // Reset the scroll position whenever the active query/page changes so
-    // the user lands at the top of the new result set instead of inheriting
-    // the previous page's scroll offset.
-    Effect::new(move |_| {
-        search_query.track();
-        if let Some(el) = results_wrapper_ref.get() {
-            el.set_scroll_top(0);
-        }
-    });
 
     leptos::task::spawn_local(async move {
         if let Ok(s) = ipc::call_noargs::<AppSettings>("get_settings").await {
             default_location.set(s.instance_install_dir);
         }
     });
-
-    Effect::new(move |_| {
-        let q = search_query.get();
-        if q.query.is_empty() {
-            search_state.set(SearchState::default());
-            return;
-        }
-        search_state.update(|s| {
-            s.is_loading = true;
-            s.error = None;
-        });
-        let index = (q.page * PAGE_SIZE) as u32;
-        let option = SearchOptions {
-            query: q.query,
-            index,
-            target: ProjectFileTarget::Modpack,
-            ..Default::default()
-        };
-        leptos::task::spawn_local(async move {
-            match call_search_projects(option).await {
-                Ok(data) => {
-                    search_state.update(|s| {
-                        s.total = data.total;
-                        s.results = data.items;
-                        s.is_loading = false;
-                    });
-                }
-                Err(e) => {
-                    search_state.update(|s| {
-                        s.error = Some(e);
-                        s.is_loading = false;
-                    });
-                }
-            }
-        });
-    });
-
-    let do_search = move || {
-        let q = search_input.get_untracked();
-        search_query.set(SearchQuery { query: q, page: 0 });
-    };
 
     let open_install = move |pack: ModProjectInfo| {
         install_name.set(pack.name.clone());
@@ -234,58 +159,12 @@ pub fn SearchPage() -> impl IntoView {
         });
     };
 
-    // ── pagination derived values ─────────────────────────────────────────────
-    // `last_page` is 0 when the result set is empty, otherwise the index of
-    // the last page (so a 50-item set with PAGE_SIZE=20 has last_page=2).
-    let last_page: Signal<usize> = Signal::derive(move || {
-        let total = search_state.get().total as usize;
-        if total == 0 {
-            0
-        } else {
-            (total - 1) / PAGE_SIZE
-        }
-    });
-    let current_page: Signal<usize> = Signal::derive(move || search_query.get().page);
-    let is_loading: Signal<bool> = Signal::derive(move || search_state.get().is_loading);
-
     // ── page root: flex column that fills MainView's content area ────────────
     let page_root = css! {
         display: flex;
         flex-direction: column;
         height: 100%;
         overflow: hidden;
-    };
-
-    let search_bar = css! {
-        display: flex;
-        gap: 10px;
-        margin-bottom: 24px;
-        flex-shrink: 0;
-    };
-
-    let status_area = css! {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        padding: 80px 0;
-        gap: 10px;
-        opacity: 0.5;
-        font-size: 0.9rem;
-        text-align: center;
-    };
-
-    let results_wrapper = css! {
-        flex: 1;
-        min-height: 0;
-        overflow-y: auto;
-        scrollbar-width: thin;
-        scrollbar-color: darkgrey var(--background-color);
-    };
-    let results_list = css! {
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
     };
 
     view! {
@@ -295,64 +174,11 @@ pub fn SearchPage() -> impl IntoView {
             "Browse and install modpacks directly from CurseForge."
         </h2>
 
-        // ── search bar ────────────────────────────────────────────────────────
-        <div class=search_bar>
-            <input
-                class=input_class()
-                style="flex: 1; width: auto;"
-                type="text"
-                placeholder="Search modpacks on CurseForge…"
-                prop:value=move || search_input.get()
-                on:input=move |ev| search_input.set(event_target_value(&ev))
-                on:keydown=move |ev: web_sys::KeyboardEvent| {
-                    if ev.key() == "Enter" { do_search(); }
-                }
-            />
-            <Button variant=ButtonVariant::Primary on_click=Callback::new(move |_| do_search())>
-                "Search"
-            </Button>
-        </div>
-
-        // ── status messages (outside scroll area) ─────────────────────────────
-        {move || {
-            let s = search_state.get();
-            let q = search_query.get();
-            if s.is_loading {
-                view! { <div class=status_area>"Searching…"</div> }.into_any()
-            } else if q.query.is_empty() {
-                view! {
-                    <div class=status_area>
-                        <div style="font-size: 2.5rem; opacity: 0.8;">"🔍"</div>
-                        "Type a modpack name above and press Search to begin."
-                    </div>
-                }.into_any()
-            } else if let Some(e) = s.error {
-                view! { <div class=status_area>{e}</div> }.into_any()
-            } else if s.results.is_empty() {
-                view! { <div class=status_area>"No modpacks found."</div> }.into_any()
-            } else {
-                ().into_any()
-            }
-        }}
-
-        // ── scrollable result cards ───────────────────────────────────────────
-        <Show when=move || !search_state.get().results.is_empty() fallback=|| ()>
-            <div class=results_wrapper node_ref=results_wrapper_ref>
-                <div class=results_list>
-                    {move || search_state.get().results.into_iter().map(|pack| {
-                        view! {
-                            <ResultCard pack=pack on_install=Callback::new(move |p| open_install(p)) />
-                        }
-                    }).collect_view()}
-                </div>
-            </div>
-        </Show>
-
-        <Pagination
-            current=current_page
-            last_page=last_page
-            is_loading=is_loading
-            on_change=Callback::new(move |p: usize| search_query.update(|q| q.page = p))
+        <ProjectSearch
+            target=ProjectFileTarget::Modpack
+            placeholder="Search modpacks on CurseForge…"
+            empty_message="No modpacks found."
+            on_select=Callback::new(move |p: ModProjectInfo| open_install(p))
         />
 
         <Show when=move || install.get().is_some()>

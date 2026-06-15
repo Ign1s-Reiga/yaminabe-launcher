@@ -30,7 +30,7 @@ impl Version {
                 project_id: self.project_id.clone(),
                 version_id: self.id.clone(),
             },
-            target: target_from_project_type(project_type),
+            target: ProjectFileTarget::from_modrinth_type(project_type),
             release_type: self.version_type.clone().into(),
             file_name: version_file.filename.clone(),
             download_url: Some(version_file.url.clone()),
@@ -38,14 +38,6 @@ impl Version {
             sha1: version_file.hashes.sha1.clone(),
             size: version_file.size,
         })
-    }
-}
-
-fn target_from_project_type(project_type: &str) -> ProjectFileTarget {
-    match project_type {
-        "resourcepack" => ProjectFileTarget::ResourcePack,
-        "modpack" => ProjectFileTarget::Modpack,
-        _ => ProjectFileTarget::Mod,
     }
 }
 

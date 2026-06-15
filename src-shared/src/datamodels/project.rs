@@ -61,7 +61,7 @@ impl ProjectFileTarget {
         matches!(self, ProjectFileTarget::Mod)
     }
 
-    pub fn into_curseforge_type(&self) -> &'static str {
+    pub fn to_curseforge_type(&self) -> &'static str {
         match self {
             ProjectFileTarget::Mod => "6",
             ProjectFileTarget::ResourcePack => "12",
@@ -69,12 +69,72 @@ impl ProjectFileTarget {
         }
     }
 
-    pub fn into_modrinth_type(&self) -> &'static str {
+    pub fn to_modrinth_type(&self) -> &'static str {
         match self {
             ProjectFileTarget::Mod => "mod",
             ProjectFileTarget::ResourcePack => "resourcepack",
             ProjectFileTarget::Modpack => "modpack",
         }
+    }
+
+    pub fn from_curseforge_type(project_type: u32) -> ProjectFileTarget {
+        match project_type {
+            12 => ProjectFileTarget::ResourcePack,
+            4471 => ProjectFileTarget::Modpack,
+            _ => ProjectFileTarget::Mod,
+        }
+    }
+
+    pub fn from_modrinth_type(project_type: &str) -> ProjectFileTarget {
+        match project_type {
+            "resourcepack" => ProjectFileTarget::ResourcePack,
+            "modpack" => ProjectFileTarget::Modpack,
+            _ => ProjectFileTarget::Mod,
+        }
+    }
+}
+
+/// Sort order for a project search. Maps to CurseForge's `sortField`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectSortField {
+    #[default]
+    Popularity,
+    LastUpdated,
+    Name,
+    TotalDownloads,
+}
+
+impl ProjectSortField {
+    pub fn to_curseforge_field(&self) -> &'static str {
+        match self {
+            ProjectSortField::Popularity => "2",
+            ProjectSortField::LastUpdated => "3",
+            ProjectSortField::Name => "4",
+            ProjectSortField::TotalDownloads => "6",
+        }
+    }
+
+    /// Every variant, in display order — for building a sort selector.
+    pub fn all() -> [ProjectSortField; 4] {
+        [
+            ProjectSortField::Popularity,
+            ProjectSortField::LastUpdated,
+            ProjectSortField::Name,
+            ProjectSortField::TotalDownloads,
+        ]
+    }
+}
+
+impl Display for ProjectSortField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            ProjectSortField::Popularity => "Popularity",
+            ProjectSortField::LastUpdated => "Last Updated",
+            ProjectSortField::Name => "Name",
+            ProjectSortField::TotalDownloads => "Downloads",
+        };
+        write!(f, "{label}")
     }
 }
 
@@ -88,6 +148,8 @@ pub struct SearchOptions {
     pub game_version: Option<String>,
     #[serde(default)]
     pub mod_loader: Option<ModLoader>,
+    #[serde(default)]
+    pub sort: ProjectSortField,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -132,6 +194,7 @@ impl ProjectFileInfo {
             file_name: self.file_name.clone(),
             sha1: self.sha1.clone(),
             source: self.source.clone(),
+            target: self.target,
             size: self.size,
             state,
         }
@@ -196,6 +259,8 @@ pub struct ModListEntry {
     pub sha1: String,
     #[serde(default)]
     pub source: DownloadSource,
+    #[serde(default)]
+    pub target: ProjectFileTarget,
     #[serde(default)]
     pub size: u64,
     #[serde(default)]
@@ -264,6 +329,7 @@ mod tests {
                 project_id: 10,
                 file_id: 20,
             },
+            target: super::ProjectFileTarget::Mod,
             size: 1024,
             state: ModState::Enabled,
         })
@@ -271,7 +337,7 @@ mod tests {
 
         assert_eq!(
             json,
-            r#"{"fileName":"example.jar","sha1":"abc123","source":{"type":"curseForge","project_id":10,"file_id":20},"size":1024,"state":"enabled"}"#
+            r#"{"fileName":"example.jar","sha1":"abc123","source":{"type":"curseForge","project_id":10,"file_id":20},"target":"mod","size":1024,"state":"enabled"}"#
         );
     }
 

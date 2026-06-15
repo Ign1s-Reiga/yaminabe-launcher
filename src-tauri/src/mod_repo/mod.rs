@@ -179,8 +179,6 @@ async fn download_project_file(
         }
     };
 
-    Ok(file
-        .target
-        .tracks_modlist()
-        .then(|| file.to_modlist_entry(state)))
+    let track = file.target.tracks_modlist() || state == ModState::DownloadFailed;
+    Ok(track.then(|| file.to_modlist_entry(state)))
 }
