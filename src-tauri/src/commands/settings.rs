@@ -58,7 +58,7 @@ pub fn get_instance_subfolders(id: String, state: State<'_, AppState>) -> Vec<St
     let Ok(dir) = find_instance_dir(Path::new(&install_dir), &id) else {
         return Vec::new();
     };
-    ["config", "mods", "resourcepacks", "saves"]
+    ["config", "mods", "resourcepacks", "saves", "shaderpacks", "datapacks"]
         .into_iter()
         .filter(|s| dir.join(s).exists())
         .map(String::from)
