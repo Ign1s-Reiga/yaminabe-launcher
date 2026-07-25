@@ -5,7 +5,8 @@ use crate::http_utils::{download_resource, fetch_json};
 use serde::Deserialize;
 use tauri::State;
 use yaminabe_launcher_shared::datamodels::{
-    DownloadSource, ModProjectSearchResults, ProjectFileInfo, ProjectFileTarget, SearchOptions,
+    DownloadSource, ModProjectInfo, ModProjectSearchResults, Platform, ProjectFileInfo,
+    ProjectFileTarget, SearchOptions,
 };
 use yaminabe_launcher_shared::error::Error;
 
@@ -100,13 +101,97 @@ pub async fn download_file_by_sha1(
     Ok(())
 }
 
-#[allow(unused_variables)]
+#[derive(Deserialize)]
+struct SearchResponse {
+    hits: Vec<SearchHit>,
+    total_hits: u32,
+}
+
+#[derive(Deserialize)]
+struct SearchHit {
+    title: String,
+    description: String,
+    #[serde(default)]
+    icon_url: Option<String>,
+    #[serde(default)]
+    downloads: u64,
+    /// Categories without the loader/environment tags `categories` carries, so
+    /// the result-card chips don't show `fabric`/`forge` alongside real ones.
+    #[serde(default)]
+    display_categories: Vec<String>,
+    #[serde(default)]
+    versions: Vec<String>,
+}
+
+/// Search Modrinth projects via `GET /v2/search`. Mods are narrowed by game
+/// version and loader through the `facets` filter; the sort `index` and result
+/// shape are normalized to the shared `ModProjectInfo`. Modrinth identifies
+/// projects by string id, which `ModProjectInfo` (CurseForge-shaped `u32` id)
+/// can't carry, so results are display-only for now — `id` is left 0.
 pub async fn search_projects(
     option: &SearchOptions,
     client: &reqwest::Client,
-    api_key: &str,
 ) -> Result<ModProjectSearchResults, Error> {
-    unimplemented!()
+    let mut facets: Vec<Vec<String>> = vec![vec![format!(
+        "project_type:{}",
+        option.target.to_modrinth_type()
+    )]];
+    if let Some(version) = option.game_version.as_deref() {
+        facets.push(vec![format!("versions:{version}")]);
+    }
+    if let Some(loader) = option.mod_loader.as_ref().and_then(|l| l.modrinth_name()) {
+        facets.push(vec![format!("categories:{loader}")]);
+    }
+    let facets = serde_json::to_string(&facets)?;
+    let offset = option.index.to_string();
+
+    let mut query: Vec<(&str, &str)> = vec![
+        ("facets", facets.as_str()),
+        ("index", option.sort.to_modrinth_index()),
+        ("offset", &offset),
+        ("limit", "50"),
+    ];
+    if !option.query.trim().is_empty() {
+        query.push(("query", option.query.as_str()));
+    }
+
+    let body = fetch_json(client, "https://api.modrinth.com/v2/search")
+        .query(&query)
+        .send::<SearchResponse>()
+        .await?;
+
+    let items = body
+        .hits
+        .into_iter()
+        .map(|hit| {
+            // Keep only release-shaped versions (drop snapshots/pre-releases)
+            // and sort, so the card's newest-version display is stable.
+            let mut game_versions: Vec<String> = hit
+                .versions
+                .into_iter()
+                .filter(|v| v.chars().all(|c| c.is_ascii_digit() || c == '.'))
+                .collect();
+            game_versions.sort();
+            game_versions.dedup();
+            ModProjectInfo {
+                id: 0,
+                platform: Platform::Modrinth,
+                file_id: None,
+                name: hit.title,
+                summary: hit.description,
+                logo_url: hit.icon_url,
+                download_count: hit.downloads,
+                game_versions,
+                category: hit.display_categories,
+                primary_category_id: 0,
+            }
+        })
+        .collect();
+
+    Ok(ModProjectSearchResults {
+        items,
+        total: body.total_hits,
+    })
 }
 
 pub fn list_project_files() {

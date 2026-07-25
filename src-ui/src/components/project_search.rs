@@ -7,10 +7,13 @@ use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{IntoView, component, view, web_sys};
 use yaminabe_launcher_shared::datamodels::{
-    ModLoader, ModProjectInfo, ProjectFileTarget, ProjectSortField, SearchOptions,
+    ModLoader, ModProjectInfo, Platform, ProjectFileTarget, ProjectSortField, SearchOptions,
 };
 
 const PAGE_SIZE: usize = 50;
+
+const CURSEFORGE_LOGO: &str = include_str!("../../assets/curse-logo.svg");
+const MODRINTH_LOGO: &str = include_str!("../../assets/Modrinth_icon_light.svg");
 
 #[derive(Clone, Default)]
 struct SearchQuery {
@@ -40,6 +43,9 @@ pub fn ProjectSearch(
     #[prop(into)] placeholder: String,
     #[prop(into, default = "Install".to_string())] action_label: String,
     #[prop(into)] empty_message: String,
+    /// Run a search (with whatever query is present, including empty → browse)
+    /// as soon as the component mounts, instead of showing the idle prompt.
+    #[prop(optional)] search_on_open: bool,
     on_select: Callback<ModProjectInfo>,
 ) -> impl IntoView {
     let game_version = StoredValue::new(game_version);
@@ -51,6 +57,8 @@ pub fn ProjectSearch(
     let search_query: RwSignal<SearchQuery> = RwSignal::new(SearchQuery::default());
     let search_state: RwSignal<SearchState> = RwSignal::new(SearchState::default());
     let sort: RwSignal<ProjectSortField> = RwSignal::new(ProjectSortField::default());
+    let platform: RwSignal<Platform> = RwSignal::new(Platform::default());
+    let request_id = StoredValue::new(0u64);
     let results_wrapper_ref: NodeRef<leptos::html::Div> = NodeRef::new();
 
     // Reset the scroll position whenever the active query/page changes so the
@@ -64,7 +72,11 @@ pub fn ProjectSearch(
 
     Effect::new(move |_| {
         let q = search_query.get();
-        if q.query.is_empty() {
+        // Bump on every run so an in-flight request whose platform/sort no
+        // longer matches can be dropped once it resolves.
+        request_id.update_value(|n| *n += 1);
+        let this_request = request_id.get_value();
+        if q.query.is_empty() && !search_on_open {
             search_state.set(SearchState::default());
             return;
         }
@@ -78,12 +90,20 @@ pub fn ProjectSearch(
             target,
             game_version: game_version.get_value(),
             mod_loader: mod_loader.get_value(),
-            // Read untracked: a sort change drives the re-search by resetting
-            // the query page below, so this effect keys only on `search_query`.
+            // Read untracked: sort/platform changes drive the re-search by
+            // resetting the query page below, so this effect keys only on
+            // `search_query`.
             sort: sort.get_untracked(),
+            platform: platform.get_untracked(),
         };
         leptos::task::spawn_local(async move {
-            match call_search_projects(option).await {
+            let result = call_search_projects(option).await;
+            // A newer search superseded this one; drop the stale response so it
+            // can't overwrite the current platform's results.
+            if request_id.get_value() != this_request {
+                return;
+            }
+            match result {
                 Ok(data) => search_state.update(|s| {
                     s.total = data.total;
                     s.results = data.items;
@@ -121,6 +141,43 @@ pub fn ProjectSearch(
         margin-bottom: 24px;
         flex-shrink: 0;
     };
+    // Platform split button: two joined segments, each carrying a logo that
+    // inherits the segment's text color (the SVGs use `currentColor`).
+    let platform_switch = css! {
+        display: flex;
+        flex-shrink: 0;
+        border: 1px solid var(--secondary-color);
+        border-radius: 8px;
+        overflow: hidden;
+    };
+    let platform_seg = css! {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 8px 12px;
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: var(--text-color);
+        transition: background-color 0.15s ease;
+        &:hover { background-color: var(--secondary-color); }
+    };
+    let platform_seg_active = css! {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 8px 12px;
+        background-color: #3a9e5f;
+        border: none;
+        cursor: pointer;
+        color: white;
+    };
+    let platform_logo = css! {
+        display: flex;
+        height: 16px;
+        & svg { height: 100%; width: auto; display: block; }
+    };
+    let seg_class = move |p: Platform| if platform.get() == p { platform_seg_active } else { platform_seg };
     let status_area = css! {
         display: flex;
         flex-direction: column;
@@ -148,6 +205,30 @@ pub fn ProjectSearch(
     view! {
       <div class=root>
         <div class=search_bar>
+            <div class=platform_switch>
+                <button
+                    type="button"
+                    title="CurseForge"
+                    class=move || seg_class(Platform::CurseForge)
+                    on:click=move |_| {
+                        platform.set(Platform::CurseForge);
+                        search_query.update(|q| q.page = 0);
+                    }
+                >
+                    <span class=platform_logo inner_html=CURSEFORGE_LOGO></span>
+                </button>
+                <button
+                    type="button"
+                    title="Modrinth"
+                    class=move || seg_class(Platform::Modrinth)
+                    on:click=move |_| {
+                        platform.set(Platform::Modrinth);
+                        search_query.update(|q| q.page = 0);
+                    }
+                >
+                    <span class=platform_logo inner_html=MODRINTH_LOGO></span>
+                </button>
+            </div>
             <input
                 class=input_class()
                 style="flex: 1; width: auto;"
@@ -181,7 +262,7 @@ pub fn ProjectSearch(
             let q = search_query.get();
             if s.is_loading {
                 view! { <div class=status_area>"Searching…"</div> }.into_any()
-            } else if q.query.is_empty() {
+            } else if q.query.is_empty() && !search_on_open {
                 view! {
                     <div class=status_area>
                         <div style="font-size: 2.5rem; opacity: 0.8;">"🔍"</div>

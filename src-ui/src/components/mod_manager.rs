@@ -11,7 +11,7 @@ use leptos::{IntoView, component, view, web_sys};
 use std::collections::HashSet;
 use wasm_bindgen::JsCast;
 use yaminabe_launcher_shared::datamodels::{
-    ModListEntry, ModLoader, ModProjectInfo, ModState, ProjectFileInfo, ProjectFileTarget,
+    ModListEntry, ModLoader, ModProjectInfo, ModState, Platform, ProjectFileInfo, ProjectFileTarget,
 };
 
 /// Human-readable file size.
@@ -272,6 +272,11 @@ fn AddModModal(
     };
 
     let on_details = move |project: ModProjectInfo| {
+        // The version/download flow is CurseForge-only for now; Modrinth search
+        // results are display-only.
+        if project.platform != Platform::CurseForge {
+            return;
+        }
         let project_id = project.id;
         selected_project.set(Some(project));
         load_versions(project_id, false);
@@ -387,9 +392,10 @@ fn AddModModal(
                             target=ProjectFileTarget::Mod
                             game_version=game_version.get_value()
                             mod_loader=mod_loader.get_value()
-                            placeholder="Search mods on CurseForge…"
+                            placeholder="Search mods…"
                             action_label="Details"
                             empty_message="No compatible mods found."
+                            search_on_open=true
                             on_select=Callback::new(move |p: ModProjectInfo| on_details(p))
                         />
                     </div>

@@ -94,33 +94,60 @@ impl ProjectFileTarget {
     }
 }
 
-/// Sort order for a project search. Maps to CurseForge's `sortField`.
+/// The mod-distribution platform a search targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Platform {
+    #[default]
+    CurseForge,
+    Modrinth,
+}
+
+/// Sort order for a project search. The CurseForge options the launcher
+/// exposes, mapped per-platform (`sortField` for CurseForge, `index` for
+/// Modrinth).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ProjectSortField {
     #[default]
+    Relevancy,
     Popularity,
-    LastUpdated,
-    Name,
+    LatestUpdate,
+    CreationDate,
     TotalDownloads,
 }
 
 impl ProjectSortField {
+    /// CurseForge `sortField` value, or `""` for Relevancy (omit the param so
+    /// the API ranks by search relevance).
     pub fn to_curseforge_field(&self) -> &'static str {
         match self {
+            ProjectSortField::Relevancy => "",
             ProjectSortField::Popularity => "2",
-            ProjectSortField::LastUpdated => "3",
-            ProjectSortField::Name => "4",
+            ProjectSortField::LatestUpdate => "3",
+            ProjectSortField::CreationDate => "11",
             ProjectSortField::TotalDownloads => "6",
         }
     }
 
+    /// Modrinth search `index` value.
+    pub fn to_modrinth_index(&self) -> &'static str {
+        match self {
+            ProjectSortField::Relevancy => "relevance",
+            ProjectSortField::Popularity => "follows",
+            ProjectSortField::LatestUpdate => "updated",
+            ProjectSortField::CreationDate => "newest",
+            ProjectSortField::TotalDownloads => "downloads",
+        }
+    }
+
     /// Every variant, in display order — for building a sort selector.
-    pub fn all() -> [ProjectSortField; 4] {
+    pub fn all() -> [ProjectSortField; 5] {
         [
+            ProjectSortField::Relevancy,
             ProjectSortField::Popularity,
-            ProjectSortField::LastUpdated,
-            ProjectSortField::Name,
+            ProjectSortField::LatestUpdate,
+            ProjectSortField::CreationDate,
             ProjectSortField::TotalDownloads,
         ]
     }
@@ -129,10 +156,11 @@ impl ProjectSortField {
 impl Display for ProjectSortField {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
+            ProjectSortField::Relevancy => "Relevancy",
             ProjectSortField::Popularity => "Popularity",
-            ProjectSortField::LastUpdated => "Last Updated",
-            ProjectSortField::Name => "Name",
-            ProjectSortField::TotalDownloads => "Downloads",
+            ProjectSortField::LatestUpdate => "Latest Update",
+            ProjectSortField::CreationDate => "Creation Date",
+            ProjectSortField::TotalDownloads => "Total Downloads",
         };
         write!(f, "{label}")
     }
@@ -150,17 +178,21 @@ pub struct SearchOptions {
     pub mod_loader: Option<ModLoader>,
     #[serde(default)]
     pub sort: ProjectSortField,
+    #[serde(default)]
+    pub platform: Platform,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModProjectInfo {
     pub id: u32,
     #[serde(default)]
+    pub platform: Platform,
+    #[serde(default)]
     pub file_id: Option<u32>,
     pub name: String,
     pub summary: String,
     pub logo_url: Option<String>,
-    pub download_count: u32,
+    pub download_count: u64,
     pub game_versions: Vec<String>,
     pub category: Vec<String>,
     pub primary_category_id: u32,

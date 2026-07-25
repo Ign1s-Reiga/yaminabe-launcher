@@ -195,11 +195,13 @@ pub async fn call_get_modloader_versions(
     .await
 }
 
-pub fn fmt_downloads(n: u32) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f32 / 1_000_000.0)
+pub fn fmt_downloads(n: u64) -> String {
+    if n >= 1_000_000_000 {
+        format!("{:.1}B", n as f64 / 1_000_000_000.0)
+    } else if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
     } else if n >= 1_000 {
-        format!("{:.1}K", n as f32 / 1_000.0)
+        format!("{:.1}K", n as f64 / 1_000.0)
     } else {
         n.to_string()
     }

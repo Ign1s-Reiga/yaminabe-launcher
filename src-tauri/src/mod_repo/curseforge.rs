@@ -15,7 +15,7 @@ use serde::Deserialize;
 use tauri::State;
 use yaminabe_launcher_shared::datamodels::{
     DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModProjectInfo, ModProjectSearchResults,
-    ModState, ProjectFileInfo, ProjectFileTarget, SearchOptions,
+    ModState, Platform, ProjectFileInfo, ProjectFileTarget, SearchOptions,
 };
 use yaminabe_launcher_shared::error::Error;
 
@@ -85,7 +85,7 @@ struct SearchModsEntry {
     primary_category_id: u32,
     categories: Vec<CategoryItem>,
     logo: Option<Logo>,
-    download_count: u32,
+    download_count: u64,
     #[serde(default)]
     latest_files_indexes: Vec<FilesIndex>,
 }
@@ -212,6 +212,7 @@ fn to_search_results(
 
             ModProjectInfo {
                 id: m.id,
+                platform: Platform::CurseForge,
                 file_id,
                 name: m.name,
                 summary: m.summary,
@@ -237,23 +238,25 @@ pub async fn search_projects(
     http_client: &reqwest::Client,
     api_key: &str,
 ) -> Result<ModProjectSearchResults, Error> {
-    if option.query.trim().is_empty() {
-        return Ok(ModProjectSearchResults {
-            items: vec![],
-            total: 0,
-        });
-    }
-
     let index = option.index.to_string();
     let mut query: Vec<(&str, &str)> = vec![
         ("gameId", "432"),
         ("classId", option.target.to_curseforge_type()),
-        ("searchFilter", option.query.as_str()),
-        ("sortField", option.sort.to_curseforge_field()),
         ("pageSize", "50"),
-        ("sortOrder", "desc"),
         ("index", &index),
     ];
+    // An empty query is a browse (popular/sorted listing), so the filter is
+    // omitted rather than sent empty.
+    if !option.query.trim().is_empty() {
+        query.push(("searchFilter", option.query.as_str()));
+    }
+    // Relevancy maps to an omitted `sortField` (the API's default ranking);
+    // `sortOrder` only applies alongside an explicit field.
+    let sort_field = option.sort.to_curseforge_field();
+    if !sort_field.is_empty() {
+        query.push(("sortField", sort_field));
+        query.push(("sortOrder", "desc"));
+    }
     if let Some(game_version) = option.game_version.as_deref() {
         query.push(("gameVersion", game_version));
     }

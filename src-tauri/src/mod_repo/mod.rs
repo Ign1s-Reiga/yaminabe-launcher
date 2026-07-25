@@ -8,7 +8,7 @@ use reqwest::Client;
 use tauri::State;
 use yaminabe_launcher_shared::datamodels::ModState;
 use yaminabe_launcher_shared::datamodels::{
-    DownloadSource, ModListEntry, ModLoader, ModProjectSearchResults, ProjectFileInfo,
+    DownloadSource, ModListEntry, ModLoader, ModProjectSearchResults, Platform, ProjectFileInfo,
     ProjectFileTarget, SearchOptions,
 };
 use yaminabe_launcher_shared::error::Error;
@@ -21,7 +21,10 @@ pub async fn search_projects(
     client: &Client,
     api_key: &str,
 ) -> Result<ModProjectSearchResults, Error> {
-    curseforge::search_projects(option, client, api_key).await
+    match option.platform {
+        Platform::CurseForge => curseforge::search_projects(option, client, api_key).await,
+        Platform::Modrinth => modrinth::search_projects(option, client).await,
+    }
 }
 
 pub async fn list_project_files(

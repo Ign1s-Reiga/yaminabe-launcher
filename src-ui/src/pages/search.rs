@@ -7,7 +7,9 @@ use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{IntoView, component, view, web_sys};
 use wasm_bindgen::JsCast;
-use yaminabe_launcher_shared::datamodels::{AppSettings, ModProjectInfo, ProjectFileTarget};
+use yaminabe_launcher_shared::datamodels::{
+    AppSettings, ModProjectInfo, Platform, ProjectFileTarget,
+};
 
 const PAGE_SIZE: usize = 50;
 
@@ -24,6 +26,11 @@ pub fn SearchPage() -> impl IntoView {
     });
 
     let open_install = move |pack: ModProjectInfo| {
+        // Modpack install is CurseForge-only for now; Modrinth search results
+        // are display-only.
+        if pack.platform != Platform::CurseForge {
+            return;
+        }
         install_name.set(pack.name.clone());
         let mod_id = pack.id;
         install.set(Some(InstallState {
@@ -176,7 +183,7 @@ pub fn SearchPage() -> impl IntoView {
 
         <ProjectSearch
             target=ProjectFileTarget::Modpack
-            placeholder="Search modpacks on CurseForge…"
+            placeholder="Search modpacks…"
             empty_message="No modpacks found."
             on_select=Callback::new(move |p: ModProjectInfo| open_install(p))
         />

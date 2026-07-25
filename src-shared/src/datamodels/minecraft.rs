@@ -62,6 +62,18 @@ impl ModLoader {
             ModLoader::Vanilla => None,
         }
     }
+
+    /// Modrinth loader facet value (its `categories:` facet doubles as the
+    /// loader filter). `None` for Vanilla, which has no loader.
+    pub fn modrinth_name(&self) -> Option<&'static str> {
+        match self {
+            ModLoader::Forge => Some("forge"),
+            ModLoader::NeoForge => Some("neoforge"),
+            ModLoader::Fabric => Some("fabric"),
+            ModLoader::Quilt => Some("quilt"),
+            ModLoader::Vanilla => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
