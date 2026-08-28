@@ -1,7 +1,10 @@
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use log::info;
 use tauri::State;
-use yaminabe_launcher_shared::datamodels::{DownloadSource, InstanceMeta, ModListEntry, ModState};
+use yaminabe_launcher_shared::datamodels::{
+    DownloadSource, InstanceMeta, ModListEntry, ModState, ProjectFileTarget,
+};
 use yaminabe_launcher_shared::error::Error;
 use crate::{emit_progress, libraries_dir, versions_dir, ActivityGuard, AppState, InstanceActivity};
 use crate::commands::java::download_java_runtime;
@@ -35,8 +38,8 @@ pub fn replace_modlist_entries_for_file_ids(
     old_file_names: &[String],
     new_entries: Vec<ModListEntry>,
 ) -> Result<(), Error> {
-    let old_file_ids: std::collections::HashSet<u32> = old_file_ids.iter().copied().collect();
-    let old_file_names: std::collections::HashSet<&str> = old_file_names.iter().map(String::as_str).collect();
+    let old_file_ids: HashSet<u32> = old_file_ids.iter().copied().collect();
+    let old_file_names: HashSet<&str> = old_file_names.iter().map(String::as_str).collect();
     let mut modlist: Vec<ModListEntry> = read_json_or_default(modlist_file(instance_dir))?;
     modlist.retain(|entry| {
         if old_file_names.contains(entry.file_name.as_str()) { return false; }
@@ -214,6 +217,9 @@ pub fn delete_instance(id: String, state: State<'_, AppState>) -> Result<(), Err
     Ok(())
 }
 
+/// Every mod the instance has: the tracked entries of `modlist.json` plus the
+/// jars sitting in `mods/` that no entry claims. `DownloadFailed` entries have
+/// no file yet and are reported from the modlist alone.
 #[tauri::command]
 pub fn list_instance_mods(
     instance_id: String,
@@ -223,15 +229,50 @@ pub fn list_instance_mods(
     let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
     let mut modlist: Vec<ModListEntry> = read_json(modlist_file(&instance_dir))
         .unwrap_or_default();
-    modlist.sort_by(|a, b| a.file_name.to_lowercase().cmp(&b.file_name.to_lowercase()));
+    let untracked = untracked_mods(&instance_dir, &modlist);
+    modlist.extend(untracked);
+    sort_modlist(&mut modlist);
     Ok(modlist)
 }
 
-/// Toggle a tracked mod between `Enabled` and `Disabled`. Disabling renames its
-/// jar to `<name>.disabled` (which mod loaders ignore) and flips the modlist
-/// state; enabling renames it back. The modlist only ever holds mods (resource
-/// packs aren't tracked), so the file always lives under `mods/`. A
-/// `DownloadFailed` entry has no jar yet and can't be toggled.
+/// Jars in `mods/` that the launcher did not download — dropped in by hand, or
+/// installed before the modlist existed. They carry no provenance, so they are
+/// reported as `Manual` with their state read off the `.disabled` suffix. An
+/// enabled jar wins over a `<name>.disabled` twin of the same mod.
+fn untracked_mods(instance_dir: &Path, modlist: &[ModListEntry]) -> Vec<ModListEntry> {
+    let tracked: HashSet<&str> =
+        modlist.iter().map(|entry| entry.file_name.as_str()).collect();
+    let Ok(dir) = std::fs::read_dir(instance_dir.join("mods")) else {
+        return Vec::new();
+    };
+    let mut found: HashMap<String, ModListEntry> = HashMap::new();
+    for dir_entry in dir.flatten() {
+        if !dir_entry.path().is_file() { continue; }
+        let name = dir_entry.file_name().to_string_lossy().into_owned();
+        let (file_name, state) = match name.strip_suffix(".disabled") {
+            Some(base) => (base.to_string(), ModState::Disabled),
+            None => (name, ModState::Enabled),
+        };
+        if !file_name.ends_with(".jar") || tracked.contains(file_name.as_str()) { continue; }
+        if state == ModState::Disabled && found.contains_key(&file_name) { continue; }
+        found.insert(file_name.clone(), ModListEntry {
+            file_name,
+            sha1: String::new(),
+            source: DownloadSource::Manual,
+            target: ProjectFileTarget::Mod,
+            size: dir_entry.metadata().map(|m| m.len()).unwrap_or_default(),
+            state,
+        });
+    }
+    found.into_values().collect()
+}
+
+/// Toggle a mod between `Enabled` and `Disabled`. Disabling renames its jar to
+/// `<name>.disabled` (which mod loaders ignore) and flips the modlist state;
+/// enabling renames it back. The modlist only ever holds mods (resource packs
+/// aren't tracked), so the file always lives under `mods/`. An untracked jar
+/// carries its state in the file name alone, so for those the rename is the
+/// whole toggle. A `DownloadFailed` entry has no jar yet and can't be toggled.
 #[tauri::command]
 pub fn toggle_state_instance_mod(
     instance_id: String,
@@ -248,12 +289,24 @@ pub fn toggle_state_instance_mod(
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
     let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
     let mut modlist: Vec<ModListEntry> = read_json_or_default(modlist_file(&instance_dir))?;
-    let entry = modlist.iter_mut().find(|e| e.file_name == file_name)
-        .ok_or_else(|| Error::NotExists(format!("mod '{file_name}'")))?;
-
     let mods_dir = instance_dir.join("mods");
-    let enabled_path = mods_dir.join(&entry.file_name);
-    let disabled_path = mods_dir.join(format!("{}.disabled", entry.file_name));
+    let enabled_path = mods_dir.join(&file_name);
+    let disabled_path = mods_dir.join(format!("{file_name}.disabled"));
+
+    let Some(entry) = modlist.iter_mut().find(|e| e.file_name == file_name) else {
+        let new_state = if enabled_path.exists() {
+            std::fs::rename(&enabled_path, &disabled_path)?;
+            ModState::Disabled
+        } else if disabled_path.exists() {
+            std::fs::rename(&disabled_path, &enabled_path)?;
+            ModState::Enabled
+        } else {
+            return Err(Error::NotExists(format!("mod '{file_name}'")));
+        };
+        info!("Toggled untracked mod '{file_name}' to {new_state:?} in instance '{instance_id}'");
+        return Ok(());
+    };
+
     match entry.state {
         ModState::Enabled => {
             if enabled_path.exists() {
