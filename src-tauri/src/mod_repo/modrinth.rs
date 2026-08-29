@@ -1,9 +1,7 @@
 use std::path::PathBuf;
 
-use crate::AppState;
 use crate::http_utils::{download_resource, fetch_json};
 use serde::Deserialize;
-use tauri::State;
 use yaminabe_launcher_shared::datamodels::{
     DownloadSource, ModProjectInfo, ModProjectSearchResults, Platform, ProjectFileInfo,
     ProjectFileTarget, SearchOptions,
@@ -201,30 +199,6 @@ pub async fn search_projects(
 }
 
 pub fn list_project_files() {
-    unimplemented!()
-}
-
-#[allow(unused_variables)]
-pub async fn install_modpack(
-    app_handle: &tauri::AppHandle,
-    id: &str,
-    instance_name: &str,
-    category: String,
-    source: DownloadSource,
-    state: &State<'_, AppState>,
-) -> Result<(), Error> {
-    unimplemented!()
-}
-
-#[allow(unused_variables)]
-pub async fn upgrade_modpack(
-    app_handle: &tauri::AppHandle,
-    id: &str,
-    instance_name: &str,
-    instance_path: PathBuf,
-    source: DownloadSource,
-    state: &State<'_, AppState>,
-) -> Result<(), Error> {
     unimplemented!()
 }
 

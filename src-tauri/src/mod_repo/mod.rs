@@ -61,9 +61,9 @@ pub async fn install_modpack(
             curseforge::install_modpack(app_handle, id, instance_name, category, source, state)
                 .await
         }
-        DownloadSource::Modrinth { .. } => {
-            modrinth::install_modpack(app_handle, id, instance_name, category, source, state).await
-        }
+        DownloadSource::Modrinth { .. } => Err(Error::Unsupported(
+            "Modrinth modpack installation is not yet supported".to_string(),
+        )),
         DownloadSource::Manual => Err(Error::Unsupported(
             "manual modpack installation is not yet supported".to_string(),
         )),
@@ -83,10 +83,9 @@ pub async fn upgrade_modpack(
             curseforge::upgrade_modpack(app_handle, id, instance_name, instance_path, source, state)
                 .await
         }
-        DownloadSource::Modrinth { .. } => {
-            modrinth::upgrade_modpack(app_handle, id, instance_name, instance_path, source, state)
-                .await
-        }
+        DownloadSource::Modrinth { .. } => Err(Error::Unsupported(
+            "Modrinth modpack upgrade is not yet supported".to_string(),
+        )),
         DownloadSource::Manual => Err(Error::Unsupported(
             "manual modpack upgrade is not yet supported".to_string(),
         )),
