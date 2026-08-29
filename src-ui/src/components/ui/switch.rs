@@ -7,14 +7,15 @@ use leptos::{component, view, IntoView};
 /// *to*, so a caller never has to re-read the signal it just toggled.
 ///
 /// Prefer this over a pair of Enable/Disable buttons when the control sits in a
-/// row and its label is carried by the row itself; pass `label` for the screen
-/// reader, since the switch shows no text of its own.
+/// row and its label is carried by the row itself. The switch shows no text, so
+/// `label` is its whole accessible name — pass what identifies *this* row, not
+/// what the switch does, or every row in a list announces identically.
 #[component]
 pub fn Switch(
     #[prop(into)] checked: Signal<bool>,
     on_change: Callback<bool>,
     #[prop(optional, into)] disabled: Signal<bool>,
-    #[prop(optional)] label: &'static str,
+    #[prop(optional, into)] label: String,
 ) -> impl IntoView {
     let track = css! {
         position: relative;

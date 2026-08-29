@@ -87,16 +87,31 @@ pub fn ModManager(
         font-size: 0.85rem;
         opacity: 0.6;
     };
+    // Grid, not flex: the icon cell is empty for hand-added mods, and fixed
+    // columns keep every row's name, size and switch on the same vertical lines.
     let row = css! {
-        display: flex;
+        display: grid;
+        grid-template-columns: 28px 1fr auto auto;
         align-items: center;
         gap: 12px;
         padding: 10px 14px;
         border: 1px solid var(--secondary-color);
         border-radius: 8px;
     };
+    let mod_icon = css! {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        & img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            border-radius: 4px;
+        }
+    };
     let mod_name = css! {
-        flex: 1;
         min-width: 0;
         font-size: 0.9rem;
         overflow: hidden;
@@ -150,12 +165,17 @@ pub fn ModManager(
                 None => view! { <p class=empty>"Loading…"</p> }.into_any(),
                 Some(list) if list.is_empty() => view! { <p class=empty>"No mods installed."</p> }.into_any(),
                 Some(list) => list.into_iter().map(|m| {
-                    let name = m.file_name.clone();
+                    let name = m.display_name().to_string();
+                    let switch_label = name.clone();
+                    let icon = m.icon_url.clone();
                     let file_for_toggle = m.file_name.clone();
                     let state = m.state;
                     let name_style = if state == ModState::Enabled { "" } else { "opacity: 0.5;" };
                     view! {
                         <div class=row>
+                            <span class=mod_icon>
+                                {icon.map(|url| view! { <img src=url alt="" /> })}
+                            </span>
                             <span class=mod_name style=name_style>{name}</span>
                             <span class=mod_size>{format_size(m.size)}</span>
                             {(!read_only).then(move || match state {
@@ -166,7 +186,7 @@ pub fn ModManager(
                                     <Switch
                                         checked=Signal::derive(move || state == ModState::Enabled)
                                         on_change=Callback::new(move |_| on_toggle(file_for_toggle.clone()))
-                                        label="Enable mod"
+                                        label=switch_label
                                     />
                                 }.into_any(),
                             })}
