@@ -400,9 +400,19 @@ fn extract_overrides<R: std::io::Read + std::io::Seek>(
             continue;
         }
 
-        let dest = rel
-            .split('/')
-            .filter(|c| !c.is_empty() && *c != "..")
+        // Entry names come from an untrusted zip. Split on both separators —
+        // Windows treats `\` as one — and drop every component that could climb
+        // out: `..`, and anything holding a drive prefix like `C:`, which `join`
+        // would take as an absolute path replacing everything before it.
+        let components: Vec<&str> = rel
+            .split(['/', '\\'])
+            .filter(|c| !c.is_empty() && *c != "." && *c != ".." && !c.contains(':'))
+            .collect();
+        if components.is_empty() {
+            continue;
+        }
+        let dest = components
+            .iter()
             .fold(instance_path.to_path_buf(), |p, c| p.join(c));
 
         if entry_name.ends_with('/') {
