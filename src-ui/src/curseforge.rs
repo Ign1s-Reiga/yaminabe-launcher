@@ -139,8 +139,8 @@ pub async fn call_link_mods(
     .await
 }
 
-pub async fn call_pick_jar_files() -> Result<Vec<String>, String> {
-    ipc::call_noargs("pick_jar_files").await
+pub async fn call_pick_mod_files() -> Result<Vec<String>, String> {
+    ipc::call_noargs("pick_mod_files").await
 }
 
 // ── Manual mod management (issue #29) ───────────────────────────────────────────

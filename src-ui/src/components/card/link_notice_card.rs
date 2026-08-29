@@ -5,7 +5,7 @@ use leptos::{component, view, IntoView};
 use serde::Deserialize;
 use yaminabe_launcher_shared::datamodels::ModListEntry;
 use crate::components::ui::*;
-use crate::curseforge::{call_link_mods, call_pick_jar_files};
+use crate::curseforge::{call_link_mods, call_pick_mod_files};
 use crate::ipc;
 
 /// Payload of Tauri's `tauri://drag-drop` event — only the dropped file paths
@@ -56,11 +56,11 @@ pub fn LinkNoticeCard(
     view! {
         <Show when=has_failed>
             <div class=card>
-                <p class=title>"Some mods need manual installation"</p>
+                <p class=title>"Some files need manual installation"</p>
                 <p class=body>
                     {move || format!(
-                        "{} mod file(s) could not be downloaded automatically (the author may have \
-                         disabled third-party downloads). Link the matching jars from your computer \
+                        "{} file(s) could not be downloaded automatically (the author may have \
+                         disabled third-party downloads). Link the matching files from your computer \
                          to finish setting up this instance.",
                         count(),
                     )}
@@ -96,12 +96,15 @@ fn LinkModal(
     let linking: RwSignal<bool> = RwSignal::new(false);
     let message: RwSignal<Option<String>> = RwSignal::new(None);
 
-    // Append dropped `.jar` paths to the staged list while the modal is open.
-    // The subscription detaches when the modal unmounts (its `on_cleanup`).
+    // Append dropped paths the link flow can use to the staged list while the
+    // modal is open — `.jar` mods and the `.zip` resource packs a modpack may
+    // also fail to fetch. The subscription detaches when the modal unmounts.
     let add_paths = move |paths: Vec<String>| {
         staged.update(|s| {
             for path in paths {
-                if path.to_lowercase().ends_with(".jar") && !s.contains(&path) {
+                let lower = path.to_lowercase();
+                let accepted = lower.ends_with(".jar") || lower.ends_with(".zip");
+                if accepted && !s.contains(&path) {
                     s.push(path);
                 }
             }
@@ -116,7 +119,7 @@ fn LinkModal(
 
     let browse = move |_| {
         leptos::task::spawn_local(async move {
-            if let Ok(paths) = call_pick_jar_files().await {
+            if let Ok(paths) = call_pick_mod_files().await {
                 add_paths(paths);
             }
         });
@@ -233,7 +236,7 @@ fn LinkModal(
                     </ul>
 
                     <div class=drop_zone on:click=browse>
-                        <p class=drop_hint>"Drop .jar files here, or click to browse"</p>
+                        <p class=drop_hint>"Drop .jar or .zip files here, or click to browse"</p>
                     </div>
 
                     <Show when=move || !staged.get().is_empty()>

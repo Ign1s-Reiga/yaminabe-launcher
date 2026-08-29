@@ -24,7 +24,7 @@ use crate::commands::modfile::{
     download_mods, install_modpack, link_mods, list_project_files, search_projects, upgrade_modpack,
 };
 use crate::commands::settings::{
-    get_instance_subfolders, get_settings, open_instance_subfolder, pick_folder, pick_jar_files,
+    get_instance_subfolders, get_settings, open_instance_subfolder, pick_folder, pick_mod_files,
     save_settings,
 };
 use log::warn;
@@ -293,7 +293,7 @@ pub fn run() {
             toggle_state_instance_mod,
             download_mods,
             link_mods,
-            pick_jar_files,
+            pick_mod_files,
             create_instance,
             get_instances,
             save_instance_settings,

@@ -30,15 +30,15 @@ pub async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
     rx.await.ok().flatten()
 }
 
-/// Open a native multi-select picker filtered to `.jar` files, returning the
-/// chosen paths. Used by the mod-link flow as the click-to-browse alternative
-/// to dragging jars onto the drop zone.
+/// Open a native multi-select picker for the files the link flow can accept —
+/// `.jar` mods and the `.zip` resource packs a modpack may also fail to fetch —
+/// returning the chosen paths. The click-to-browse alternative to the drop zone.
 #[tauri::command]
-pub async fn pick_jar_files(app: tauri::AppHandle) -> Vec<String> {
+pub async fn pick_mod_files(app: tauri::AppHandle) -> Vec<String> {
     let (tx, rx) = tokio::sync::oneshot::channel::<Vec<String>>();
     app.dialog()
         .file()
-        .add_filter("Mod jar", &["jar"])
+        .add_filter("Mod or resource pack", &["jar", "zip"])
         .pick_files(move |paths| {
             let result = paths.unwrap_or_default().into_iter().filter_map(|fp| match fp {
                 FilePath::Path(p) => p.to_str().map(|s| s.to_string()),

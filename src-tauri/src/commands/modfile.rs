@@ -175,9 +175,9 @@ pub struct LinkOutcome {
     unmatched: Vec<String>,
 }
 
-/// Resolve `DownloadFailed` mods by linking jars the user supplies from disk.
+/// Resolve `DownloadFailed` files by linking copies the user supplies from disk.
 /// Each path is hashed and matched against a failed entry's recorded SHA-1
-/// (not its file name, so any local copy of the right jar works); a match is
+/// (not its file name, so any local copy of the right file works); a match is
 /// copied into the entry's target directory under the entry's name and flipped
 /// to `Enabled`.
 #[tauri::command]
