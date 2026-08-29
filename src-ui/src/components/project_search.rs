@@ -143,8 +143,12 @@ pub fn ProjectSearch(
     };
     // Platform split button: two joined segments, each carrying a logo that
     // inherits the segment's text color (the SVGs use `currentColor`).
+    // Grid columns rather than flex: the two logos have different aspect ratios,
+    // so equal-width columns keep the segments from sizing to their own artwork.
     let platform_switch = css! {
-        display: flex;
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: 1fr;
         flex-shrink: 0;
         border: 1px solid var(--secondary-color);
         border-radius: 8px;
