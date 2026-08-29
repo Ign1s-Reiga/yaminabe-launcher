@@ -103,14 +103,19 @@ struct RuntimeDownload {
 
 /// Download a Mojang-distributed JRE for the given `component` (e.g. `"jre-legacy"`)
 /// into `runtimes_dir/<component>/`. Returns the path to `javaw.exe`.
-/// Skips download if `javaw.exe` already exists.
+/// Skips the manifest walk once the runtime is known to be complete.
 pub async fn download_java_runtime(
     component: &str,
     client: &reqwest::Client,
 ) -> Result<PathBuf, Error> {
     let runtime_dir = runtimes_dir().join(component);
     let javaw_path  = runtime_dir.join("bin").join("javaw.exe");
-    if javaw_path.exists() {
+    // `manifest.files` is unordered, so javaw.exe can be written long before the
+    // rest of the tree. Only this marker — written once every file has been
+    // verified — proves the runtime is whole, so an interrupted download is
+    // repaired by the walk below instead of being trusted forever.
+    let complete_marker = runtime_dir.join(".complete");
+    if complete_marker.exists() && javaw_path.exists() {
         return Ok(javaw_path);
     }
 
@@ -147,6 +152,9 @@ pub async fn download_java_runtime(
 
     if !javaw_path.exists() {
         return Err(Error::NotExists(javaw_path.to_string_lossy().to_string()));
+    }
+    if let Err(e) = std::fs::write(&complete_marker, b"") {
+        log::warn!("could not mark the '{component}' runtime complete: {e}");
     }
 
     Ok(javaw_path)
