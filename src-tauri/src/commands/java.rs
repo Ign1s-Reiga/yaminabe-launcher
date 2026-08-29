@@ -110,6 +110,9 @@ pub async fn download_java_runtime(
 ) -> Result<PathBuf, Error> {
     let runtime_dir = runtimes_dir().join(component);
     let javaw_path  = runtime_dir.join("bin").join("javaw.exe");
+    if javaw_path.exists() {
+        return Ok(javaw_path);
+    }
 
     let all = fetch_json(
         client,
