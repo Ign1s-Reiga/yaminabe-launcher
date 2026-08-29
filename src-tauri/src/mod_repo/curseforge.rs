@@ -738,7 +738,7 @@ pub async fn upgrade_modpack(
         .collect();
     // A file the pack still ships but whose download previously failed has no jar
     // on disk, so an upgrade is the moment to retry it alongside the genuine additions.
-    let to_add: Vec<u32> = new_ids
+    let to_add: HashSet<u32> = new_ids
         .iter()
         .copied()
         .filter(|fid| matches!(old_states.get(fid), None | Some(ModState::DownloadFailed)))
@@ -760,28 +760,39 @@ pub async fn upgrade_modpack(
             }
         }
     }
-    // `to_add` mixes new mods and (all) resource packs — resource packs are never
-    // in `old_ids`, since the modlist tracks only mods. `download_project_files`
-    // routes each to the right dir and returns entries for mods alone.
-    let added_files = resolve_project_files(&to_add, &api_key, http_client).await?;
-    let downloaded_modlist_entries =
-        super::download_project_files(added_files, &instance_path, http_client).await?;
+    // One resolve for the whole new file set — `to_add` is a subset of it, so
+    // splitting the result here saves a second round of /v1/mods/files (plus its
+    // per-chunk /v1/mods fan-out) against the CurseForge rate limit.
+    let new_files = resolve_project_files(&new_ids, &api_key, http_client).await?;
+
     // Baseline the new modlist from the full file set, but keep only mods. A file
     // the instance already had keeps its recorded state (a mod the user disabled
     // stays disabled); the downloaded entries overwrite their baseline below.
-    let mut new_modlist_entries: Vec<ModListEntry> =
-        resolve_project_files(&new_ids, &api_key, http_client)
-            .await?
-            .into_iter()
-            .filter(|file| file.target.tracks_modlist())
-            .map(|file| {
-                let previous = file
-                    .source
-                    .curseforge_ids()
-                    .and_then(|(_, fid)| old_states.get(&fid).copied());
-                file.to_modlist_entry(previous.unwrap_or(ModState::Enabled))
-            })
-            .collect();
+    let mut new_modlist_entries: Vec<ModListEntry> = new_files
+        .iter()
+        .filter(|file| file.target.tracks_modlist())
+        .map(|file| {
+            let previous = file
+                .source
+                .curseforge_ids()
+                .and_then(|(_, fid)| old_states.get(&fid).copied());
+            file.to_modlist_entry(previous.unwrap_or(ModState::Enabled))
+        })
+        .collect();
+
+    // `to_add` mixes new mods and (all) resource packs — resource packs are never
+    // in `old_states`, since the modlist tracks only mods. `download_project_files`
+    // routes each to the right dir and returns entries for mods alone.
+    let added_files: Vec<ProjectFileInfo> = new_files
+        .into_iter()
+        .filter(|file| {
+            file.source
+                .curseforge_ids()
+                .is_some_and(|(_, fid)| to_add.contains(&fid))
+        })
+        .collect();
+    let downloaded_modlist_entries =
+        super::download_project_files(added_files, &instance_path, http_client).await?;
     for entry in downloaded_modlist_entries {
         new_modlist_entries.retain(|existing| existing.file_name != entry.file_name);
         new_modlist_entries.push(entry);
