@@ -667,9 +667,8 @@ pub async fn install_modpack(
     source: DownloadSource,
     state: &State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file_id = source
+    let (project_id, file_id) = source
         .curseforge_ids()
-        .map(|(_, file_id)| file_id)
         .ok_or_else(|| Error::Unsupported("not a CurseForge modpack source".to_string()))?;
     let (api_key, install_dir) = {
         let settings = state.settings.read().unwrap();
@@ -704,9 +703,23 @@ pub async fn install_modpack(
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
     upsert_modlist_entries(&instance_path, modlist_entries)?;
 
+    // Seed the instance description with the pack's own blurb. It is cosmetic,
+    // so a failed lookup leaves it empty instead of failing the install.
+    let description = match fetch_project_summaries(&[project_id], &api_key, &state.http_client).await {
+        Ok(projects) => projects
+            .get(&project_id)
+            .map(|project| project.summary.clone())
+            .unwrap_or_default(),
+        Err(e) => {
+            log::warn!("no description for CurseForge project {project_id}: {e}");
+            String::new()
+        }
+    };
+
     let meta = InstanceMeta {
         id: id.to_string(),
         name: instance_name.to_string(),
+        description,
         game_version: prepared.mc_version.clone(),
         mod_loader: prepared.mod_loader.clone(),
         mod_loader_version: prepared.loader_version,
