@@ -162,21 +162,12 @@ pub fn ModManager(
                                 ModState::DownloadFailed => view! {
                                     <span class=mod_size style="color: #d4a017;">"Download failed"</span>
                                 }.into_any(),
-                                ModState::Disabled => view! {
-                                    <Button
-                                        variant=ButtonVariant::Primary
-                                        on_click=Callback::new(move |_| on_toggle(file_for_toggle.clone()))
-                                    >
-                                        "Enable"
-                                    </Button>
-                                }.into_any(),
-                                ModState::Enabled => view! {
-                                    <Button
-                                        variant=ButtonVariant::Secondary
-                                        on_click=Callback::new(move |_| on_toggle(file_for_toggle.clone()))
-                                    >
-                                        "Disable"
-                                    </Button>
+                                _ => view! {
+                                    <Switch
+                                        checked=Signal::derive(move || state == ModState::Enabled)
+                                        on_change=Callback::new(move |_| on_toggle(file_for_toggle.clone()))
+                                        label="Enable mod"
+                                    />
                                 }.into_any(),
                             })}
                         </div>

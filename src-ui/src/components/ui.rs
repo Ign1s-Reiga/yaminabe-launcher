@@ -4,6 +4,7 @@ pub mod input;
 pub mod modal;
 pub mod segmented;
 pub mod skeletons;
+pub mod switch;
 pub mod tabbar;
 
 pub use button::*;
@@ -12,6 +13,7 @@ pub use input::*;
 pub use modal::*;
 pub use segmented::*;
 pub use skeletons::*;
+pub use switch::*;
 pub use tabbar::*;
 
 use bamboo_css_macro::css;
