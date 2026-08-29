@@ -79,7 +79,9 @@ struct Hashes {
 
 /// Download the Modrinth file matching `sha1` to `dest_path` (a full path,
 /// including the file name), so a caller mirroring another platform's file can
-/// keep that platform's on-disk name. Verifies against the Modrinth hash.
+/// keep that platform's on-disk name. The lookup returns the whole version, whose
+/// files may include more than the one asked for, so the download picks the entry
+/// carrying `sha1` rather than the version's primary file.
 pub async fn download_file_by_sha1(
     sha1: &str,
     dest_path: PathBuf,
@@ -91,12 +93,16 @@ pub async fn download_file_by_sha1(
     )
     .send::<Version>()
     .await?;
-    let file = selected_file(&version).ok_or_else(|| {
-        Error::NotExists(format!(
-            "Modrinth version-file {} does not exists.",
-            version.id
-        ))
-    })?;
+    let file = version
+        .files
+        .iter()
+        .find(|file| file.hashes.sha1.eq_ignore_ascii_case(sha1))
+        .ok_or_else(|| {
+            Error::NotExists(format!(
+                "Modrinth file with SHA-1 {sha1} in version {}",
+                version.id
+            ))
+        })?;
     download_resource(client, &file.url, &file.hashes.sha1, dest_path).await?;
     Ok(())
 }
