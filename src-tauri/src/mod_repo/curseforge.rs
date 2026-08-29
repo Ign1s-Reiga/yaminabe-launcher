@@ -47,7 +47,11 @@ struct ModFile {
 }
 
 impl ModFile {
-    fn to_project_file_info(&self, target: ProjectFileTarget) -> ProjectFileInfo {
+    fn to_project_file_info(
+        &self,
+        target: ProjectFileTarget,
+        project: Option<&ProjectSummary>,
+    ) -> ProjectFileInfo {
         ProjectFileInfo {
             source: DownloadSource::CurseForge {
                 project_id: self.mod_id,
@@ -58,6 +62,8 @@ impl ModFile {
             file_name: self.file_name.clone(),
             download_url: self.download_url.clone(),
             display_name: self.display_name.clone(),
+            project_name: project.map(|p| p.name.clone()).unwrap_or_default(),
+            icon_url: project.and_then(|p| p.icon_url.clone()),
             sha1: self
                 .hashes
                 .iter()
@@ -106,6 +112,22 @@ struct Logo {
 struct ProjectMetadata {
     id: u32,
     class_id: u32,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    logo: Option<Logo>,
+}
+
+/// What `/v1/mods` tells us about a project beyond its files: where its files
+/// belong on disk, and the name, blurb and icon the site shows for it.
+#[derive(Debug, Clone)]
+struct ProjectSummary {
+    target: ProjectFileTarget,
+    name: String,
+    summary: String,
+    icon_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -314,9 +336,20 @@ pub async fn list_project_files(
 
     entries.sort_by(|a, b| b.id.cmp(&a.id));
 
+    // These files reach the modlist through `download_mods`, so resolve the
+    // project once here — the entries themselves carry no name or icon. It is
+    // display-only, so a rate-limited or failing lookup costs the names, never
+    // the version list itself.
+    let projects = fetch_project_summaries(&[mod_id], api_key, http_client)
+        .await
+        .unwrap_or_else(|e| {
+            log::warn!("no project details for CurseForge project {mod_id}: {e}");
+            HashMap::new()
+        });
+    let project = projects.get(&mod_id);
     let versions = entries
         .iter()
-        .map(|file| file.to_project_file_info(target))
+        .map(|file| file.to_project_file_info(target, project))
         .collect();
 
     Ok(versions)
@@ -456,29 +489,27 @@ pub(crate) async fn resolve_project_files(
             .json::<CurseForgeArrayResponse<ModFile>>()
             .await
             .map_err(Error::InvalidResponse)?;
-        let targets = fetch_project_targets(
+        let projects = fetch_project_summaries(
             &data.data.iter().map(|file| file.mod_id).collect::<Vec<_>>(),
             api_key,
             client,
         )
         .await?;
         files.extend(data.data.iter().map(|file| {
-            let target = targets
-                .get(&file.mod_id)
-                .copied()
-                .unwrap_or(ProjectFileTarget::Mod);
-            file.to_project_file_info(target)
+            let project = projects.get(&file.mod_id);
+            let target = project.map(|p| p.target).unwrap_or(ProjectFileTarget::Mod);
+            file.to_project_file_info(target, project)
         }));
     }
     Ok(files)
 }
 
-async fn fetch_project_targets(
+async fn fetch_project_summaries(
     project_ids: &[u32],
     api_key: &str,
     client: &reqwest::Client,
-) -> Result<HashMap<u32, ProjectFileTarget>, Error> {
-    let mut targets = HashMap::new();
+) -> Result<HashMap<u32, ProjectSummary>, Error> {
+    let mut summaries = HashMap::new();
     for chunk in project_ids.chunks(50) {
         let body = serde_json::json!({ "modIds": chunk });
         let resp = client
@@ -497,13 +528,19 @@ async fn fetch_project_targets(
             .json::<CurseForgeArrayResponse<ProjectMetadata>>()
             .await
             .map_err(Error::InvalidResponse)?;
-        targets.extend(
-            data.data
-                .into_iter()
-                .map(|project| (project.id, ProjectFileTarget::from_curseforge_type(project.class_id))),
-        );
+        summaries.extend(data.data.into_iter().map(|project| {
+            (
+                project.id,
+                ProjectSummary {
+                    target: ProjectFileTarget::from_curseforge_type(project.class_id),
+                    name: project.name,
+                    summary: project.summary,
+                    icon_url: project.logo.map(|logo| logo.url),
+                },
+            )
+        }));
     }
-    Ok(targets)
+    Ok(summaries)
 }
 
 /// The game/loader/manifest state produced by [`prepare_modpack`], handed back so

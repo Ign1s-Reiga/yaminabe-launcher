@@ -214,6 +214,12 @@ pub struct ProjectFileInfo {
     pub file_name: String,
     pub download_url: Option<String>,
     pub display_name: String,
+    /// The project's name on the distribution site, empty when unknown.
+    #[serde(default)]
+    pub project_name: String,
+    /// The project's icon on the distribution site, if it publishes one.
+    #[serde(default)]
+    pub icon_url: Option<String>,
     #[serde(default)]
     pub sha1: String,
     #[serde(default)]
@@ -224,6 +230,8 @@ impl ProjectFileInfo {
     pub fn to_modlist_entry(&self, state: ModState) -> ModListEntry {
         ModListEntry {
             file_name: self.file_name.clone(),
+            project_name: self.project_name.clone(),
+            icon_url: self.icon_url.clone(),
             sha1: self.sha1.clone(),
             source: self.source.clone(),
             target: self.target,
@@ -288,6 +296,13 @@ pub enum ModState {
 #[serde(rename_all = "camelCase")]
 pub struct ModListEntry {
     pub file_name: String,
+    /// The project's name on the distribution site it was downloaded from.
+    /// Empty for a hand-added mod, and for entries written before it was recorded.
+    #[serde(default)]
+    pub project_name: String,
+    /// The project's icon on that site, when it publishes one.
+    #[serde(default)]
+    pub icon_url: Option<String>,
     pub sha1: String,
     #[serde(default)]
     pub source: DownloadSource,
@@ -297,6 +312,18 @@ pub struct ModListEntry {
     pub size: u64,
     #[serde(default)]
     pub state: ModState,
+}
+
+impl ModListEntry {
+    /// What a mod list shows for this entry: the name the distribution site uses,
+    /// falling back to the file name for a hand-added mod.
+    pub fn display_name(&self) -> &str {
+        if self.project_name.is_empty() {
+            &self.file_name
+        } else {
+            &self.project_name
+        }
+    }
 }
 
 #[cfg(test)]
@@ -356,6 +383,8 @@ mod tests {
     fn serializes_modlist_entry_schema() {
         let json = serde_json::to_string(&ModListEntry {
             file_name: "example.jar".to_string(),
+            project_name: "Example Mod".to_string(),
+            icon_url: Some("https://example.invalid/icon.png".to_string()),
             sha1: "abc123".to_string(),
             source: DownloadSource::CurseForge {
                 project_id: 10,
@@ -369,7 +398,7 @@ mod tests {
 
         assert_eq!(
             json,
-            r#"{"fileName":"example.jar","sha1":"abc123","source":{"type":"curseForge","project_id":10,"file_id":20},"target":"mod","size":1024,"state":"enabled"}"#
+            r#"{"fileName":"example.jar","projectName":"Example Mod","iconUrl":"https://example.invalid/icon.png","sha1":"abc123","source":{"type":"curseForge","project_id":10,"file_id":20},"target":"mod","size":1024,"state":"enabled"}"#
         );
     }
 

@@ -257,6 +257,8 @@ fn untracked_mods(instance_dir: &Path, modlist: &[ModListEntry]) -> Vec<ModListE
         if state == ModState::Disabled && found.contains_key(&file_name) { continue; }
         found.insert(file_name.clone(), ModListEntry {
             file_name,
+            project_name: String::new(),
+            icon_url: None,
             sha1: String::new(),
             source: DownloadSource::Manual,
             target: ProjectFileTarget::Mod,

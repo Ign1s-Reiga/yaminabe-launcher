@@ -34,6 +34,8 @@ impl Version {
             file_name: version_file.filename.clone(),
             download_url: Some(version_file.url.clone()),
             display_name: version_file.filename.clone(),
+            project_name: String::new(),
+            icon_url: None,
             sha1: version_file.hashes.sha1.clone(),
             size: version_file.size,
         })
