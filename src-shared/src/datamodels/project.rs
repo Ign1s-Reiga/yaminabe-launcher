@@ -45,6 +45,9 @@ pub enum ProjectFileTarget {
     #[default]
     Mod,
     ResourcePack,
+    ShaderPack,
+    World,
+    DataPack,
     Modpack,
 }
 
@@ -53,6 +56,9 @@ impl ProjectFileTarget {
         match self {
             ProjectFileTarget::Mod => "mods",
             ProjectFileTarget::ResourcePack => "resourcepacks",
+            ProjectFileTarget::ShaderPack => "shaderpacks",
+            ProjectFileTarget::World => "saves",
+            ProjectFileTarget::DataPack => "datapacks",
             ProjectFileTarget::Modpack => ".launcher/cache",
         }
     }
@@ -65,6 +71,9 @@ impl ProjectFileTarget {
         match self {
             ProjectFileTarget::Mod => "6",
             ProjectFileTarget::ResourcePack => "12",
+            ProjectFileTarget::ShaderPack => "6552",
+            ProjectFileTarget::World => "17",
+            ProjectFileTarget::DataPack => "6945",
             ProjectFileTarget::Modpack => "4471",
         }
     }
@@ -73,6 +82,9 @@ impl ProjectFileTarget {
         match self {
             ProjectFileTarget::Mod => "mod",
             ProjectFileTarget::ResourcePack => "resourcepack",
+            ProjectFileTarget::ShaderPack => "shader",
+            ProjectFileTarget::World => "world",
+            ProjectFileTarget::DataPack => "datapack",
             ProjectFileTarget::Modpack => "modpack",
         }
     }
@@ -80,7 +92,10 @@ impl ProjectFileTarget {
     pub fn from_curseforge_type(project_type: u32) -> ProjectFileTarget {
         match project_type {
             12 => ProjectFileTarget::ResourcePack,
+            17 => ProjectFileTarget::World,
             4471 => ProjectFileTarget::Modpack,
+            6552 => ProjectFileTarget::ShaderPack,
+            6945 => ProjectFileTarget::DataPack,
             _ => ProjectFileTarget::Mod,
         }
     }
@@ -88,6 +103,9 @@ impl ProjectFileTarget {
     pub fn from_modrinth_type(project_type: &str) -> ProjectFileTarget {
         match project_type {
             "resourcepack" => ProjectFileTarget::ResourcePack,
+            "shader" => ProjectFileTarget::ShaderPack,
+            "world" => ProjectFileTarget::World,
+            "datapack" => ProjectFileTarget::DataPack,
             "modpack" => ProjectFileTarget::Modpack,
             _ => ProjectFileTarget::Mod,
         }
