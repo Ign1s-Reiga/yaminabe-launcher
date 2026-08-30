@@ -159,6 +159,15 @@ pub async fn download_mods(
     instance_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
+    let Some(_activity) = ActivityGuard::claim(
+        &state.instance_activity,
+        &instance_id,
+        InstanceActivity::Modifying,
+    ) else {
+        return Err(Error::Busy(format!(
+            "instance '{instance_id}' is already busy"
+        )));
+    };
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
     let instance_path = find_instance_dir(Path::new(&install_dir), &instance_id)?;
     let entries =
