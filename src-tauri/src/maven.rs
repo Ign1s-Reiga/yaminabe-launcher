@@ -26,25 +26,38 @@ impl<'a> MavenCoords<'a> {
         self
     }
 
-    fn coords_to_relpath(&self) -> PathBuf {
+    /// `group:artifact:version` → the repo-relative path segments, joined with
+    /// `/` so the same value builds both the URL and the on-disk path. A
+    /// coordinate missing either colon is rejected rather than indexed into —
+    /// release builds abort on panic, so a short coordinate would kill the app.
+    fn coords_to_relpath(&self) -> Result<String, Error> {
         let parts: Vec<&str> = self.coords.splitn(3, ':').collect();
-        let (group_id, artifact_id, version) = (parts[0], parts[1], parts[2]);
+        let [group_id, artifact_id, version] = parts[..] else {
+            return Err(Error::Invalid(format!(
+                "maven coordinate '{}' is not group:artifact:version",
+                self.coords
+            )));
+        };
         let jar_name = match self.resource_suffix {
             Some(suffix) => format!("{artifact_id}-{version}-{suffix}.jar"),
             None => format!("{artifact_id}-{version}.jar"),
         };
-        let mut relative_path = PathBuf::from(group_id.replace('.', "/"));
-        relative_path.extend([artifact_id, version, &jar_name]);
-        relative_path
+        Ok(format!(
+            "{}/{artifact_id}/{version}/{jar_name}",
+            group_id.replace('.', "/")
+        ))
     }
 
     /// Download the artifact into `dest_path` (mirroring the repo's directory
     /// layout) and verify it against the sibling `.sha1`. Returns the path
     /// written.
     pub async fn download(self, client: &Client, dest_path: &Path) -> Result<PathBuf, Error> {
-        let relative_path = self.coords_to_relpath();
-        let url = format!("{}/{}", self.repo_url, relative_path.to_string_lossy());
-        let file_path = dest_path.join(&relative_path);
+        let relative_path = self.coords_to_relpath()?;
+        let url = format!("{}/{}", self.repo_url, relative_path);
+        // The URL keeps `/`; only the disk path takes the platform separator.
+        let file_path = relative_path
+            .split('/')
+            .fold(dest_path.to_path_buf(), |path, segment| path.join(segment));
 
         let sha1 = client.get(format!("{url}.sha1")).send().await?
             .text().await.map_err(Error::InvalidResponse)?;
