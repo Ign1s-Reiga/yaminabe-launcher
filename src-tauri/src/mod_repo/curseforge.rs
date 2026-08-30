@@ -396,21 +396,28 @@ fn manifest_file_ids(manifest: &ModpackManifest) -> Vec<u32> {
         .collect()
 }
 
-/// CurseForge file id → recorded state for every mod in the instance's modlist —
-/// the set the upgrade diffs the new manifest against. The modlist is the source
-/// of truth for what is installed and is only rewritten when an upgrade finalizes,
-/// so a failed (and retried) upgrade keeps diffing against the previous set.
-/// Empty when the modlist is missing, degrading to "download everything,
-/// remove nothing".
-fn installed_curseforge_states(instance_path: &Path) -> HashMap<u32, ModState> {
+/// What the modlist records for one CurseForge file the instance holds.
+struct InstalledFile {
+    state: ModState,
+    file_name: String,
+}
+
+/// CurseForge file id → what the instance's modlist records for it: the state an
+/// upgrade carries forward, and the name on disk to delete when the pack drops
+/// the file. The modlist is the source of truth for what is installed and is only
+/// rewritten when an upgrade finalizes, so a failed (and retried) upgrade keeps
+/// diffing against the previous set. Empty when the modlist is missing, degrading
+/// to "download everything, remove nothing".
+fn installed_curseforge_files(instance_path: &Path) -> HashMap<u32, InstalledFile> {
     let modlist: Vec<ModListEntry> = read_json_or_default(modlist_file(instance_path)).unwrap_or_default();
     modlist
-        .iter()
+        .into_iter()
         .filter_map(|entry| {
-            entry
-                .source
-                .curseforge_ids()
-                .map(|(_, file_id)| (file_id, entry.state))
+            let (_, file_id) = entry.source.curseforge_ids()?;
+            Some((
+                file_id,
+                InstalledFile { state: entry.state, file_name: entry.file_name },
+            ))
         })
         .collect()
 }
@@ -768,8 +775,8 @@ pub async fn upgrade_modpack(
 
     // The modlist (the installed-mod source of truth) is only rewritten at
     // finalize, so this set survives a failed/retried upgrade for a correct re-diff.
-    let old_states = installed_curseforge_states(&instance_path);
-    let old_ids: Vec<u32> = old_states.keys().copied().collect();
+    let installed = installed_curseforge_files(&instance_path);
+    let old_ids: Vec<u32> = installed.keys().copied().collect();
 
     let prepared = prepare_modpack(
         app_handle,
@@ -787,31 +794,30 @@ pub async fn upgrade_modpack(
     emit_progress(app_handle, id, instance_name, "Updating mods", false, None);
     let new_ids = manifest_file_ids(&prepared.manifest);
     let new_set: HashSet<u32> = new_ids.iter().copied().collect();
-    let to_remove: Vec<u32> = old_ids
-        .iter()
-        .copied()
-        .filter(|fid| !new_set.contains(fid))
-        .collect();
     // A file the pack still ships but whose download previously failed has no jar
     // on disk, so an upgrade is the moment to retry it alongside the genuine additions.
     let to_add: HashSet<u32> = new_ids
         .iter()
         .copied()
-        .filter(|fid| matches!(old_states.get(fid), None | Some(ModState::DownloadFailed)))
+        .filter(|fid| matches!(installed.get(fid).map(|f| f.state), None | Some(ModState::DownloadFailed)))
         .collect();
 
+    // Delete what the pack dropped by the names the modlist recorded. Resolving
+    // the ids against the API instead would silently skip a file CurseForge no
+    // longer serves, leaving its jar loading against the upgraded pack.
     let mut old_file_names = Vec::new();
-    if !to_remove.is_empty() {
-        let mods_dir = instance_path.join("mods");
-        for file in resolve_project_files(&to_remove, &api_key, http_client).await? {
-            old_file_names.push(file.file_name.clone());
-            // A disabled mod lives under `<name>.disabled`, so drop both spellings.
-            let disabled = mods_dir.join(format!("{}.disabled", file.file_name));
-            for path in [mods_dir.join(&file.file_name), disabled] {
-                if path.exists() {
-                    if let Err(e) = std::fs::remove_file(&path) {
-                        log::warn!("failed to remove old mod {}: {e}", path.display());
-                    }
+    let mods_dir = instance_path.join("mods");
+    for (file_id, installed_file) in &installed {
+        if new_set.contains(file_id) {
+            continue;
+        }
+        old_file_names.push(installed_file.file_name.clone());
+        // A disabled mod lives under `<name>.disabled`, so drop both spellings.
+        let disabled = mods_dir.join(format!("{}.disabled", installed_file.file_name));
+        for path in [mods_dir.join(&installed_file.file_name), disabled] {
+            if path.exists() {
+                if let Err(e) = std::fs::remove_file(&path) {
+                    log::warn!("failed to remove old mod {}: {e}", path.display());
                 }
             }
         }
@@ -831,13 +837,13 @@ pub async fn upgrade_modpack(
             let previous = file
                 .source
                 .curseforge_ids()
-                .and_then(|(_, fid)| old_states.get(&fid).copied());
+                .and_then(|(_, fid)| installed.get(&fid).map(|f| f.state));
             file.to_modlist_entry(previous.unwrap_or(ModState::Enabled))
         })
         .collect();
 
     // `to_add` mixes new mods and (all) resource packs — resource packs are never
-    // in `old_states`, since the modlist tracks only mods. `download_project_files`
+    // in `installed`, since the modlist tracks only mods. `download_project_files`
     // routes each to the right dir and returns entries for mods alone.
     let added_files: Vec<ProjectFileInfo> = new_files
         .into_iter()
