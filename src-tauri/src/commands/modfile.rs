@@ -88,23 +88,42 @@ pub async fn upgrade_modpack(
     source: DownloadSource,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
+    // The upgrade modal closes before this runs, so an Err alone would be
+    // invisible — every failure emits a job the dock can show. Until the
+    // instance's name is read, its id stands in for the label.
+    let fail = |name: &str, e: Error| {
+        emit_progress(
+            &app_handle,
+            &instance_id,
+            name,
+            "Failed",
+            false,
+            Some(e.to_string()),
+        );
+        e
+    };
+
     let Some(_activity) = ActivityGuard::claim(
         &state.instance_activity,
         &instance_id,
         InstanceActivity::Upgrading,
     ) else {
-        return Err(Error::Busy(format!(
-            "instance '{instance_id}' is already busy"
-        )));
+        return Err(fail(
+            &instance_id,
+            Error::Busy(format!("instance '{instance_id}' is already busy")),
+        ));
     };
 
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
-    let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
+    let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)
+        .map_err(|e| fail(&instance_id, e))?;
 
-    let meta: InstanceMeta = read_json(instance_meta_file(&instance_dir))?;
+    let meta: InstanceMeta =
+        read_json(instance_meta_file(&instance_dir)).map_err(|e| fail(&instance_id, e))?;
     if meta.origin.curseforge_ids().is_none() {
-        return Err(Error::Invalid(
-            "instance is not a CurseForge modpack instance".to_string(),
+        return Err(fail(
+            &meta.name,
+            Error::Invalid("instance is not a CurseForge modpack instance".to_string()),
         ));
     }
     let instance_name = meta.name.clone();
@@ -139,17 +158,7 @@ pub async fn upgrade_modpack(
             );
             Ok(())
         }
-        Err(e) => {
-            emit_progress(
-                &app_handle,
-                &instance_id,
-                &instance_name,
-                "Failed",
-                false,
-                Some(e.to_string()),
-            );
-            Err(e)
-        }
+        Err(e) => Err(fail(&instance_name, e)),
     }
 }
 
