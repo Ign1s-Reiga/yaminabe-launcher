@@ -65,6 +65,21 @@ pub fn select_class() -> &'static str {
     }
 }
 
+/// Render a byte count for a file listing: MB above a megabyte, KB above a
+/// kilobyte, raw bytes below that.
+pub fn format_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    let b = bytes as f64;
+    if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 /// Vertical flex stack for a group of form fields (gap 16 px).
 #[component]
 pub fn FormFields(

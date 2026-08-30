@@ -15,19 +15,6 @@ use yaminabe_launcher_shared::datamodels::{
 };
 
 /// Human-readable file size.
-fn format_size(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    let b = bytes as f64;
-    if b >= MB {
-        format!("{:.1} MB", b / MB)
-    } else if b >= KB {
-        format!("{:.0} KB", b / KB)
-    } else {
-        format!("{bytes} B")
-    }
-}
-
 /// Mods tab body for a non-Vanilla instance: lists the files in `mods/` (so
 /// hand-dropped jars also show). Manual instances can add/remove mods; managed
 /// modpack instances render the same list read-only.
