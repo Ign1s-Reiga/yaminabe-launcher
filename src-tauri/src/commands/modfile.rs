@@ -176,10 +176,14 @@ pub struct LinkOutcome {
 }
 
 /// Resolve `DownloadFailed` files by linking copies the user supplies from disk.
-/// Each path is hashed and matched against a failed entry's recorded SHA-1
-/// (not its file name, so any local copy of the right file works); a match is
-/// copied into the entry's target directory under the entry's name and flipped
-/// to `Enabled`.
+/// Each path is hashed and matched against a failed entry's recorded SHA-1, so
+/// any local copy of the right file works whatever it is called. A file the site
+/// published no hash for cannot be matched that way, so it falls back to the name
+/// the manifest recorded — the only identity such an entry has.
+///
+/// A match is copied into the entry's target directory under the entry's name.
+/// Mods flip to `Enabled`; anything else leaves the modlist, which tracks mods
+/// and only held the entry to drive this prompt.
 #[tauri::command]
 pub fn link_mods(
     instance_id: String,
@@ -207,18 +211,37 @@ pub fn link_mods(
             continue;
         };
         let sha1 = sha1_hex(&bytes);
+        let supplied_name = Path::new(path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let matched = modlist
-            .iter_mut()
-            .find(|e| e.state == ModState::DownloadFailed && !e.sha1.is_empty() && e.sha1 == sha1);
-        match matched {
-            Some(entry) => {
-                let target_dir = instance_dir.join(entry.target.directory());
-                std::fs::create_dir_all(&target_dir)?;
-                std::fs::write(target_dir.join(&entry.file_name), &bytes)?;
-                entry.state = ModState::Enabled;
-                linked.push(entry.file_name.clone());
-            }
-            None => unmatched.push(path.clone()),
+            .iter()
+            .position(|e| e.state == ModState::DownloadFailed && !e.sha1.is_empty() && e.sha1 == sha1)
+            .or_else(|| {
+                modlist.iter().position(|e| {
+                    e.state == ModState::DownloadFailed
+                        && e.sha1.is_empty()
+                        && e.file_name == supplied_name
+                })
+            });
+        let Some(index) = matched else {
+            unmatched.push(path.clone());
+            continue;
+        };
+
+        let (file_name, target) = {
+            let entry = &modlist[index];
+            (entry.file_name.clone(), entry.target)
+        };
+        let target_dir = instance_dir.join(target.directory());
+        std::fs::create_dir_all(&target_dir)?;
+        std::fs::write(target_dir.join(&file_name), &bytes)?;
+        linked.push(file_name);
+        if target.tracks_modlist() {
+            modlist[index].state = ModState::Enabled;
+        } else {
+            modlist.remove(index);
         }
     }
     if !linked.is_empty() {
