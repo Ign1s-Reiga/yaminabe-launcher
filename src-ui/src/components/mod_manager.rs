@@ -104,7 +104,10 @@ pub fn ModManager(
         justify-content: center;
         width: 28px;
         height: 28px;
-        & img {
+        // Child combinator, not a descendant space: the CSS collector minifies
+        // `& img` down to `&img`, a compound selector that matches nothing, so
+        // the image would render unconstrained at its natural size.
+        & > img {
             width: 100%;
             height: 100%;
             object-fit: contain;

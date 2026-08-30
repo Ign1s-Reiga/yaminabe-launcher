@@ -179,7 +179,8 @@ pub fn ProjectSearch(
     let platform_logo = css! {
         display: flex;
         height: 16px;
-        & svg { height: 100%; width: auto; display: block; }
+        // `& svg` would minify to `&svg` and match nothing; see mod_manager.
+        & > svg { height: 100%; width: auto; display: block; }
     };
     let seg_class = move |p: Platform| if platform.get() == p { platform_seg_active } else { platform_seg };
     let status_area = css! {
