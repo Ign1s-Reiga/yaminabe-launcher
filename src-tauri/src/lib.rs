@@ -136,7 +136,6 @@ static VERSIONS_DIR: OnceLock<PathBuf> = OnceLock::new();
 static ASSETS_DIR: OnceLock<PathBuf> = OnceLock::new();
 static LIBRARIES_DIR: OnceLock<PathBuf> = OnceLock::new();
 static RUNTIMES_DIR: OnceLock<PathBuf> = OnceLock::new();
-static CACHES_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 fn settings_path() -> &'static PathBuf {
     SETTINGS_PATH.get().unwrap()
@@ -162,12 +161,6 @@ pub fn libraries_dir() -> &'static PathBuf {
 pub fn runtimes_dir() -> &'static PathBuf {
     RUNTIMES_DIR.get().unwrap()
 }
-/// Scratch directory under `.yaminabe/caches` for transient downloads (e.g. a
-/// modpack zip) that are consumed and then deleted.
-pub fn caches_dir() -> &'static PathBuf {
-    CACHES_DIR.get().unwrap()
-}
-
 fn init_dirs(app: &tauri::App) -> Result<(), InitializationError> {
     fn path_err(e: tauri::Error) -> InitializationError {
         InitializationError::PathResolution(e.to_string())
@@ -184,7 +177,6 @@ fn init_dirs(app: &tauri::App) -> Result<(), InitializationError> {
     ASSETS_DIR.set(bin_dir.join("assets"))?;
     RUNTIMES_DIR.set(bin_dir.join("runtimes"))?;
     BIN_DIR.set(bin_dir)?;
-    CACHES_DIR.set(app_dir.join("caches"))?;
     SETTINGS_PATH.set(app_dir.join("settings.json"))?;
     ACCOUNTS_PATH.set(app_dir.join("accounts.json"))?;
     for p in [
@@ -192,7 +184,6 @@ fn init_dirs(app: &tauri::App) -> Result<(), InitializationError> {
         libraries_dir(),
         assets_dir(),
         runtimes_dir(),
-        caches_dir(),
     ] {
         std::fs::create_dir_all(p)?;
     }
