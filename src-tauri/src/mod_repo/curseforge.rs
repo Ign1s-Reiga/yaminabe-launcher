@@ -111,7 +111,10 @@ struct Logo {
 #[serde(rename_all = "camelCase")]
 struct ProjectMetadata {
     id: u32,
-    class_id: u32,
+    /// Absent for a project CurseForge has not classified; such a project is
+    /// treated as a mod rather than failing the whole batch.
+    #[serde(default)]
+    class_id: Option<u32>,
     #[serde(default)]
     name: String,
     #[serde(default)]
@@ -532,7 +535,10 @@ async fn fetch_project_summaries(
             (
                 project.id,
                 ProjectSummary {
-                    target: ProjectFileTarget::from_curseforge_type(project.class_id),
+                    target: project
+                        .class_id
+                        .map(ProjectFileTarget::from_curseforge_type)
+                        .unwrap_or_default(),
                     name: project.name,
                     summary: project.summary,
                     icon_url: project.logo.map(|logo| logo.url),
