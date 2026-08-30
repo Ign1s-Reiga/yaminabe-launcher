@@ -119,6 +119,56 @@ pub fn UpgradeModpackModal(
         margin: 0 0 20px 0;
         line-height: 1.6;
     };
+    let version_list = version_list_class();
+    let version_note = version_note_class();
+    let version_error = version_error_class();
+
+    let rows = move || {
+        let list = files.get();
+        if list.is_empty() {
+            let note = if loading.get() { "Loading versions…" } else { "No versions available." };
+            return view! { <p class=version_note>{note}</p> }.into_any();
+        }
+        list.into_iter()
+            .map(|file| {
+                let fid = file_id(&file);
+                // The installed file and anything older cannot be upgraded to.
+                let older = fid <= current_file_id;
+                let note = if fid == current_file_id {
+                    "current"
+                } else if older {
+                    "older"
+                } else {
+                    ""
+                };
+                view! {
+                    <VersionRow
+                        label=file.display_name
+                        size=file.size
+                        release_type=file.release_type
+                        note=note
+                        disabled=older
+                        selected=Signal::derive(move || selected.get() == fid)
+                        on_pick=Callback::new(move |_: ()| selected.set(fid))
+                    />
+                }
+            })
+            .collect_view()
+            .into_any()
+    };
+
+    let on_scroll = move |ev: leptos::ev::Event| {
+        let Some(list) = ev
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        let remaining = list.scroll_height() - list.scroll_top() - list.client_height();
+        if remaining <= 8 {
+            load_more();
+        }
+    };
 
     view! {
         <ModalOverlay>
@@ -130,49 +180,16 @@ pub fn UpgradeModpackModal(
                     </p>
                     <FormFields>
                         <FormField label="Target Version">
-                            {move || {
-                                if loading.get() {
-                                    view! {
-                                        <SelectInput disabled=true>
-                                            <option value="">"Loading…"</option>
-                                        </SelectInput>
-                                    }.into_any()
-                                } else if let Some(err) = error.get() {
-                                    view! { <p style="margin: 0; font-size: 0.82rem; color: #c0392b;">{err}</p> }.into_any()
-                                } else {
-                                    let cur = current_file_id;
-                                    let sel = selected.get_untracked();
-                                    view! {
-                                        <select
-                                            class=select_class()
-                                            size="8"
-                                            prop:value=sel.to_string()
-                                            on:change=move |ev| selected.set(event_target_value(&ev).parse().unwrap_or(0))
-                                            on:scroll=move |ev| {
-                                                let Some(select) = ev.target()
-                                                    .and_then(|target| target.dyn_into::<web_sys::HtmlSelectElement>().ok())
-                                                else { return; };
-                                                let remaining = select.scroll_height() - select.scroll_top() - select.client_height();
-                                                if remaining <= 8 {
-                                                    load_more();
-                                                }
-                                            }
-                                        >
-                                            {files.get().into_iter().map(|f| {
-                                                let fid = file_id(&f);
-                                                let suffix = if fid == cur { "  (current)" }
-                                                    else if fid < cur { "  (older)" }
-                                                    else { "" };
-                                                let label = format!("{}  [{}]{}", f.display_name, f.release_type, suffix);
-                                                let is_selected = fid == sel;
-                                                let disabled = fid <= cur;
-                                                view! {
-                                                    <option value=fid.to_string() selected=is_selected disabled=disabled>{label}</option>
-                                                }
-                                            }).collect_view()}
-                                        </select>
-                                    }.into_any()
-                                }
+                            {move || match error.get() {
+                                Some(err) => view! { <p class=version_error>{err}</p> }.into_any(),
+                                None => view! {
+                                    <div class=version_list on:scroll=on_scroll>
+                                        {rows}
+                                        <Show when=move || loading.get() && !files.get().is_empty()>
+                                            <p class=version_note>"Loading more…"</p>
+                                        </Show>
+                                    </div>
+                                }.into_any(),
                             }}
                         </FormField>
                     </FormFields>

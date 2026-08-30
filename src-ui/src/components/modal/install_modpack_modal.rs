@@ -1,12 +1,10 @@
 use crate::components::ui::*;
-use bamboo_css_macro::{css, cx};
+use bamboo_css_macro::css;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::{IntoView, component, view, web_sys};
 use wasm_bindgen::JsCast;
-use yaminabe_launcher_shared::datamodels::{
-    ModProjectInfo, ProjectFileInfo, ProjectFileReleaseType,
-};
+use yaminabe_launcher_shared::datamodels::{ModProjectInfo, ProjectFileInfo};
 
 #[derive(Clone)]
 pub struct InstallState {
@@ -71,97 +69,9 @@ pub fn InstallModpackModal(
         overflow: hidden;
         text-overflow: ellipsis;
     };
-    let version_list = css! {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-        max-height: 280px;
-        overflow-y: auto;
-        padding: 6px;
-        border: 1px solid var(--secondary-color);
-        border-radius: 10px;
-        scrollbar-width: thin;
-        scrollbar-color: var(--tertiary-color) transparent;
-    };
-    let version_row = css! {
-        display: grid;
-        grid-template-columns: 1fr auto auto;
-        align-items: center;
-        gap: 12px;
-        padding: 9px 12px;
-        border: 1.5px solid transparent;
-        border-radius: 8px;
-        cursor: pointer;
-        user-select: none;
-        transition: border-color 0.12s ease, background-color 0.12s ease;
-        &:hover {
-            border-color: rgba(58, 158, 95, 0.45);
-            background-color: rgba(58, 158, 95, 0.04);
-        }
-    };
-    let version_row_selected = css! {
-        border-color: #3a9e5f;
-        background-color: rgba(58, 158, 95, 0.1);
-    };
-    let version_name = css! {
-        min-width: 0;
-        font-size: 0.875rem;
-        font-weight: 600;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    };
-    let version_size = css! {
-        font-size: 0.75rem;
-        opacity: 0.5;
-        white-space: nowrap;
-    };
-    let version_note = css! {
-        padding: 18px 4px;
-        text-align: center;
-        font-size: 0.85rem;
-        opacity: 0.5;
-    };
-    let version_error = css! {
-        margin: 0;
-        font-size: 0.82rem;
-        color: #c0392b;
-    };
-    // Shape lives on `badge`; each tone only carries its colours, so a row
-    // composes the two with `cx!`.
-    let badge = css! {
-        display: inline-flex;
-        align-items: center;
-        padding: 3px 8px;
-        border-radius: 999px;
-        font-size: 0.68rem;
-        font-weight: 700;
-        letter-spacing: 0.3px;
-        text-transform: uppercase;
-    };
-    let badge_release = css! {
-        color: #3a9e5f;
-        background-color: rgba(58, 158, 95, 0.14);
-    };
-    let badge_beta = css! {
-        color: #d4a017;
-        background-color: rgba(212, 160, 23, 0.14);
-    };
-    let badge_alpha = css! {
-        color: #c0392b;
-        background-color: rgba(192, 57, 43, 0.14);
-    };
-    let badge_unknown = css! {
-        color: var(--text-color);
-        background-color: var(--secondary-color);
-        opacity: 0.7;
-    };
-    let badge_tone = move |release_type: ProjectFileReleaseType| match release_type {
-        ProjectFileReleaseType::Release => badge_release,
-        ProjectFileReleaseType::Beta => badge_beta,
-        ProjectFileReleaseType::Alpha => badge_alpha,
-        ProjectFileReleaseType::Unknown => badge_unknown,
-    };
+    let version_list = version_list_class();
+    let version_note = version_note_class();
+    let version_error = version_error_class();
 
     // Split the install state into its own memos so picking a version only
     // re-runs the row classes. Re-rendering the whole list would reset its
@@ -205,26 +115,19 @@ pub fn InstallModpackModal(
                     .unwrap_or(0)
                     .to_string();
                 let picked = value.clone();
-                let release = file.release_type.to_string();
-                let tone = badge_tone(file.release_type);
-                let size = format_size(file.size);
                 view! {
-                    <div
-                        class=move || cx!(
-                            version_row,
-                            if selected.get() == value { version_row_selected } else { "" }
-                        )
-                        on:click=move |_| {
+                    <VersionRow
+                        label=file.display_name
+                        size=file.size
+                        release_type=file.release_type
+                        selected=Signal::derive(move || selected.get() == value)
+                        on_pick=Callback::new(move |_: ()| {
                             let value = picked.clone();
                             install.update(|state| {
                                 if let Some(state) = state { state.version = value; }
                             });
-                        }
-                    >
-                        <span class=version_name>{file.display_name}</span>
-                        <span class=version_size>{size}</span>
-                        <span class=cx!(badge, tone)>{release}</span>
-                    </div>
+                        })
+                    />
                 }
             })
             .collect_view()

@@ -426,30 +426,37 @@ fn AddModModal(
                                         view! { <div class=status_area>"No compatible versions found."</div> }.into_any()
                                     } else {
                                         view! {
-                                            <select
-                                                class=select_class()
-                                                size="8"
-                                                prop:value=move || selected_file_id.get()
-                                                on:change=move |ev| selected_file_id.set(event_target_value(&ev))
-                                                on:scroll=move |ev| {
-                                                    let Some(select) = ev.target()
-                                                        .and_then(|target| target.dyn_into::<web_sys::HtmlSelectElement>().ok())
+                                            <div
+                                                class=version_list_class()
+                                                on:scroll=move |ev: leptos::ev::Event| {
+                                                    let Some(list) = ev.target()
+                                                        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
                                                     else { return; };
-                                                    let remaining = select.scroll_height() - select.scroll_top() - select.client_height();
+                                                    let remaining = list.scroll_height() - list.scroll_top() - list.client_height();
                                                     if remaining <= 8 {
                                                         load_versions(pid, true);
                                                     }
                                                 }
                                             >
                                                 {move || versions.get().into_iter().map(|file| {
-                                                    let val = file.source.curseforge_ids()
+                                                    let value = file.source.curseforge_ids()
                                                         .map(|(_, id)| id.to_string())
                                                         .unwrap_or_default();
-                                                    let label = format!("{}  [{}]", file.display_name, file.release_type);
-                                                    let is_selected = val == selected_file_id.get();
-                                                    view! { <option value=val selected=is_selected>{label}</option> }
+                                                    let picked = value.clone();
+                                                    view! {
+                                                        <VersionRow
+                                                            label=file.display_name
+                                                            size=file.size
+                                                            release_type=file.release_type
+                                                            selected=Signal::derive(move || selected_file_id.get() == value)
+                                                            on_pick=Callback::new(move |_: ()| selected_file_id.set(picked.clone()))
+                                                        />
+                                                    }
                                                 }).collect_view()}
-                                            </select>
+                                                <Show when=move || versions_loading.get()>
+                                                    <p class=version_note_class()>"Loading more…"</p>
+                                                </Show>
+                                            </div>
                                             <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
                                                 <Button
                                                     variant=ButtonVariant::Secondary
