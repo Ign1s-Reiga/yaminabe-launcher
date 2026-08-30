@@ -41,7 +41,11 @@ struct ModFile {
     file_name: String,
     download_url: Option<String>,
     display_name: String,
-    file_size_on_disk: u64,
+    /// CurseForge omits this for some files (10 of FTB StoneBlock 4's 420, for
+    /// one), and a required field there fails the whole 50-file chunk. It only
+    /// feeds a size label, so an absent or null value is worth 0, not an abort.
+    #[serde(default)]
+    file_size_on_disk: Option<u64>,
     #[serde(default)]
     hashes: Vec<FileHash>,
 }
@@ -70,7 +74,7 @@ impl ModFile {
                 .find(|h| h.algo == 1)
                 .map(|h| h.value.clone())
                 .unwrap_or_default(),
-            size: self.file_size_on_disk,
+            size: self.file_size_on_disk.unwrap_or_default(),
         }
     }
 }
