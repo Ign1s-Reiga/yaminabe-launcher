@@ -143,6 +143,16 @@ pub async fn call_pick_mod_files() -> Result<Vec<String>, String> {
     ipc::call_noargs("pick_mod_files").await
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenProjectPageArgs {
+    source: DownloadSource,
+}
+
+pub async fn call_open_project_page(source: DownloadSource) -> Result<(), String> {
+    ipc::call("open_project_page", &OpenProjectPageArgs { source }).await
+}
+
 // ── Manual mod management (issue #29) ───────────────────────────────────────────
 
 #[derive(Serialize)]

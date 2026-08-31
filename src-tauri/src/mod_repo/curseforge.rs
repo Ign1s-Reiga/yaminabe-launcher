@@ -125,6 +125,15 @@ struct ProjectMetadata {
     summary: String,
     #[serde(default)]
     logo: Option<Logo>,
+    #[serde(default)]
+    links: Option<ProjectLinks>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectLinks {
+    #[serde(default)]
+    website_url: String,
 }
 
 /// What `/v1/mods` tells us about a project beyond its files: where its files
@@ -135,6 +144,7 @@ struct ProjectSummary {
     name: String,
     summary: String,
     icon_url: Option<String>,
+    website_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -553,6 +563,10 @@ async fn fetch_project_summaries(
                     name: project.name,
                     summary: project.summary,
                     icon_url: project.logo.map(|logo| logo.url),
+                    website_url: project
+                        .links
+                        .map(|links| links.website_url)
+                        .unwrap_or_default(),
                 },
             )
         }));
@@ -885,4 +899,26 @@ pub async fn upgrade_modpack(
         instance_name, file_id, prepared.mc_version, prepared.mod_loader
     );
     Ok(())
+}
+
+/// The page a user can download `file_id` from by hand, resolved from the
+/// project's own `websiteUrl` rather than assembled from an id — CurseForge
+/// addresses projects by slug, which nothing in the modlist records.
+pub async fn project_file_page_url(
+    project_id: u32,
+    file_id: u32,
+    api_key: &str,
+    client: &reqwest::Client,
+) -> Result<String, Error> {
+    let website = fetch_project_summaries(&[project_id], api_key, client)
+        .await?
+        .remove(&project_id)
+        .map(|project| project.website_url)
+        .unwrap_or_default();
+    if website.is_empty() {
+        return Err(Error::NotExists(format!(
+            "a page for CurseForge project {project_id}"
+        )));
+    }
+    Ok(format!("{website}/files/{file_id}"))
 }

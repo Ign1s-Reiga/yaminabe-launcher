@@ -196,3 +196,22 @@ async fn download_project_file(
         entry
     }))
 }
+
+/// Where the user can fetch a failed file by hand.
+pub async fn project_page_url(
+    source: &DownloadSource,
+    api_key: &str,
+    client: &Client,
+) -> Result<String, Error> {
+    match source {
+        DownloadSource::CurseForge { project_id, file_id } => {
+            curseforge::project_file_page_url(*project_id, *file_id, api_key, client).await
+        }
+        DownloadSource::Modrinth { project_id, version_id } => {
+            Ok(format!("https://modrinth.com/project/{project_id}/version/{version_id}"))
+        }
+        DownloadSource::Manual => Err(Error::Unsupported(
+            "a hand-added file has no project page".to_string(),
+        )),
+    }
+}

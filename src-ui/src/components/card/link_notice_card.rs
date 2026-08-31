@@ -5,7 +5,7 @@ use leptos::{component, view, IntoView};
 use serde::Deserialize;
 use yaminabe_launcher_shared::datamodels::ModListEntry;
 use crate::components::ui::*;
-use crate::curseforge::{call_link_mods, call_pick_mod_files};
+use crate::curseforge::{call_link_mods, call_open_project_page, call_pick_mod_files};
 use crate::ipc;
 
 /// Payload of Tauri's `tauri://drag-drop` event — only the dropped file paths
@@ -171,10 +171,17 @@ fn LinkModal(
         gap: 4px;
     };
     let needed_item = css! {
+        display: flex;
+        align-items: center;
+        gap: 8px;
         font-size: 0.82rem;
-        padding: 6px 10px;
+        padding: 5px 6px 5px 10px;
         border: 1px solid var(--secondary-color);
         border-radius: 6px;
+    };
+    let needed_name = css! {
+        flex: 1;
+        min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -245,7 +252,30 @@ fn LinkModal(
                         {move || failed.get().into_iter().map(|m| {
                             let name = m.file_name;
                             let title = name.clone();
-                            view! { <li class=needed_item title=title>{name}</li> }
+                            let source = m.source;
+                            // A hand-added file has no project page to open.
+                            let has_page = source.is_managed();
+                            view! {
+                                <li class=needed_item title=title>
+                                    <span class=needed_name>{name}</span>
+                                    {has_page.then(move || view! {
+                                        <Button
+                                            variant=ButtonVariant::Secondary
+                                            size=ButtonSize::Small
+                                            on_click=Callback::new(move |_| {
+                                                let source = source.clone();
+                                                leptos::task::spawn_local(async move {
+                                                    if let Err(e) = call_open_project_page(source).await {
+                                                        log::error!("open_project_page failed: {e}");
+                                                    }
+                                                });
+                                            })
+                                        >
+                                            "Open page"
+                                        </Button>
+                                    })}
+                                </li>
+                            }
                         }).collect_view()}
                     </ul>
 

@@ -21,7 +21,8 @@ use crate::commands::minecraft::{
     VersionManifest, fetch_minecraft_versions, get_minecraft_versions, get_modloader_versions,
 };
 use crate::commands::modfile::{
-    download_mods, install_modpack, link_mods, list_project_files, search_projects, upgrade_modpack,
+    download_mods, install_modpack, link_mods, list_project_files, open_project_page,
+    search_projects, upgrade_modpack,
 };
 use crate::commands::settings::{
     get_instance_subfolders, get_settings, open_instance_subfolder, pick_folder, pick_mod_files,
@@ -284,6 +285,7 @@ pub fn run() {
             toggle_state_instance_mod,
             download_mods,
             link_mods,
+            open_project_page,
             pick_mod_files,
             create_instance,
             get_instances,

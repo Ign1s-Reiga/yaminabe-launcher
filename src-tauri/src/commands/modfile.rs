@@ -8,6 +8,7 @@ use crate::{ActivityGuard, AppState, InstanceActivity, emit_progress};
 use serde::Serialize;
 use std::path::Path;
 use tauri::State;
+use tauri_plugin_opener::OpenerExt;
 use yaminabe_launcher_shared::datamodels::{
     DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModProjectSearchResults, ModState,
     ProjectFileInfo, ProjectFileTarget, SearchOptions,
@@ -271,4 +272,19 @@ pub fn link_mods(
         write_json(modlist_file(&instance_dir), &modlist)?;
     }
     Ok(LinkOutcome { linked, unmatched })
+}
+
+/// Open the page a failed file can be downloaded from in the user's browser, so
+/// linking it by hand does not start with hunting for it.
+#[tauri::command]
+pub async fn open_project_page(
+    source: DownloadSource,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), Error> {
+    let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
+    let url = mod_repo::project_page_url(&source, &api_key, &state.http_client).await?;
+    app.opener()
+        .open_url(url, Option::<String>::None)
+        .map_err(|e| Error::ChildProcess(e.to_string()))
 }
