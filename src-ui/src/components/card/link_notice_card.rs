@@ -5,6 +5,7 @@ use leptos::{component, view, IntoView};
 use serde::Deserialize;
 use yaminabe_launcher_shared::datamodels::ModListEntry;
 use crate::components::ui::*;
+use phosphor_leptos::{ARROW_SQUARE_OUT, Icon, IconWeight};
 use crate::curseforge::{call_link_mods, call_open_project_page, call_pick_mod_files};
 use crate::ipc;
 
@@ -186,6 +187,19 @@ fn LinkModal(
         text-overflow: ellipsis;
         white-space: nowrap;
     };
+    let open_btn = css! {
+        flex-shrink: 0;
+        display: flex;
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: var(--text-color);
+        opacity: 0.55;
+        padding: 2px;
+        line-height: 1;
+        transition: opacity 0.12s ease;
+        &:hover { opacity: 1; }
+    };
     let drop_zone = css! {
         border: 2px dashed var(--tertiary-color);
         border-radius: 10px;
@@ -259,20 +273,22 @@ fn LinkModal(
                                 <li class=needed_item title=title>
                                     <span class=needed_name>{name}</span>
                                     {has_page.then(move || view! {
-                                        <Button
-                                            variant=ButtonVariant::Secondary
-                                            size=ButtonSize::Small
-                                            on_click=Callback::new(move |_| {
+                                        <button
+                                            type="button"
+                                            class=open_btn
+                                            title="Open the download page"
+                                            aria-label="Open the download page"
+                                            on:click=move |_| {
                                                 let source = source.clone();
                                                 leptos::task::spawn_local(async move {
                                                     if let Err(e) = call_open_project_page(source).await {
                                                         log::error!("open_project_page failed: {e}");
                                                     }
                                                 });
-                                            })
+                                            }
                                         >
-                                            "Open page"
-                                        </Button>
+                                            <Icon icon=ARROW_SQUARE_OUT size="16px" weight=IconWeight::Bold />
+                                        </button>
                                     })}
                                 </li>
                             }
