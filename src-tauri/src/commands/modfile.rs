@@ -258,6 +258,11 @@ pub fn link_mods(
         linked.push(file_name);
         if target.tracks_modlist() {
             modlist[index].state = ModState::Enabled;
+            // Same gap as a download: with no published size, the copy just
+            // written is the measurement.
+            if modlist[index].size == 0 {
+                modlist[index].size = bytes.len() as u64;
+            }
         } else {
             modlist.remove(index);
         }

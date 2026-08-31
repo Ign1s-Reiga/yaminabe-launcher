@@ -149,6 +149,7 @@ async fn download_project_file(
     let dir = instance_path.join(file.target.directory());
     std::fs::create_dir_all(&dir)?;
     let dest = dir.join(&file.file_name);
+    let written = dest.clone();
 
     let download_result = if file.sha1.is_empty() {
         Err(Error::Invalid(format!(
@@ -182,5 +183,16 @@ async fn download_project_file(
     };
 
     let track = file.target.tracks_modlist() || state == ModState::DownloadFailed;
-    Ok(track.then(|| file.to_modlist_entry(state)))
+    Ok(track.then(|| {
+        let mut entry = file.to_modlist_entry(state);
+        // CurseForge publishes no size for some files. The jar is on disk now,
+        // so measure it rather than listing the mod as 0 B forever.
+        if entry.size == 0 && entry.state == ModState::Enabled {
+            match std::fs::metadata(&written) {
+                Ok(meta) => entry.size = meta.len(),
+                Err(e) => warn!("cannot size {}: {e}", entry.file_name),
+            }
+        }
+        entry
+    }))
 }
