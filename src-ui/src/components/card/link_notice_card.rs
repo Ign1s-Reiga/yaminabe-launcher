@@ -3,7 +3,7 @@ use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
 use serde::Deserialize;
-use yaminabe_launcher_shared::datamodels::ModListEntry;
+use yaminabe_launcher_shared::datamodels::{DownloadSource, ModListEntry};
 use crate::components::ui::*;
 use phosphor_leptos::{ARROW_SQUARE_OUT, Icon, IconWeight};
 use crate::curseforge::{call_link_mods, call_open_project_page, call_pick_mod_files};
@@ -190,8 +190,6 @@ fn LinkModal(
     let open_btn = css! {
         flex-shrink: 0;
         display: flex;
-        background: none;
-        border: none;
         cursor: pointer;
         color: var(--text-color);
         opacity: 0.55;
@@ -249,6 +247,14 @@ fn LinkModal(
 
     let base_name = |path: &str| path.rsplit(['/', '\\']).next().unwrap_or(path).to_string();
 
+    let open_page = move |source: DownloadSource| {
+        leptos::task::spawn_local(async move {
+            if let Err(e) = call_open_project_page(source).await {
+                log::error!("open_project_page failed: {e}");
+            }
+        });
+    };
+
     view! {
         <ModalOverlay>
             <ModalBox>
@@ -269,26 +275,30 @@ fn LinkModal(
                             let source = m.source;
                             // A hand-added file has no project page to open.
                             let has_page = source.is_managed();
+                            // Click and keydown each need their own copy.
+                            let source_key = source.clone();
                             view! {
                                 <li class=needed_item title=title>
                                     <span class=needed_name>{name}</span>
                                     {has_page.then(move || view! {
-                                        <button
-                                            type="button"
+                                        <span
                                             class=open_btn
+                                            role="button"
+                                            tabindex="0"
                                             title="Open the download page"
                                             aria-label="Open the download page"
-                                            on:click=move |_| {
-                                                let source = source.clone();
-                                                leptos::task::spawn_local(async move {
-                                                    if let Err(e) = call_open_project_page(source).await {
-                                                        log::error!("open_project_page failed: {e}");
-                                                    }
-                                                });
+                                            on:click=move |_| open_page(source.clone())
+                                            // A span has no activation behaviour of its
+                                            // own, so Enter and Space are wired by hand.
+                                            on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                                                if ev.key() == "Enter" || ev.key() == " " {
+                                                    ev.prevent_default();
+                                                    open_page(source_key.clone());
+                                                }
                                             }
                                         >
                                             <Icon icon=ARROW_SQUARE_OUT size="16px" weight=IconWeight::Bold />
-                                        </button>
+                                        </span>
                                     })}
                                 </li>
                             }
