@@ -67,6 +67,7 @@ impl ButtonVariant {
 
 #[derive(Clone)]
 pub enum ButtonSize {
+    Small,
     Normal,
     Big
 }
@@ -74,6 +75,9 @@ pub enum ButtonSize {
 impl ButtonSize {
     fn class(&self) -> &'static str {
         match self {
+            ButtonSize::Small => css! {
+                padding: 6px 14px;
+            },
             ButtonSize::Normal => css! {
                 padding: 8px 20px;
             },

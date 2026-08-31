@@ -30,46 +30,48 @@ pub fn LinkNoticeCard(
     let instance_id = StoredValue::new(instance_id);
     let open: RwSignal<bool> = RwSignal::new(false);
 
-    let card = css! {
+    let bar = css! {
+        display: flex;
+        align-items: center;
+        gap: 12px;
         width: 100%;
         box-sizing: border-box;
-        padding: 16px 18px;
-        margin-top: 16px;
-        border: 1px solid #d4a017;
-        border-radius: 10px;
+        padding: 8px 8px 8px 14px;
+        margin-top: 10px;
+        border: 1px solid rgb(212 160 23 / 0.5);
+        border-radius: 8px;
         background-color: rgb(212 160 23 / 0.08);
     };
-    let title = css! {
-        font-weight: 600;
-        margin: 0 0 6px 0;
+    let dot = css! {
+        flex-shrink: 0;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background-color: #d4a017;
     };
-    let body = css! {
+    let text = css! {
+        flex: 1;
+        min-width: 0;
         margin: 0;
-        font-size: 0.875rem;
-        opacity: 0.75;
-        line-height: 1.6;
+        font-size: 0.85rem;
     };
-
     let count = move || failed.get().len();
     let has_failed = move || !failed.get().is_empty();
 
     view! {
         <Show when=has_failed>
-            <div class=card>
-                <p class=title>"Some files need manual installation"</p>
-                <p class=body>
-                    {move || format!(
-                        "{} file(s) could not be downloaded automatically (the author may have \
-                         disabled third-party downloads). Link the matching files from your computer \
-                         to finish setting up this instance.",
-                        count(),
-                    )}
+            <div class=bar>
+                <span class=dot></span>
+                <p class=text>
+                    {move || format!("{} file(s) need manual installation.", count())}
                 </p>
-                <div style="margin-top: 14px;">
-                    <Button variant=ButtonVariant::Primary on_click=Callback::new(move |_| open.set(true))>
-                        "Link mods…"
-                    </Button>
-                </div>
+                <Button
+                    variant=ButtonVariant::Primary
+                    size=ButtonSize::Small
+                    on_click=Callback::new(move |_| open.set(true))
+                >
+                    "Link files…"
+                </Button>
             </div>
 
             <Show when=move || open.get()>
@@ -217,6 +219,12 @@ fn LinkModal(
         font-size: 0.82rem;
         opacity: 0.75;
     };
+    let intro = css! {
+        margin: 0 0 16px 0;
+        font-size: 0.82rem;
+        opacity: 0.6;
+        line-height: 1.6;
+    };
 
     let base_name = |path: &str| path.rsplit(['/', '\\']).next().unwrap_or(path).to_string();
 
@@ -224,7 +232,13 @@ fn LinkModal(
         <ModalOverlay>
             <ModalBox>
                 <ModalBody>
-                    <h2 style="margin: 0 0 16px 0;">"Link mods"</h2>
+                    <h2 style="margin: 0 0 8px 0;">"Link files"</h2>
+                    <p class=intro>
+                        "These could not be downloaded automatically. The author may have \
+                         disabled third-party downloads, or the site publishes no checksum \
+                         to verify them by. Supply your own copies to finish setting up \
+                         this instance."
+                    </p>
 
                     <p class=label>"Needs linking"</p>
                     <ul class=needed_list>
