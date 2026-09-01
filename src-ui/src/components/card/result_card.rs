@@ -4,7 +4,7 @@ use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
-use yaminabe_launcher_shared::datamodels::ModProjectInfo;
+use yaminabe_launcher_shared::datamodels::{ModProjectInfo, Platform};
 
 #[component]
 pub fn ResultCard(
@@ -12,6 +12,11 @@ pub fn ResultCard(
     #[prop(into, default = "Install".to_string())] action_label: String,
     on_select: Callback<ModProjectInfo>,
 ) -> impl IntoView {
+    // Modrinth search returns results, but listing a project's files and
+    // installing it are not implemented — so the action is shown inert rather
+    // than handing over a button whose handler returns silently.
+    let supported = pack.platform == Platform::CurseForge;
+
     let card = css! {
         display: flex;
         align-items: center;
@@ -114,9 +119,10 @@ pub fn ResultCard(
             </div>
             <Button
                 variant=ButtonVariant::Primary
+                disabled=Signal::stored(!supported)
                 on_click=Callback::new(move |_| on_select.run(pack_for_click.clone()))
             >
-                {action_label}
+                {if supported { action_label } else { "Unavailable".to_string() }}
             </Button>
         </div>
     }
