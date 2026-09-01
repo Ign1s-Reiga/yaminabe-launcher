@@ -215,7 +215,10 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             let native_store = windows_native_keyring_store::Store::new();
 
-            #[cfg(target_os = "linux")]
+            // Matches the dependency's own cfg in Cargo.toml — gating this on
+            // linux alone leaves other unixes with the crate pulled in and
+            // `native_store` unbound.
+            #[cfg(all(unix, not(target_os = "macos")))]
             let native_store = dbus_secret_service_keyring_store::Store::new();
 
             #[cfg(target_os = "macos")]
