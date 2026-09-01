@@ -75,6 +75,17 @@ pub fn replace_modlist_entries_for_file_ids(
     write_json(modlist_file(instance_dir), &modlist)
 }
 
+/// Whether `name` addresses a file inside one directory and nowhere else.
+/// Separators and `..` are the obvious escapes; a drive prefix is the quiet one,
+/// since joining `C:evil.jar` discards the directory it was joined onto.
+pub fn is_bare_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains("..")
+        && !name.contains(':')
+}
+
 fn sort_modlist(entries: &mut [ModListEntry]) {
     entries.sort_by(|a, b| a.file_name.to_lowercase().cmp(&b.file_name.to_lowercase()));
 }
@@ -305,8 +316,7 @@ pub fn toggle_state_instance_mod(
     file_name: String,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
-    // Only a bare file name inside `mods/` may be touched — reject traversal.
-    if file_name.is_empty() || file_name.contains('/') || file_name.contains('\\') || file_name.contains("..") {
+    if !is_bare_file_name(&file_name) {
         return Err(Error::Invalid(format!("invalid mod file name '{file_name}'")));
     }
     let Some(_activity) = ActivityGuard::claim(&state.instance_activity, &instance_id, InstanceActivity::Modifying) else {

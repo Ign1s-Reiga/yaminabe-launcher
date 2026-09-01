@@ -1,5 +1,5 @@
 use crate::commands::instance::{
-    find_instance_dir, instance_meta_file, modlist_file, upsert_modlist_entries,
+    find_instance_dir, instance_meta_file, is_bare_file_name, modlist_file, upsert_modlist_entries,
 };
 use crate::http_utils::sha1_hex;
 use crate::json::{read_json, read_json_or_default, write_json};
@@ -253,6 +253,13 @@ pub fn link_mods(
             let entry = &modlist[index];
             (entry.file_name.clone(), entry.target)
         };
+        // The name came from the site, not from us; refuse one that would place
+        // the copy outside the entry's own directory.
+        if !is_bare_file_name(&file_name) {
+            log::warn!("link_mods: refusing to write '{file_name}'");
+            unmatched.push(path.clone());
+            continue;
+        }
         let target_dir = instance_dir.join(target.directory());
         std::fs::create_dir_all(&target_dir)?;
         std::fs::write(target_dir.join(&file_name), &bytes)?;
