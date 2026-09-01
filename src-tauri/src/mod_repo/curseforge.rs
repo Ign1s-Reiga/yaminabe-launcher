@@ -820,30 +820,23 @@ pub async fn upgrade_modpack(
         .filter(|fid| matches!(installed.get(fid).map(|f| f.state), None | Some(ModState::DownloadFailed)))
         .collect();
 
-    // Delete what the pack dropped by the names the modlist recorded. Resolving
-    // the ids against the API instead would silently skip a file CurseForge no
-    // longer serves, leaving its jar loading against the upgraded pack.
-    let mut old_file_names = Vec::new();
-    let mods_dir = instance_path.join("mods");
-    for (file_id, installed_file) in &installed {
-        if new_set.contains(file_id) {
-            continue;
-        }
-        old_file_names.push(installed_file.file_name.clone());
-        // A disabled mod lives under `<name>.disabled`, so drop both spellings.
-        let disabled = mods_dir.join(format!("{}.disabled", installed_file.file_name));
-        for path in [mods_dir.join(&installed_file.file_name), disabled] {
-            if path.exists() {
-                if let Err(e) = std::fs::remove_file(&path) {
-                    log::warn!("failed to remove old mod {}: {e}", path.display());
-                }
-            }
-        }
-    }
+    // Names the pack drops, taken from the modlist rather than resolved against
+    // the API — an id CurseForge no longer serves would otherwise be skipped,
+    // leaving its jar loading against the upgraded pack. Deleting is deferred
+    // until the downloads land: a failure in between would strip jars the
+    // modlist still calls installed, and a later upgrade to a different target
+    // would never fetch them again.
+    let old_file_names: Vec<String> = installed
+        .iter()
+        .filter(|(file_id, _)| !new_set.contains(*file_id))
+        .map(|(_, installed_file)| installed_file.file_name.clone())
+        .collect();
+
     // One resolve for the whole new file set — `to_add` is a subset of it, so
     // splitting the result here saves a second round of /v1/mods/files (plus its
     // per-chunk /v1/mods fan-out) against the CurseForge rate limit.
     let new_files = resolve_project_files(&new_ids, &api_key, http_client).await?;
+    let new_files_names: Vec<String> = new_files.iter().map(|f| f.file_name.clone()).collect();
 
     // Baseline the new modlist from the full file set, but keep only mods. A file
     // the instance already had keeps its recorded state (a mod the user disabled
@@ -873,6 +866,27 @@ pub async fn upgrade_modpack(
         .collect();
     let downloaded_modlist_entries =
         super::download_project_files(added_files, &instance_path, http_client).await?;
+
+    // Everything the new pack ships is now on disk, so the dropped jars can go.
+    // A name the new pack also uses belongs to the file just written, not to the
+    // one being dropped, so it is left alone.
+    let kept_names: HashSet<&str> = new_files_names.iter().map(String::as_str).collect();
+    let mods_dir = instance_path.join("mods");
+    for file_name in &old_file_names {
+        if kept_names.contains(file_name.as_str()) {
+            continue;
+        }
+        // A disabled mod lives under `<name>.disabled`, so drop both spellings.
+        let disabled = mods_dir.join(format!("{file_name}.disabled"));
+        for path in [mods_dir.join(file_name), disabled] {
+            if path.exists() {
+                if let Err(e) = std::fs::remove_file(&path) {
+                    log::warn!("failed to remove old mod {}: {e}", path.display());
+                }
+            }
+        }
+    }
+
     for entry in downloaded_modlist_entries {
         new_modlist_entries.retain(|existing| existing.file_name != entry.file_name);
         new_modlist_entries.push(entry);
