@@ -706,7 +706,16 @@ pub async fn install_modpack(
         (settings.curseforge_api_key.clone(), settings.instance_install_dir.clone())
     };
 
+    // create_instance refuses an existing folder; do the same here, or a pack
+    // installed under a name that lowercases onto an existing instance would
+    // overlay its files and overwrite its metadata, orphaning the original.
     let instance_path = PathBuf::from(&install_dir).join(instance_name.to_lowercase());
+    if instance_path.exists() {
+        return Err(Error::Invalid(format!(
+            "folder '{}' already exists at this location",
+            instance_name.to_lowercase()
+        )));
+    }
     std::fs::create_dir_all(&instance_path)?;
 
     let prepared = prepare_modpack(
