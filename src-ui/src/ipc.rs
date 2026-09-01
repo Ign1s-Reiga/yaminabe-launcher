@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use leptos::web_sys;
 use serde::Serialize;
@@ -73,10 +73,15 @@ where
 pub struct EventSubscription {
     _closure: Closure<dyn Fn(JsValue)>,
     unlisten: Rc<RefCell<Option<js_sys::Function>>>,
+    /// Set on drop. `listen` may still be in flight, in which case the handle is
+    /// gone before there is anything to detach; the task reads this and detaches
+    /// the moment it resolves.
+    dropped: Rc<Cell<bool>>,
 }
 
 impl Drop for EventSubscription {
     fn drop(&mut self) {
+        self.dropped.set(true);
         if let Some(unlisten) = self.unlisten.borrow_mut().take() {
             unlisten.call0(&JsValue::NULL).ok();
         }
@@ -85,7 +90,8 @@ impl Drop for EventSubscription {
 
 /// Subscribe to a Tauri event until the returned [`EventSubscription`] is
 /// dropped. The closure is kept alive by the handle; if it is dropped before
-/// the async `listen` resolves, the listener is detached as soon as it does.
+/// the async `listen` resolves, the listener is detached as soon as it does —
+/// otherwise Tauri would keep calling a closure that has already been freed.
 pub fn subscribe<T, F>(event: &'static str, handler: F) -> EventSubscription
 where
     T: for<'de> serde::Deserialize<'de> + 'static,
@@ -99,13 +105,22 @@ where
         }
     });
     let unlisten: Rc<RefCell<Option<js_sys::Function>>> = Rc::new(RefCell::new(None));
+    let dropped = Rc::new(Cell::new(false));
     let func: js_sys::Function = cb.as_ref().unchecked_ref::<js_sys::Function>().clone();
     let unlisten_for_task = Rc::clone(&unlisten);
+    let dropped_for_task = Rc::clone(&dropped);
     leptos::task::spawn_local(async move {
         match listen(event, &func).await {
-            Ok(u) => *unlisten_for_task.borrow_mut() = Some(u.unchecked_into::<js_sys::Function>()),
+            Ok(u) => {
+                let unlisten = u.unchecked_into::<js_sys::Function>();
+                if dropped_for_task.get() {
+                    unlisten.call0(&JsValue::NULL).ok();
+                } else {
+                    *unlisten_for_task.borrow_mut() = Some(unlisten);
+                }
+            }
             Err(e) => log::error!("Tauri listen({event}) failed: {e:?}"),
         }
     });
-    EventSubscription { _closure: cb, unlisten }
+    EventSubscription { _closure: cb, unlisten, dropped }
 }
