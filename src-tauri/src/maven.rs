@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use reqwest::Client;
 use yaminabe_launcher_shared::error::Error;
-use crate::http_utils::fetch_and_verify;
+use crate::http_utils::{fetch_and_verify, rejected_status};
 
 /// Builder for a single Maven artifact download. Start with [`MavenCoords::new`]
 /// (repository base URL + `group:artifact:version` coordinate), optionally chain
@@ -59,9 +59,20 @@ impl<'a> MavenCoords<'a> {
             .split('/')
             .fold(dest_path.to_path_buf(), |path, segment| path.join(segment));
 
-        let sha1 = client.get(format!("{url}.sha1")).send().await?
-            .text().await.map_err(Error::InvalidResponse)?;
-        let bytes = fetch_and_verify(client, &url, sha1.trim(), self.coords).await?;
+        // An empty digest means "skip verification" downstream, so a mirror
+        // answering 200 with an empty body would put unverified bytes on the
+        // classpath. Demand a real one.
+        let sha1_url = format!("{url}.sha1");
+        let resp = client.get(&sha1_url).send().await?;
+        if !resp.status().is_success() {
+            return Err(rejected_status(resp.status(), &sha1_url));
+        }
+        let sha1 = resp.text().await.map_err(Error::InvalidResponse)?;
+        let sha1 = sha1.trim();
+        if sha1.is_empty() {
+            return Err(Error::Invalid(format!("no checksum published for {}", self.coords)));
+        }
+        let bytes = fetch_and_verify(client, &url, sha1, self.coords).await?;
 
         if let Some(parent) = file_path.parent() {
             std::fs::create_dir_all(parent)?;
