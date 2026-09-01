@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use log::info;
+use log::{info, warn};
 use tauri::State;
 use yaminabe_launcher_shared::datamodels::{
     DownloadSource, InstanceMeta, ModListEntry, ModState, ProjectFileTarget,
@@ -13,6 +13,28 @@ use crate::install_task::{ensure_game_and_loader, version_manifest_path};
 
 pub fn instance_meta_file(instance_dir: &Path) -> PathBuf {
     instance_dir.join(".launcher").join("instance.json")
+}
+
+/// Instance metadata used to live at `<instance>/instance.json`. Move a file
+/// left at the old path into `.launcher/`, so an instance created before the
+/// move keeps appearing in the library instead of silently vanishing with its
+/// worlds still on disk.
+fn migrate_legacy_meta(instance_dir: &Path) {
+    let current = instance_meta_file(instance_dir);
+    let legacy = instance_dir.join("instance.json");
+    if current.exists() || !legacy.exists() {
+        return;
+    }
+    if let Some(parent) = current.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            warn!("cannot create {} for legacy metadata: {e}", parent.display());
+            return;
+        }
+    }
+    match std::fs::rename(&legacy, &current) {
+        Ok(()) => info!("moved legacy metadata into {}", current.display()),
+        Err(e) => warn!("cannot move {}: {e}", legacy.display()),
+    }
 }
 
 pub fn modlist_file(instance_dir: &Path) -> PathBuf {
@@ -63,6 +85,7 @@ pub fn find_instance_dir(install_dir: &Path, id: &str) -> Result<PathBuf, Error>
         .filter(|e| e.path().is_dir())
         .find_map(|e| {
             let path = e.path();
+            migrate_legacy_meta(&path);
             let meta: InstanceMeta = read_json(instance_meta_file(&path)).ok()?;
 
             if meta.id == id { Some(path) } else { None }
@@ -169,6 +192,7 @@ pub async fn get_instances(state: State<'_, AppState>) -> Result<Vec<InstanceMet
     for entry in std::fs::read_dir(&root)?.flatten() {
         let path = entry.path();
         if !path.is_dir() { continue; }
+        migrate_legacy_meta(&path);
         let Ok(meta) = read_json(instance_meta_file(&path)) else { continue };
         instances.push(meta);
     }
