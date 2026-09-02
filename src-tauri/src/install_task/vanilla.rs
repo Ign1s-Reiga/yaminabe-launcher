@@ -1,6 +1,6 @@
 use log::info;
 use yaminabe_launcher_shared::error::Error;
-use yaminabe_launcher_shared::version_manifest::{ArgRule, ClientManifest};
+use yaminabe_launcher_shared::datamodels::{ArgRule, ClientManifest};
 use crate::{assets_dir, libraries_dir};
 use crate::http_utils::download_resource;
 use super::version_manifest_path;
@@ -29,12 +29,7 @@ pub async fn pre_download_libraries(version_id: &str, client: &reqwest::Client) 
             continue;
         };
         let Some(path) = artifact.path.as_deref() else { continue; };
-        let dest = libraries_dir().join(path);
-        if dest.exists() { continue; }
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        download_resource(client, &artifact.url, dest).await?;
+        download_resource(client, &artifact.url, &artifact.sha1, libraries_dir().join(path)).await?;
     }
 
     info!("Pre-downloaded libraries for {version_id}");
@@ -50,10 +45,7 @@ pub async fn pre_download_log_config(version_id: &str, client: &reqwest::Client)
     };
 
     let dest_dir = assets_dir().join("log_configs");
-    let dest = dest_dir.join(&file.id);
-    if dest.exists() { return Ok(()); }
-    std::fs::create_dir_all(&dest_dir)?;
-    download_resource(client, &file.url, dest).await?;
+    download_resource(client, &file.url, &file.sha1, dest_dir.join(&file.id)).await?;
 
     info!("Pre-downloaded log config {} for {version_id}", file.id);
     Ok(())

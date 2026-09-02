@@ -1,10 +1,10 @@
-use crate::components::create_modal::CreateInstanceModal;
-use crate::components::instance_card::InstanceCard;
+use crate::components::modal::create_modal::CreateInstanceModal;
 use crate::components::ui::*;
 use bamboo_css_macro::css;
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
-use yaminabe_launcher_shared::datatypes::InstanceMeta;
+use yaminabe_launcher_shared::datamodels::InstanceMeta;
+use crate::components::card::instance_card::InstanceCard;
 
 fn matches_active_category(inst: &InstanceMeta, active: &str) -> bool {
     if active == "Default" { inst.category.is_empty() } else { inst.category == active }

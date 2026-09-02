@@ -1,5 +1,8 @@
+use crate::components::mod_manager::ModManager;
 use crate::components::open_in_file_manager::OpenInFileManager;
-use crate::components::running_sidebar::RunningRegistry;
+use crate::components::activity_dock::RunningRegistry;
+use crate::components::card::managed_notice_card::ManagedNoticeCard;
+use crate::components::modal::upgrade_modal::UpgradeModpackModal;
 use crate::signal_ext::VecSignalExt;
 use crate::components::settings::{SaveState, SettingsProp, SettingsSection};
 use crate::components::ui::{Button, ButtonSize, ButtonVariant, SelectInput, SliderInput, TabBar, Textarea, input_class};
@@ -12,7 +15,7 @@ use leptos::{component, view, IntoView};
 use leptos_router::hooks::{use_navigate, use_params, use_query_map};
 use leptos_router::params::Params;
 use serde::Serialize;
-use yaminabe_launcher_shared::datatypes::{InstanceMeta, JavaInstall, LaunchMode};
+use yaminabe_launcher_shared::datamodels::{InstanceMeta, JavaInstall, LaunchMode, ModLoader};
 
 /// Detail-page tabs, in order; the first is the default. Single source for both
 /// the TabBar and the `?tab=` deep-link validation.
@@ -55,26 +58,30 @@ pub fn InstanceDetailPage() -> impl IntoView {
 
 #[component]
 fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
-    let navigate = use_navigate();
-    let navigate_play = navigate.clone();
+    let navigate = StoredValue::new(use_navigate());
     // Allow deep-linking to a tab via `?tab=` (used by the library card's
     // context-menu "Settings" entry); fall back to Description otherwise.
-    let initial_tab = use_query_map()
+    let active_tab = RwSignal::new(use_query_map()
         .with_untracked(|q| q.get("tab"))
         .filter(|t| TABS.contains(&t.as_str()))
-        .unwrap_or_else(|| TABS[0].to_string());
-    let active_tab = RwSignal::new(initial_tab);
+        .unwrap_or_else(|| TABS[0].to_string()));
     let save_state: RwSignal<SaveState> = RwSignal::new(SaveState::Idle);
 
-    let header_bg = format!("background-color: {}", &instance.mod_loader.get_modloader_color());
+    // `(project_id, file_id)` when this is a CurseForge instance, enabling the
+    // modpack Upgrade action in the read-only Mods tab. Kept as a binding (not
+    // inlined) because it is read by two separate view closures.
+    let cf_origin = instance.origin.curseforge_ids();
+    let show_upgrade: RwSignal<bool> = RwSignal::new(false);
+    // Mod-loader pieces the Mods-tab `<Show>` children closure needs across
+    // re-renders, held as StoredValue so the closure can copy them.
+    let mods_game_version = StoredValue::new(instance.game_version.clone());
+    let mods_loader = StoredValue::new(instance.mod_loader.clone());
+    let header_bg = format!("background-color: {}", &instance.mod_loader.mod_loader_color());
     let instance_name = instance.name.clone();
-    let category_label = if instance.category.is_empty() { "Default".to_string() } else { instance.category.clone() };
+    let category_label = if instance.category.is_empty() { "Default" } else { instance.category.as_str() };
     let meta_text = format!("MC {}  ·  {}  ·  {}", instance.game_version, instance.mod_loader, category_label);
 
-    let instance_id = instance.id.clone();
-    let instance_id_play = instance_id.clone();
-    let instance_id_save = StoredValue::new(instance_id.clone());
-    let instance_id_open = instance_id.clone();
+    let instance_id = StoredValue::new(instance.id.clone());
     let dropdown_open: RwSignal<bool> = RwSignal::new(false);
     let launch_mode: RwSignal<LaunchMode> = RwSignal::new(LaunchMode::Online);
     let jre_path = StoredValue::new(instance.jre_path.clone());
@@ -82,9 +89,8 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
     // Whether this instance is currently running, so the Play button can show
     // "Running" and refuse to launch a second copy.
     let registry = use_context::<RunningRegistry>().expect("running registry");
-    let instance_id_running = instance_id.clone();
     let is_running = Signal::derive(move || {
-        registry.map_by_id(&instance_id_running, |r| r.status.is_active()).unwrap_or(false)
+        instance_id.with_value(|id| registry.map_by_id(id, |r| r.status.is_active())).unwrap_or(false)
     });
 
     let java_installs = LocalResource::new(|| async move {
@@ -99,7 +105,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
         let get = |k: &str| data.get(k).as_string().unwrap_or_default();
         let get_u32 = |k: &str| data.get(k).as_string().unwrap_or_default().parse::<u32>().unwrap_or(0);
         let args = SaveInstanceSettingsArgs {
-            id: instance_id_save.get_value(),
+            id: instance_id.get_value(),
             ram_mb: get("ram_mb").parse().unwrap_or(4096),
             jvm_args: get("jvm_args"),
             jre_path: get("jre_path"),
@@ -140,14 +146,14 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
         <Button
             variant=ButtonVariant::Text
             style="margin-bottom: 24px;"
-            on_click=Callback::new(move |_| navigate("/library", Default::default()))
+            on_click=Callback::new(move |_| navigate.with_value(|nav| nav("/library", Default::default())))
         >
             "← Back to Library"
         </Button>
 
         <div class=header_strip style=header_bg></div>
         <InstanceDetailHeader instance_name=instance_name meta_text=meta_text>
-            <OpenInFileManager instance_id=instance_id_open />
+            <OpenInFileManager instance_id=instance_id.get_value() />
             <SplitPlayButton
                 dropdown_open=dropdown_open
                 launch_mode=launch_mode
@@ -155,10 +161,10 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
                 on_play=Callback::new(move |_| {
                     dropdown_open.set(false);
                     let mode = launch_mode.get_untracked();
-                    navigate_play(
-                        &format!("/library/{}/play?mode={}", instance_id_play, mode.as_str()),
+                    navigate.with_value(|nav| nav(
+                        &format!("/library/{}/play?mode={}", instance_id.get_value(), mode.as_str()),
                         Default::default(),
-                    );
+                    ));
                 })
             />
         </InstanceDetailHeader>
@@ -183,7 +189,34 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
 
         // ── Mods tab ──────────────────────────────────────────────────────────
         <Show when=move || active_tab.get() == "Mods">
-            <p style="opacity: 0.45; font-size: 0.9rem;">"No mods installed."</p>
+            {if instance.origin.is_managed() {
+                view! {
+                    <ManagedNoticeCard
+                        can_upgrade=cf_origin.is_some()
+                        on_upgrade=Callback::new(move |_| show_upgrade.set(true))
+                    />
+                    {(instance.mod_loader != ModLoader::Vanilla).then(move || view! {
+                        <div style="margin-top: 20px;">
+                            <ModManager
+                                instance_id=instance_id.get_value()
+                                game_version=mods_game_version.get_value()
+                                mod_loader=mods_loader.get_value()
+                                read_only=true
+                            />
+                        </div>
+                    })}
+                }.into_any()
+            } else if instance.mod_loader == ModLoader::Vanilla {
+                view! { <p style="opacity: 0.45; font-size: 0.9rem;">"No mods installed."</p> }.into_any()
+            } else {
+                view! {
+                    <ModManager
+                        instance_id=instance_id.get_value()
+                        game_version=mods_game_version.get_value()
+                        mod_loader=mods_loader.get_value()
+                    />
+                }.into_any()
+            }}
         </Show>
 
         // ── Settings tab ──────────────────────────────────────────────────────
@@ -273,6 +306,18 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
                     </SettingsProp>
                 </SettingsSection>
             </form>
+        </Show>
+
+        // ── Modpack upgrade modal (CurseForge instances only) ─────────────────
+        <Show when=move || show_upgrade.get() fallback=|| ()>
+            {cf_origin.map(|(project_id, file_id)| view! {
+                <UpgradeModpackModal
+                    instance_id=instance_id.get_value()
+                    project_id=project_id
+                    current_file_id=file_id
+                    on_close=Callback::new(move |_: ()| show_upgrade.set(false))
+                />
+            })}
         </Show>
     }
 }
@@ -460,4 +505,3 @@ fn InstanceDetailHeader(
         </div>
     }
 }
-

@@ -4,12 +4,13 @@ use std::path::{Path, PathBuf};
 use log::info;
 use serde::Deserialize;
 use zip::ZipArchive;
-use yaminabe_launcher_shared::datatypes::ModLoader;
+use yaminabe_launcher_shared::datamodels::ModLoader;
 use yaminabe_launcher_shared::error::Error;
-use yaminabe_launcher_shared::version_manifest::{Library, ClientManifest};
+use yaminabe_launcher_shared::datamodels::{Library, ClientManifest};
 use crate::{bin_dir, libraries_dir, temp_dir, versions_dir};
 use crate::http_utils::{download_resource, sha1_hex, verify_sha1};
-use super::{installer_archive, maven_coord_to_path, version_manifest_path};
+use crate::install_task::{installer_archive, maven_coord_to_path};
+use super::version_manifest_path;
 
 #[derive(Deserialize)]
 struct InstallProfileV2 {
@@ -62,7 +63,7 @@ pub async fn pre_download_libraries(version_id: &str, client: &reqwest::Client) 
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        download_resource(client, &artifact.url, dest).await?;
+        download_resource(client, &artifact.url, &artifact.sha1, dest).await?;
     }
 
     info!("Pre-downloaded Forge libraries for {version_id}");
@@ -134,7 +135,7 @@ pub async fn install(
         let embedded = format!("maven/{artifact_path}");
         let primary_jar_bytes = installer_archive::read_entry_bytes(&installer_path, &embedded)?;
         if !artifact.sha1.is_empty() {
-            verify_sha1(&primary_jar_bytes, &artifact.sha1, &format!("embedded {embedded}"))?;
+            verify_sha1(&primary_jar_bytes, Some(&artifact.sha1), &format!("embedded {embedded}"))?;
         }
 
         let version_info: ClientManifest = serde_json::from_str(&version_json_text)?;
@@ -169,7 +170,7 @@ pub async fn install(
                     let mut buf = Vec::new();
                     entry.read_to_end(&mut buf)?;
                     if !artifact.sha1.is_empty() {
-                        verify_sha1(&buf, &artifact.sha1, &format!("embedded {embedded}"))?;
+                        verify_sha1(&buf, Some(&artifact.sha1), &format!("embedded {embedded}"))?;
                     }
                     std::fs::write(&dest, &buf)?;
                     true
@@ -180,13 +181,7 @@ pub async fn install(
 
         if !extracted {
             if artifact.url.is_empty() { continue; }
-            download_resource(client, &artifact.url, dest.clone()).await?;
-            if !artifact.sha1.is_empty() {
-                if let Err(e) = verify_sha1(&std::fs::read(&dest)?, &artifact.sha1, &artifact.url) {
-                    std::fs::remove_file(&dest).ok();
-                    return Err(e);
-                }
-            }
+            download_resource(client, &artifact.url, &artifact.sha1, dest.clone()).await?;
         }
     }
 
@@ -264,7 +259,7 @@ pub async fn install(
             if !path.exists() {
                 return Err(Error::Invalid(format!("Processor output missing: {}", path.display())));
             }
-            if let Err(e) = verify_sha1(&std::fs::read(path)?, expected, path.to_string_lossy().as_ref()) {
+            if let Err(e) = verify_sha1(&std::fs::read(path)?, Some(expected), path.to_string_lossy().as_ref()) {
                 std::fs::remove_file(path).ok();
                 return Err(e);
             }

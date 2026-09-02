@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use tauri::State;
 
-use yaminabe_launcher_shared::datatypes::JavaInstall;
+use yaminabe_launcher_shared::datamodels::JavaInstall;
 use yaminabe_launcher_shared::error::Error;
 use crate::{runtimes_dir, AppState};
 use crate::http_utils::{download_resource, fetch_json};
@@ -98,18 +98,24 @@ struct RuntimeFileDownloads {
 #[derive(Deserialize)]
 struct RuntimeDownload {
     url: String,
+    sha1: String,
 }
 
 /// Download a Mojang-distributed JRE for the given `component` (e.g. `"jre-legacy"`)
 /// into `runtimes_dir/<component>/`. Returns the path to `javaw.exe`.
-/// Skips download if `javaw.exe` already exists.
+/// Skips the manifest walk once the runtime is known to be complete.
 pub async fn download_java_runtime(
     component: &str,
     client: &reqwest::Client,
 ) -> Result<PathBuf, Error> {
     let runtime_dir = runtimes_dir().join(component);
     let javaw_path  = runtime_dir.join("bin").join("javaw.exe");
-    if javaw_path.exists() {
+    // `manifest.files` is unordered, so javaw.exe can be written long before the
+    // rest of the tree. Only this marker — written once every file has been
+    // verified — proves the runtime is whole, so an interrupted download is
+    // repaired by the walk below instead of being trusted forever.
+    let complete_marker = runtime_dir.join(".complete");
+    if complete_marker.exists() && javaw_path.exists() {
         return Ok(javaw_path);
     }
 
@@ -140,16 +146,15 @@ pub async fn download_java_runtime(
             continue;
         }
         if file.file_type == "file" && let Some(dl) = &file.downloads {
-            if dest.exists() { continue; }
-            if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            download_resource(client, dl.raw.url.as_str(), dest).await?;
+            download_resource(client, dl.raw.url.as_str(), &dl.raw.sha1, dest).await?;
         }
     }
 
     if !javaw_path.exists() {
         return Err(Error::NotExists(javaw_path.to_string_lossy().to_string()));
+    }
+    if let Err(e) = std::fs::write(&complete_marker, b"") {
+        log::warn!("could not mark the '{component}' runtime complete: {e}");
     }
 
     Ok(javaw_path)

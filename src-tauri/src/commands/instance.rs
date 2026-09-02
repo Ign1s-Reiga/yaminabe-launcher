@@ -1,14 +1,94 @@
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use log::info;
+use log::{info, warn};
 use tauri::State;
-use yaminabe_launcher_shared::datatypes::{ModLoader, InstanceMeta};
+use yaminabe_launcher_shared::datamodels::{
+    DownloadSource, InstanceMeta, ModListEntry, ModState, ProjectFileTarget,
+};
 use yaminabe_launcher_shared::error::Error;
 use crate::{emit_progress, libraries_dir, versions_dir, ActivityGuard, AppState, InstanceActivity};
 use crate::commands::java::download_java_runtime;
-use crate::install_task::{
-    ensure_fabric, ensure_forge, ensure_neoforge, ensure_quilt, ensure_vanilla,
-    version_manifest_path,
-};
+use crate::json::{read_json, read_json_or_default, write_json};
+use crate::install_task::{ensure_game_and_loader, version_manifest_path};
+
+pub fn instance_meta_file(instance_dir: &Path) -> PathBuf {
+    instance_dir.join(".launcher").join("instance.json")
+}
+
+/// Instance metadata used to live at `<instance>/instance.json`. Move a file
+/// left at the old path into `.launcher/`, so an instance created before the
+/// move keeps appearing in the library instead of silently vanishing with its
+/// worlds still on disk.
+fn migrate_legacy_meta(instance_dir: &Path) {
+    let current = instance_meta_file(instance_dir);
+    let legacy = instance_dir.join("instance.json");
+    if current.exists() || !legacy.exists() {
+        return;
+    }
+    if let Some(parent) = current.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            warn!("cannot create {} for legacy metadata: {e}", parent.display());
+            return;
+        }
+    }
+    match std::fs::rename(&legacy, &current) {
+        Ok(()) => info!("moved legacy metadata into {}", current.display()),
+        Err(e) => warn!("cannot move {}: {e}", legacy.display()),
+    }
+}
+
+pub fn modlist_file(instance_dir: &Path) -> PathBuf {
+    instance_dir.join(".launcher").join("modlist.json")
+}
+
+pub fn upsert_modlist_entries(instance_dir: &Path, entries: Vec<ModListEntry>) -> Result<(), Error> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let mut modlist: Vec<ModListEntry> = read_json_or_default(modlist_file(instance_dir))?;
+    for entry in entries {
+        modlist.retain(|existing| existing.file_name != entry.file_name);
+        modlist.push(entry);
+    }
+    sort_modlist(&mut modlist);
+    write_json(modlist_file(instance_dir), &modlist)
+}
+
+pub fn replace_modlist_entries_for_file_ids(
+    instance_dir: &Path,
+    old_file_ids: &[u32],
+    old_file_names: &[String],
+    new_entries: Vec<ModListEntry>,
+) -> Result<(), Error> {
+    let old_file_ids: HashSet<u32> = old_file_ids.iter().copied().collect();
+    let old_file_names: HashSet<&str> = old_file_names.iter().map(String::as_str).collect();
+    let mut modlist: Vec<ModListEntry> = read_json_or_default(modlist_file(instance_dir))?;
+    modlist.retain(|entry| {
+        if old_file_names.contains(entry.file_name.as_str()) { return false; }
+        !matches!(&entry.source, DownloadSource::CurseForge { file_id, .. } if old_file_ids.contains(file_id))
+    });
+    for entry in new_entries {
+        modlist.retain(|existing| existing.file_name != entry.file_name);
+        modlist.push(entry);
+    }
+    sort_modlist(&mut modlist);
+    write_json(modlist_file(instance_dir), &modlist)
+}
+
+/// Whether `name` addresses a file inside one directory and nowhere else.
+/// Separators and `..` are the obvious escapes; a drive prefix is the quiet one,
+/// since joining `C:evil.jar` discards the directory it was joined onto.
+pub fn is_bare_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains("..")
+        && !name.contains(':')
+}
+
+fn sort_modlist(entries: &mut [ModListEntry]) {
+    entries.sort_by(|a, b| a.file_name.to_lowercase().cmp(&b.file_name.to_lowercase()));
+}
 
 pub fn find_instance_dir(install_dir: &Path, id: &str) -> Result<PathBuf, Error> {
     install_dir.read_dir()?
@@ -16,10 +96,8 @@ pub fn find_instance_dir(install_dir: &Path, id: &str) -> Result<PathBuf, Error>
         .filter(|e| e.path().is_dir())
         .find_map(|e| {
             let path = e.path();
-            let json_path = path.join("instance.json");
-
-            let content = std::fs::read_to_string(&json_path).ok()?;
-            let meta: InstanceMeta = serde_json::from_str(&content).ok()?;
+            migrate_legacy_meta(&path);
+            let meta: InstanceMeta = read_json(instance_meta_file(&path)).ok()?;
 
             if meta.id == id { Some(path) } else { None }
         })
@@ -70,12 +148,16 @@ pub async fn create_instance(
         if let Err(e) = std::fs::create_dir_all(dir) { fail!(Error::IO(e)); }
     }
 
-    step!(&format!("Downloading Minecraft {mc_version}"));
-    let vanilla_version_id = match ensure_vanilla(&mc_version, &state).await {
+    let version_id = match ensure_game_and_loader(
+        &app_handle, &id, &name, &mc_version, &mod_loader, &mod_loader_version, &state,
+    ).await {
         Ok(id) => id,
         Err(e) => fail!(e),
     };
 
+    // Resolve and download the JRE the game launches with. This is independent
+    // of the loader install (those installers shell out to the system `java`),
+    // but depends on the vanilla manifest `ensure_game_and_loader` just wrote.
     let java_component = {
         #[derive(serde::Deserialize, Default)]
         struct JavaVersion { component: String }
@@ -97,56 +179,10 @@ pub async fn create_instance(
         fail!(Error::Invalid(format!("failed to download recommended JRE '{java_component}': {e}")));
     }
 
-    let require_hint = || mod_loader_version.as_deref()
-        .ok_or_else(|| Error::Invalid(format!("Mod loader version required for {mod_loader}")));
-
-    // TODO: Show version what is installing
-    let loader_version_id = match &mod_loader {
-        ModLoader::Fabric => {
-            step!("Installing Fabric");
-            let hint = match require_hint() { Ok(h) => h, Err(e) => fail!(e) };
-            match ensure_fabric(&mc_version, hint, &state.http_client).await {
-                Ok(id) => Some(id),
-                Err(e) => fail!(e),
-            }
-        }
-        ModLoader::Quilt => {
-            step!("Installing Quilt");
-            let hint = match require_hint() { Ok(h) => h, Err(e) => fail!(e) };
-            match ensure_quilt(&mc_version, hint, &state.http_client).await {
-                Ok(id) => Some(id),
-                Err(e) => fail!(e),
-            }
-        }
-        ModLoader::Forge => {
-            step!("Installing Forge");
-            let hint = match require_hint() { Ok(h) => h, Err(e) => fail!(e) };
-            match ensure_forge(&mc_version, hint, &state.http_client).await {
-                Ok(id) => Some(id),
-                Err(e) => fail!(e),
-            }
-        }
-        ModLoader::NeoForge => {
-            step!("Installing NeoForge");
-            let hint = match require_hint() { Ok(h) => h, Err(e) => fail!(e) };
-            match ensure_neoforge(&mc_version, hint, &state.http_client).await {
-                Ok(id) => Some(id),
-                Err(e) => fail!(e),
-            }
-        }
-        ModLoader::Vanilla => None,
-    };
-
-    // The loader's own version manifest takes precedence; Vanilla instances
-    // fall back to the bare MC id.
-    instance_meta.version_id = loader_version_id.unwrap_or(vanilla_version_id);
+    instance_meta.version_id = version_id;
 
     step!("Finalizing");
-    let json_str = match serde_json::to_string_pretty(&instance_meta) {
-        Ok(s) => s,
-        Err(e) => fail!(Error::from(e)),
-    };
-    if let Err(e) = std::fs::write(instance_path.join("instance.json"), json_str) { fail!(Error::IO(e)); }
+    if let Err(e) = write_json(instance_meta_file(&instance_path), &instance_meta) { fail!(e); }
 
     emit_progress(&app_handle, &id, &name, "Done", true, None);
     info!("Created '{}' (MC {}, {}) → {}", name, mc_version, mod_loader, instance_path.display());
@@ -163,14 +199,12 @@ pub async fn get_instances(state: State<'_, AppState>) -> Result<Vec<InstanceMet
     if !root.exists() {
         return Ok(vec![]);
     }
-    let mut instances = Vec::new();
+    let mut instances: Vec<InstanceMeta> = Vec::new();
     for entry in std::fs::read_dir(&root)?.flatten() {
         let path = entry.path();
         if !path.is_dir() { continue; }
-        let json_path = path.join("instance.json");
-        if !json_path.exists() { continue; }
-        let Ok(content) = std::fs::read_to_string(&json_path) else { continue };
-        let Ok(meta) = serde_json::from_str::<InstanceMeta>(&content) else { continue };
+        migrate_legacy_meta(&path);
+        let Ok(meta) = read_json(instance_meta_file(&path)) else { continue };
         instances.push(meta);
     }
     instances.sort_by(|a, b| a.name.cmp(&b.name));
@@ -191,9 +225,7 @@ pub fn save_instance_settings(
 ) -> Result<(), Error> {
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
     let dir = find_instance_dir(Path::new(&install_dir), &id)?;
-    let json_path = dir.join("instance.json");
-    let content = std::fs::read_to_string(&json_path)?;
-    let mut meta: InstanceMeta = serde_json::from_str(&content)?;
+    let mut meta: InstanceMeta = read_json(instance_meta_file(&dir))?;
 
     meta.ram_mb = ram_mb;
     meta.jvm_args = jvm_args;
@@ -202,26 +234,134 @@ pub fn save_instance_settings(
     meta.window_width = window_width;
     meta.window_height = window_height;
 
-    let json = serde_json::to_string_pretty(&meta)?;
-    std::fs::write(&json_path, json)?;
-    Ok(())
+    write_json(instance_meta_file(&dir), &meta)
 }
 
 #[tauri::command]
 pub fn delete_instance(id: String, state: State<'_, AppState>) -> Result<(), Error> {
-    // Claim a Deleting slot atomically (refusing if a launch/delete is already
-    // in flight) and hold it across the removal via the guard, so a launch can't
-    // start and resolve the directory we're removing. The guard frees the slot —
-    // not the lock — on every exit path, so the file I/O doesn't block other
-    // instances' bookkeeping.
+    // Claim a Deleting slot atomically and hold it across removal, so a launch
+    // or upgrade can't touch the directory while it is being removed. The guard
+    // frees the slot, not the lock, so file I/O doesn't block other instances.
     let Some(_activity) = ActivityGuard::claim(&state.instance_activity, &id, InstanceActivity::Deleting) else {
-        return Err(Error::Invalid(
-            "Cannot delete an instance while it is launching or running. Stop it first.".to_string(),
-        ));
+        return Err(Error::Busy(format!("instance '{id}' is already busy")));
     };
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
     let dir = find_instance_dir(Path::new(&install_dir), &id)?;
     std::fs::remove_dir_all(&dir)?;
     info!("Deleted instance '{id}' at {}", dir.display());
+    Ok(())
+}
+
+/// Every mod the instance has: the tracked entries of `modlist.json` plus the
+/// jars sitting in `mods/` that no entry claims. `DownloadFailed` entries have
+/// no file yet and are reported from the modlist alone.
+#[tauri::command]
+pub fn list_instance_mods(
+    instance_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<ModListEntry>, Error> {
+    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
+    let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
+    let mut modlist: Vec<ModListEntry> = read_json(modlist_file(&instance_dir))
+        .unwrap_or_default();
+    let untracked = untracked_mods(&instance_dir, &modlist);
+    modlist.extend(untracked);
+    sort_modlist(&mut modlist);
+    Ok(modlist)
+}
+
+/// Jars in `mods/` that the launcher did not download — dropped in by hand, or
+/// installed before the modlist existed. They carry no provenance, so they are
+/// reported as `Manual` with their state read off the `.disabled` suffix. An
+/// enabled jar wins over a `<name>.disabled` twin of the same mod.
+fn untracked_mods(instance_dir: &Path, modlist: &[ModListEntry]) -> Vec<ModListEntry> {
+    let tracked: HashSet<&str> =
+        modlist.iter().map(|entry| entry.file_name.as_str()).collect();
+    let Ok(dir) = std::fs::read_dir(instance_dir.join("mods")) else {
+        return Vec::new();
+    };
+    let mut found: HashMap<String, ModListEntry> = HashMap::new();
+    for dir_entry in dir.flatten() {
+        if !dir_entry.path().is_file() { continue; }
+        let name = dir_entry.file_name().to_string_lossy().into_owned();
+        let (file_name, state) = match name.strip_suffix(".disabled") {
+            Some(base) => (base.to_string(), ModState::Disabled),
+            None => (name, ModState::Enabled),
+        };
+        if !file_name.ends_with(".jar") || tracked.contains(file_name.as_str()) { continue; }
+        if state == ModState::Disabled && found.contains_key(&file_name) { continue; }
+        found.insert(file_name.clone(), ModListEntry {
+            file_name,
+            project_name: String::new(),
+            icon_url: None,
+            sha1: String::new(),
+            source: DownloadSource::Manual,
+            target: ProjectFileTarget::Mod,
+            size: dir_entry.metadata().map(|m| m.len()).unwrap_or_default(),
+            state,
+        });
+    }
+    found.into_values().collect()
+}
+
+/// Toggle a mod between `Enabled` and `Disabled`. Disabling renames its jar to
+/// `<name>.disabled` (which mod loaders ignore) and flips the modlist state;
+/// enabling renames it back. The modlist only ever holds mods (resource packs
+/// aren't tracked), so the file always lives under `mods/`. An untracked jar
+/// carries its state in the file name alone, so for those the rename is the
+/// whole toggle. A `DownloadFailed` entry has no jar yet and can't be toggled.
+#[tauri::command]
+pub fn toggle_state_instance_mod(
+    instance_id: String,
+    file_name: String,
+    state: State<'_, AppState>,
+) -> Result<(), Error> {
+    if !is_bare_file_name(&file_name) {
+        return Err(Error::Invalid(format!("invalid mod file name '{file_name}'")));
+    }
+    let Some(_activity) = ActivityGuard::claim(&state.instance_activity, &instance_id, InstanceActivity::Modifying) else {
+        return Err(Error::Busy(format!("instance '{instance_id}' is already busy")));
+    };
+    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
+    let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
+    let mut modlist: Vec<ModListEntry> = read_json_or_default(modlist_file(&instance_dir))?;
+    let mods_dir = instance_dir.join("mods");
+    let enabled_path = mods_dir.join(&file_name);
+    let disabled_path = mods_dir.join(format!("{file_name}.disabled"));
+
+    let Some(entry) = modlist.iter_mut().find(|e| e.file_name == file_name) else {
+        let new_state = if enabled_path.exists() {
+            std::fs::rename(&enabled_path, &disabled_path)?;
+            ModState::Disabled
+        } else if disabled_path.exists() {
+            std::fs::rename(&disabled_path, &enabled_path)?;
+            ModState::Enabled
+        } else {
+            return Err(Error::NotExists(format!("mod '{file_name}'")));
+        };
+        info!("Toggled untracked mod '{file_name}' to {new_state:?} in instance '{instance_id}'");
+        return Ok(());
+    };
+
+    match entry.state {
+        ModState::Enabled => {
+            if enabled_path.exists() {
+                std::fs::rename(&enabled_path, &disabled_path)?;
+            }
+            entry.state = ModState::Disabled;
+        }
+        ModState::Disabled => {
+            if disabled_path.exists() {
+                std::fs::rename(&disabled_path, &enabled_path)?;
+            }
+            entry.state = ModState::Enabled;
+        }
+        ModState::DownloadFailed => {
+            return Err(Error::Invalid(format!("mod '{file_name}' has not been downloaded yet")));
+        }
+    }
+    let new_state = entry.state;
+    write_json(modlist_file(&instance_dir), &modlist)?;
+    info!("Toggled mod '{file_name}' to {new_state:?} in instance '{instance_id}'");
     Ok(())
 }

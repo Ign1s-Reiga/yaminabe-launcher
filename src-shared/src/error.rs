@@ -21,6 +21,11 @@ pub enum Error {
     /// HTTP Request rejected by server.
     #[error("Server rejected request: {0} {1}")]
     HttpRequestRejected(u16, String),
+    /// Server returned HTTP 429 — too many requests. Kept distinct from
+    /// `HttpRequestRejected` so callers and the UI can message a rate limit
+    /// specifically (e.g. "slow down / try again later").
+    #[error("Rate limit exceeded for {0}")]
+    RateLimitExceeded(String),
     /// Server returned invalid response.
     #[error("Malformed server response: {0}")]
     InvalidResponse(reqwest::Error),
@@ -37,6 +42,9 @@ pub enum Error {
     /// Unsupported operation.
     #[error("Unsupported: {0}")]
     Unsupported(String),
+    /// Operation cannot proceed because the target is already doing exclusive work.
+    #[error("Busy: {0}")]
+    Busy(String),
     /// Authentication-flow failure (Microsoft / Xbox Live / Minecraft services).
     #[error("Authentication failed: {0}")]
     Auth(String),

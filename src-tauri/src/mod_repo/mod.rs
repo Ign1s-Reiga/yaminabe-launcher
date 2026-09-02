@@ -1,54 +1,217 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use log::info;
+use crate::AppState;
+use crate::http_utils::download_resource;
+use log::warn;
 use reqwest::Client;
+use tauri::State;
+use yaminabe_launcher_shared::datamodels::ModState;
+use yaminabe_launcher_shared::datamodels::{
+    DownloadSource, ModListEntry, ModLoader, ModProjectSearchResults, Platform, ProjectFileInfo,
+    ProjectFileTarget, SearchOptions,
+};
 use yaminabe_launcher_shared::error::Error;
 
-pub mod curseforge;
-pub mod modrinth;
+mod curseforge;
+mod modrinth;
 
-/// Download each `(url, filename)` pair into `dest_dir`, at most three at a time.
-/// Shared by the CurseForge and Modrinth mod downloaders. Creates `dest_dir` if
-/// it doesn't exist; entries with an empty url or filename are skipped, and the
-/// first failed (or panicked) download aborts the batch with that error.
-pub async fn download_files(
+pub async fn search_projects(
+    option: &SearchOptions,
     client: &Client,
-    files: Vec<(String, String)>,
-    dest_dir: &Path,
-) -> Result<(), Error> {
-    if files.is_empty() {
-        return Ok(());
+    api_key: &str,
+) -> Result<ModProjectSearchResults, Error> {
+    match option.platform {
+        Platform::CurseForge => curseforge::search_projects(option, client, api_key).await,
+        Platform::Modrinth => modrinth::search_projects(option, client).await,
     }
-    std::fs::create_dir_all(dest_dir)?;
+}
+
+pub async fn list_project_files(
+    mod_id: u32,
+    target: ProjectFileTarget,
+    game_version: Option<String>,
+    mod_loader: Option<ModLoader>,
+    index: u32,
+    client: &Client,
+    api_key: &str,
+) -> Result<Vec<ProjectFileInfo>, Error> {
+    curseforge::list_project_files(
+        mod_id,
+        target,
+        game_version.as_deref(),
+        mod_loader.as_ref(),
+        index,
+        client,
+        api_key,
+    )
+    .await
+}
+
+pub async fn install_modpack(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    category: String,
+    source: DownloadSource,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
+    match source {
+        DownloadSource::CurseForge { .. } => {
+            curseforge::install_modpack(app_handle, id, instance_name, category, source, state)
+                .await
+        }
+        DownloadSource::Modrinth { .. } => Err(Error::Unsupported(
+            "Modrinth modpack installation is not yet supported".to_string(),
+        )),
+        DownloadSource::Manual => Err(Error::Unsupported(
+            "manual modpack installation is not yet supported".to_string(),
+        )),
+    }
+}
+
+pub async fn upgrade_modpack(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    instance_path: PathBuf,
+    source: DownloadSource,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
+    match source {
+        DownloadSource::CurseForge { .. } => {
+            curseforge::upgrade_modpack(app_handle, id, instance_name, instance_path, source, state)
+                .await
+        }
+        DownloadSource::Modrinth { .. } => Err(Error::Unsupported(
+            "Modrinth modpack upgrade is not yet supported".to_string(),
+        )),
+        DownloadSource::Manual => Err(Error::Unsupported(
+            "manual modpack upgrade is not yet supported".to_string(),
+        )),
+    }
+}
+
+/// Download already-resolved project files into the instance, three at a time.
+/// Per-file failures never abort the batch: a file that can't be fetched yields
+/// a `DownloadFailed` modlist entry (mods only) so the user can link a jar by
+/// hand. Resource packs are downloaded but not returned (the modlist is mods
+/// only). Only a task panic propagates as `Err`.
+pub async fn download_project_files(
+    files: Vec<ProjectFileInfo>,
+    instance_path: &Path,
+    client: &Client,
+) -> Result<Vec<ModListEntry>, Error> {
+    if files.is_empty() {
+        return Ok(vec![]);
+    }
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(3));
-    let mut handles: Vec<tokio::task::JoinHandle<Result<(), Error>>> = Vec::new();
+    let mut handles: Vec<tokio::task::JoinHandle<Result<Option<ModListEntry>, Error>>> = Vec::new();
 
-    for (url, filename) in files {
-        if url.is_empty() || filename.is_empty() {
-            continue;
-        }
-        let client   = client.clone();
-        let dest_dir = dest_dir.to_path_buf();
-        let sem      = Arc::clone(&semaphore);
+    for file in files {
+        let instance_path = instance_path.to_path_buf();
+        let client = client.clone();
+        let semaphore = Arc::clone(&semaphore);
 
         handles.push(tokio::spawn(async move {
-            let _permit = sem.acquire_owned().await
+            let permit = semaphore
+                .acquire_owned()
+                .await
                 .map_err(|e| Error::ChildProcess(format!("semaphore acquire: {e}")))?;
-            let resp = client.get(&url).send().await?;
-            if !resp.status().is_success() {
-                return Err(Error::HttpRequestRejected(resp.status().as_u16(), url));
-            }
-            let bytes = resp.bytes().await.map_err(Error::InvalidResponse)?;
-            std::fs::write(dest_dir.join(&filename), &bytes)?;
-            info!("Downloaded {filename}");
-            Ok(())
+            let result = download_project_file(file, &instance_path, &client).await;
+            drop(permit);
+            result
         }));
     }
 
+    let mut modlist = Vec::new();
     for handle in handles {
-        handle.await.map_err(|e| Error::ChildProcess(format!("download task panicked: {e}")))??;
+        if let Some(entry) = handle
+            .await
+            .map_err(|e| Error::ChildProcess(format!("download task panicked: {e}")))??
+        {
+            modlist.push(entry);
+        }
     }
-    Ok(())
+    Ok(modlist)
+}
+
+/// Download one resolved file to its type-appropriate subdir. A missing SHA-1,
+/// a CurseForge file with downloads disabled (mirrored from Modrinth by SHA-1
+/// when possible), or a failed fetch all yield a `DownloadFailed` entry rather
+/// than an error. Returns `None` for resource packs (downloaded, untracked).
+async fn download_project_file(
+    file: ProjectFileInfo,
+    instance_path: &Path,
+    client: &Client,
+) -> Result<Option<ModListEntry>, Error> {
+    let dir = instance_path.join(file.target.directory());
+    std::fs::create_dir_all(&dir)?;
+    let dest = dir.join(&file.file_name);
+    let written = dest.clone();
+
+    let download_result = if file.sha1.is_empty() {
+        Err(Error::Invalid(format!(
+            "project file {} has no SHA-1 hash",
+            file.file_name
+        )))
+    } else if let Some(url) = &file.download_url {
+        download_resource(client, url, &file.sha1, dest).await
+    } else if matches!(file.source, DownloadSource::CurseForge { .. }) {
+        warn!(
+            "CurseForge restricts downloads for file {}, falling back to Modrinth lookup by SHA-1",
+            file.file_name
+        );
+        modrinth::download_file_by_sha1(&file.sha1, dest, client).await
+    } else {
+        Err(Error::Invalid(format!(
+            "project file {} has no download URL",
+            file.file_name
+        )))
+    };
+
+    let state = match download_result {
+        Ok(()) => ModState::Enabled,
+        Err(e) => {
+            warn!(
+                "download failed for {}: {e}; marking for manual install",
+                file.file_name
+            );
+            ModState::DownloadFailed
+        }
+    };
+
+    let track = file.target.tracks_modlist() || state == ModState::DownloadFailed;
+    Ok(track.then(|| {
+        let mut entry = file.to_modlist_entry(state);
+        // CurseForge publishes no size for some files. The jar is on disk now,
+        // so measure it rather than listing the mod as 0 B forever.
+        if entry.size == 0 && entry.state == ModState::Enabled {
+            match std::fs::metadata(&written) {
+                Ok(meta) => entry.size = meta.len(),
+                Err(e) => warn!("cannot size {}: {e}", entry.file_name),
+            }
+        }
+        entry
+    }))
+}
+
+/// Where the user can fetch a failed file by hand.
+pub async fn project_page_url(
+    source: &DownloadSource,
+    api_key: &str,
+    client: &Client,
+) -> Result<String, Error> {
+    match source {
+        DownloadSource::CurseForge { project_id, file_id } => {
+            curseforge::project_file_page_url(*project_id, *file_id, api_key, client).await
+        }
+        DownloadSource::Modrinth { project_id, version_id } => {
+            Ok(format!("https://modrinth.com/project/{project_id}/version/{version_id}"))
+        }
+        DownloadSource::Manual => Err(Error::Unsupported(
+            "a hand-added file has no project page".to_string(),
+        )),
+    }
 }

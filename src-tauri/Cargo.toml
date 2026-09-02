@@ -23,10 +23,28 @@ serde_json.workspace = true
 reqwest.workspace = true
 tokio = { version = "1", features = ["full"] }
 log.workspace = true
-zip = "8"
+# bzip2/zstd/lzma are rare in modpack zips and installer jars, but a pack
+# using one fails with an opaque "unsupported compression method" without them.
+zip = { version = "8", default-features = false, features = [
+    "deflate",
+    "deflate64",
+    "bzip2",
+    "zstd",
+    "lzma",
+] }
 sha1 = "0.11"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
-keyring = "4"
 keyring-core = "1"
 base64 = "0.22"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1.0.0", default-features = false, features = ["keychain"] }
+
+[target.'cfg(all(unix, not(any(target_os = "macos"))))'.dependencies]
+dbus-secret-service-keyring-store = { version = "1.0.0", default-features = false, features = [
+    "crypto-rust",
+    "vendored",
+] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = { version = "1.0.0", default-features = false }

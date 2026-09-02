@@ -3,9 +3,9 @@ use leptos::prelude::*;
 use leptos::{component, IntoView, view};
 use phosphor_leptos::{Icon, IconWeight, CHECK_CIRCLE, PLUS, TRASH};
 use serde::Serialize;
-use yaminabe_launcher_shared::datatypes::{AccountSummary, AppSettings};
+use yaminabe_launcher_shared::datamodels::{AccountSummary, AppSettings};
 
-use crate::components::login_modal::LoginModal;
+use crate::components::modal::login_modal::LoginModal;
 use crate::components::settings::{SaveState, SettingsSection, SettingsProp};
 use crate::components::ui::*;
 use crate::ipc;

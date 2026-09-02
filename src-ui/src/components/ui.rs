@@ -1,16 +1,22 @@
 pub mod button;
+pub mod dropdown;
 pub mod input;
 pub mod modal;
 pub mod segmented;
 pub mod skeletons;
+pub mod switch;
 pub mod tabbar;
+pub mod version_list;
 
 pub use button::*;
+pub use dropdown::*;
 pub use input::*;
 pub use modal::*;
 pub use segmented::*;
 pub use skeletons::*;
+pub use switch::*;
 pub use tabbar::*;
+pub use version_list::*;
 
 use bamboo_css_macro::css;
 use leptos::prelude::*;
@@ -58,6 +64,21 @@ pub fn select_class() -> &'static str {
             outline: none;
             border-color: #3a9e5f;
         }
+    }
+}
+
+/// Render a byte count for a file listing: MB above a megabyte, KB above a
+/// kilobyte, raw bytes below that.
+pub fn format_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    let b = bytes as f64;
+    if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{bytes} B")
     }
 }
 

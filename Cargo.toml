@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["src-shared","src-tauri", "src-ui"]
+members = ["src-shared", "src-tauri", "src-ui"]
 
 [workspace.package]
 edition = "2024"
@@ -18,11 +18,11 @@ yaminabe-launcher-shared = { path = "src-shared" }
 log = "0.4"
 
 [profile.dev]
-opt-level = 1
-lto = true
+incremental = true
 
 [profile.release]
-debug = "line-tables-only"
-opt-level = "z"
+strip = true
+panic = "abort"
+opt-level = "s"
 codegen-units = 1
 lto = true

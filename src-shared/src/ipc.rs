@@ -15,7 +15,7 @@ pub struct LogLine {
 /// Install pipeline progress for a single instance creation.
 ///
 /// Emitted via `app.emit("instance-install-progress", InstallProgress { … })`
-/// from `emit_progress` and consumed by the frontend's `InstallSidebar`.
+/// from `emit_progress` and consumed by the frontend's `ActivityDock`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InstallProgress {
     pub id: String,
@@ -53,5 +53,5 @@ pub struct MsLoginPrompt {
 pub struct MsLoginResult {
     pub kind: String,
     pub message: String,
-    pub account: Option<crate::datatypes::AccountSummary>,
+    pub account: Option<crate::datamodels::AccountSummary>,
 }

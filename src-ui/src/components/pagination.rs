@@ -132,7 +132,9 @@ pub fn Pagination(
 
             <button
                 class=page_btn
-                disabled=move || current.get() >= last_page.get() || is_loading.get()
+                // Braces are load-bearing: a bare `>` in an attribute expression
+                // closes the opening tag, and the rest of the line renders as text.
+                disabled=move || { current.get() >= last_page.get() || is_loading.get() }
                 on:click=move |_| on_change.run(current.get_untracked() + 1)
             >
                 <Icon icon=CARET_RIGHT size="18px" weight=IconWeight::Bold />

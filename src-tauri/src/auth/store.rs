@@ -1,5 +1,4 @@
 use log::warn;
-use serde::Deserialize;
 use yaminabe_launcher_shared::error::Error;
 use super::model::{AccountStore, MinecraftAccount, MinecraftAccountRecord, MinecraftAccountSecret};
 
@@ -12,74 +11,20 @@ const KEYRING_SERVICE: &str = "yaminabe-launcher";
 const MC_ACCESS_SUFFIX: &str = ":mc_access";
 const MS_REFRESH_SUFFIX: &str = ":ms_refresh";
 
-/// Pre-keyring on-disk shape; only used during the one-shot migration that
-/// moves tokens out of `accounts.json` into the OS keyring.
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LegacyAccountStore {
-    #[serde(default)]
-    accounts: Vec<LegacyMinecraftAccount>,
-    #[serde(default)]
-    selected: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LegacyMinecraftAccount {
-    uuid: String,
-    username: String,
-    #[serde(default)]
-    mc_access_token: String,
-    #[serde(default)]
-    expires_at: i64,
-    #[serde(default)]
-    ms_refresh_token: String,
-    #[serde(default)]
-    xuid: String,
-}
-
-/// Read `accounts.json` and migrate any inline tokens to the keyring. Called
-/// once at startup by `lib.rs`. A missing or malformed file falls back to an
-/// empty store so a corrupted record doesn't block app launch.
+/// Read `accounts.json` in the current keyring-era shape. A missing or
+/// malformed file falls back to an empty store so a corrupted record doesn't
+/// block app launch.
 pub fn load_account_store() -> AccountStore {
     let Ok(text) = std::fs::read_to_string(crate::accounts_path()) else {
         return AccountStore::default();
     };
-    let legacy: LegacyAccountStore = match serde_json::from_str(&text) {
-        Ok(s) => s,
+    match serde_json::from_str(&text) {
+        Ok(store) => store,
         Err(e) => {
             warn!("accounts.json is malformed ({e}); starting with empty account list");
-            return AccountStore::default();
+            AccountStore::default()
         }
-    };
-
-    let mut migrated_any = false;
-    let mut accounts = Vec::with_capacity(legacy.accounts.len());
-    for la in legacy.accounts {
-        if !la.mc_access_token.is_empty() || !la.ms_refresh_token.is_empty() {
-            let secret = MinecraftAccountSecret {
-                mc_access_token: la.mc_access_token,
-                ms_refresh_token: la.ms_refresh_token,
-            };
-            match write_secret(&la.uuid, &secret) {
-                Ok(()) => migrated_any = true,
-                Err(e) => warn!("failed to migrate tokens for {}: {e}", la.uuid),
-            }
-        }
-        accounts.push(MinecraftAccountRecord {
-            uuid: la.uuid,
-            username: la.username,
-            expires_at: la.expires_at,
-            xuid: la.xuid,
-        });
     }
-    let store = AccountStore { accounts, selected: legacy.selected };
-    if migrated_any
-        && let Err(e) = store.save()
-    {
-        warn!("failed to rewrite accounts.json after token migration: {e}");
-    }
-    store
 }
 
 fn keyring_entry(user: &str) -> Result<keyring_core::Entry, Error> {

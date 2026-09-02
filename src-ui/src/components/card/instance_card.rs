@@ -2,12 +2,13 @@ use bamboo_css_macro::{css, styled};
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, view, web_sys, IntoView};
+use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use phosphor_leptos::{Icon, IconWeight, FOLDER_OPEN, GEAR_SIX, PLAY, TRASH};
 use serde::Serialize;
-use yaminabe_launcher_shared::datatypes::InstanceMeta;
+use yaminabe_launcher_shared::datamodels::InstanceMeta;
 use crate::components::open_in_file_manager::folder_label;
-use crate::components::running_sidebar::RunningRegistry;
+use crate::components::activity_dock::RunningRegistry;
 use crate::components::ui::{Button, ButtonVariant, DialogBox, DialogFooter, DialogOverlay};
 use crate::ipc;
 use crate::signal_ext::VecSignalExt;
@@ -57,6 +58,9 @@ pub fn InstanceCard(
     let subfolders: RwSignal<Vec<String>> = RwSignal::new(vec![]);
 
     let card_wrapper = css! {
+        display: block;
+        text-decoration: none;
+        color: inherit;
         background-color: var(--secondary-color);
         border-radius: 12px;
         overflow: hidden;
@@ -68,6 +72,9 @@ pub fn InstanceCard(
         }
     };
     let card_wrapper_pending = css! {
+        display: block;
+        text-decoration: none;
+        color: inherit;
         background-color: var(--secondary-color);
         border-radius: 12px;
         overflow: hidden;
@@ -164,7 +171,7 @@ pub fn InstanceCard(
         line-height: 1.5;
     };
 
-    let bg = format!("background-color: {}", &instance.mod_loader.get_modloader_color());
+    let bg = format!("background-color: {}", &instance.mod_loader.mod_loader_color());
     let name = instance.name.clone();
     let mc_version = format!("MC {}", instance.game_version);
     let mod_loader = instance.mod_loader.clone();
@@ -186,11 +193,9 @@ pub fn InstanceCard(
     });
 
     view! {
-        <div
-            class=if pending { card_wrapper_pending } else { card_wrapper }
-            on:click=move |_| navigate.with_value(|nav| {
-                nav(&format!("/library/{}", instance_id.get_value()), Default::default())
-            })
+        <A
+            href=format!("/library/{}", instance_id.get_value())
+            attr:class=if pending { card_wrapper_pending } else { card_wrapper }
             on:contextmenu=move |ev: web_sys::MouseEvent| {
                 ev.prevent_default();
                 if pending { return; }
@@ -211,7 +216,7 @@ pub fn InstanceCard(
                 <span class=meta_style>{mc_version}</span>
                 <span class=meta_style>{mod_loader.to_string()}</span>
             </CardBody>
-        </div>
+        </A>
 
         <Show when=move || menu.get().is_some()>
             <div

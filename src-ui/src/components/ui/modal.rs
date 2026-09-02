@@ -1,7 +1,25 @@
-use bamboo_css_macro::css;
+use bamboo_css_macro::{css, cx};
 use leptos::children::Children;
 use leptos::{component, view, IntoView};
 use leptos::prelude::{ClassAttribute, ElementChild};
+
+/// Width preset for [`ModalBox`]. `Large` suits content-heavy modals (e.g. a
+/// search with result cards); `Normal` is the default form/wizard width.
+#[derive(Clone, Copy, Default)]
+pub enum ModalSize {
+    #[default]
+    Normal,
+    Large,
+}
+
+impl ModalSize {
+    fn class(&self) -> &'static str {
+        match self {
+            ModalSize::Normal => css! { width: 560px; },
+            ModalSize::Large => css! { width: 760px; },
+        }
+    }
+}
 
 // ── Modal structure ────────────────────────────────────────────────────────────
 
@@ -20,19 +38,19 @@ pub fn ModalOverlay(children: Children) -> impl IntoView {
     view! { <div class=class>{children()}</div> }
 }
 
-/// Large modal container (560px wide, flex column for body/footer).
+/// Modal container (flex column for body/footer). Width comes from `size`,
+/// defaulting to `Normal` (560px).
 #[component]
-pub fn ModalBox(children: Children) -> impl IntoView {
+pub fn ModalBox(#[prop(optional)] size: ModalSize, children: Children) -> impl IntoView {
     let class = css! {
         background-color: var(--background-color);
         border-radius: 12px;
-        width: 560px;
         min-height: 400px;
         display: flex;
         flex-direction: column;
         box-shadow: 0 20px 60px rgb(0 0 0 / 0.4);
     };
-    view! { <div class=class>{children()}</div> }
+    view! { <div class=cx!(class, size.class())>{children()}</div> }
 }
 
 /// Padded flex-1 body inside ModalBox.

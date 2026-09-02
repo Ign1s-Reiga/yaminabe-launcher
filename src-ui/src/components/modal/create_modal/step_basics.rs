@@ -1,9 +1,9 @@
-use crate::components::create_modal::{step_subtitle_class, WizardState};
+use crate::components::modal::create_modal::{step_subtitle_class, WizardState};
 use crate::components::ui::*;
 use bamboo_css_macro::css;
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
-use yaminabe_launcher_shared::datatypes::{GameVersion, ReleaseType};
+use yaminabe_launcher_shared::datamodels::{GameVersion, ReleaseType};
 
 #[component]
 pub fn StepBasics(

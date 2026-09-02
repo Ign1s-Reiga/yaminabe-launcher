@@ -13,7 +13,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use log::info;
-use yaminabe_launcher_shared::datatypes::{InstanceMeta, LoaderVersion, ModLoader, ReleaseType};
+use yaminabe_launcher_shared::datamodels::{InstanceMeta, LoaderVersion, ModLoader, ReleaseType};
 
 // ── IPC arg type ──────────────────────────────────────────────────────────────
 

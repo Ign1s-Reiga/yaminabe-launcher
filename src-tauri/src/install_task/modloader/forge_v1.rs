@@ -1,10 +1,11 @@
 use std::path::Path;
 use serde::Deserialize;
 use yaminabe_launcher_shared::error::Error;
-use yaminabe_launcher_shared::version_manifest::ClientManifest;
+use yaminabe_launcher_shared::datamodels::ClientManifest;
 use crate::libraries_dir;
-use crate::http_utils::download_from_maven;
-use super::{installer_archive, maven_coord_to_path, version_manifest_path};
+use crate::maven::MavenCoords;
+use crate::install_task::{installer_archive, maven_coord_to_path};
+use super::version_manifest_path;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -93,7 +94,7 @@ pub async fn install_from_parsed(
         }
         let lib_path = libraries_dir().join(maven_coord_to_path(&lib.name));
         if lib_path.exists() { continue; }
-        download_from_maven(client, url, lib.name.clone(), None, "jar", libraries_dir().clone()).await?;
+        MavenCoords::new(url, &lib.name).download(client, libraries_dir()).await?;
     }
 
     Ok(version_id)

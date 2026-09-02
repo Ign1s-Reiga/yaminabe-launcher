@@ -6,6 +6,7 @@ use tauri_plugin_opener::OpenerExt;
 use crate::{settings_path, AppSettings, AppState};
 use yaminabe_launcher_shared::error::Error;
 use crate::commands::instance::find_instance_dir;
+use crate::json::write_json;
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, AppState>) -> AppSettings {
@@ -29,6 +30,25 @@ pub async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
     rx.await.ok().flatten()
 }
 
+/// Open a native multi-select picker for the files the link flow can accept —
+/// `.jar` mods and the `.zip` resource packs a modpack may also fail to fetch —
+/// returning the chosen paths. The click-to-browse alternative to the drop zone.
+#[tauri::command]
+pub async fn pick_mod_files(app: tauri::AppHandle) -> Vec<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Vec<String>>();
+    app.dialog()
+        .file()
+        .add_filter("Mod or resource pack", &["jar", "zip"])
+        .pick_files(move |paths| {
+            let result = paths.unwrap_or_default().into_iter().filter_map(|fp| match fp {
+                FilePath::Path(p) => p.to_str().map(|s| s.to_string()),
+                _ => None,
+            }).collect();
+            tx.send(result).ok();
+        });
+    rx.await.unwrap_or_default()
+}
+
 /// Names of the well-known subfolders that actually exist for this instance —
 /// the single source of truth for the list (the UI renders the instance root
 /// plus whatever this returns). Extend the array here to offer more folders.
@@ -38,7 +58,7 @@ pub fn get_instance_subfolders(id: String, state: State<'_, AppState>) -> Vec<St
     let Ok(dir) = find_instance_dir(Path::new(&install_dir), &id) else {
         return Vec::new();
     };
-    ["config", "mods", "resourcepacks", "saves"]
+    ["config", "mods", "resourcepacks", "saves", "shaderpacks", "datapacks"]
         .into_iter()
         .filter(|s| dir.join(s).exists())
         .map(String::from)
@@ -59,8 +79,7 @@ pub fn save_settings(
     settings: AppSettings,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
-    let json = serde_json::to_string_pretty(&settings)?;
-    std::fs::write(settings_path(), &json)?;
+    write_json(settings_path(), &settings)?;
     *state.settings.write().unwrap() = settings;
     Ok(())
 }

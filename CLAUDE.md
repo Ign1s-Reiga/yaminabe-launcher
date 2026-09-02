@@ -16,7 +16,7 @@ Follow these rules to minimize unnecessary context usage and avoid scanning the 
 | Concern      | Library                                                                            |
 |--------------|------------------------------------------------------------------------------------|
 | UI framework | Leptos 0.8 (CSR)                                                                   |
-| Icons        | phosphor-leptos                                                                    |
+| Icons        | phosphor-leptos (see docs/phosphor-leptos.md)                                      |
 | CSS-in-Rust  | `bamboo-css-macro` (local crate at `../../bamboo-css/`), `styled!` macro           |
 | Global theme | `src-ui/styles.css` (CSS custom properties, light/dark via `prefers-color-scheme`) |
 | Tauri IPC    | `wasm-bindgen` + `wasm-bindgen-futures`                                            |
@@ -83,15 +83,25 @@ src-ui/src/
 ├── components.rs / components/
 │   ├── ui.rs / ui/          # Atomic UI primitives (Button, Modal, Input, TabBar,
 │   │                        # Segmented, Skeletons)
-│   ├── create_modal/        # 3-step "create instance" wizard
-│   │   ├── mod.rs           # Shell + `WizardState` (Copy bundle of RwSignals) +
-│   │   │                    # step routing + per-loader version prefetch
-│   │   ├── step_method.rs   # Step 1 — pick creation method
-│   │   ├── step_basics.rs   # Step 2 — name + MC version + category
-│   │   └── step_loader.rs   # Step 3 — mod loader + loader version
-│   ├── install_modpack_modal.rs
-│   ├── install_sidebar.rs   # Slide-in panel showing per-instance install progress
-│   ├── instance_card.rs
+│   ├── activity_dock.rs     # Bottom-right floating dock (collapsible) listing
+│   │                        # install jobs + running instances; also owns the
+│   │                        # running-instance data model (RunStatus, registry,
+│   │                        # start_launch / stop_instance) and InstallJob alias
+│   ├── card/                # Card components, grouped under one module
+│   │   ├── instance_card.rs        # Library grid card for one instance
+│   │   ├── managed_notice_card.rs  # Read-only "managed by a modpack" notice
+│   │   │                           # for the Mods tab (with upgrade action)
+│   │   └── result_card.rs          # CurseForge modpack search-result card
+│   ├── modal/               # Modal dialogs, grouped under one module
+│   │   ├── create_modal/    # 3-step "create instance" wizard
+│   │   │   ├── mod.rs       # Shell + `WizardState` (Copy bundle of RwSignals) +
+│   │   │   │                # step routing + per-loader version prefetch
+│   │   │   ├── step_method.rs  # Step 1 — pick creation method
+│   │   │   ├── step_basics.rs  # Step 2 — name + MC version + category
+│   │   │   └── step_loader.rs  # Step 3 — mod loader + loader version
+│   │   ├── install_modpack_modal.rs  # CurseForge modpack install flow
+│   │   ├── login_modal.rs   # Microsoft device-code login dialog
+│   │   └── upgrade_modal.rs # CurseForge modpack upgrade flow
 │   ├── log_viewer.rs        # Dark sticky-tail log box used by `play.rs`. Tail mode
 │   │                        # only disengages on *upward* scrolls (downward events
 │   │                        # during log bursts are racey); text selection pauses
@@ -99,7 +109,6 @@ src-ui/src/
 │   ├── open_in_file_manager.rs
 │   ├── pagination.rs        # Numeric pager with first/last/current ± 1 visible,
 │   │                        # ellipsis gaps elsewhere
-│   ├── result_card.rs       # CurseForge modpack search-result card
 │   └── settings.rs          # SettingsSection / SettingsProp / SaveState scaffolding
 └── styles.css               # Global CSS variables + font stacks
 ```
@@ -142,7 +151,7 @@ async fn my_command(arg: &str) -> String { ... }
 invoke("my_command", JsValue::from_serde(&args).unwrap()).await
 ```
 
-## Git
+## Git / GitHub Strategy
 
 - Create a dedicated branch for each issue/feature before making any changes; never commit issue work directly to `main`. Work on two issues lives on two separate branches.
   - Name branches `<type>/<branch-name>`, where `<type>` is the Conventional Commits type (`feat`, `fix`, `refactor`, `perf`, `docs`, …) — e.g. `feat/instance-origin`.
@@ -152,4 +161,6 @@ invoke("my_command", JsValue::from_serde(&args).unwrap()).await
   - Do not apply scopes to the type in the PR title.
 - The commit message description should be concise.
 - Include only information relevant to the code changes; omit anything else.
+- Reference the issue (e.g. `Closes #28`) in the PR description, not in commit messages.
 - Please use `git` instead of `gh` for basic Git operations (i.e., everything you can do with the `git` command).
+- Write a detailed description when opening a new Pull Request.
