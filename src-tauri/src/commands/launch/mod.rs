@@ -126,6 +126,21 @@ pub async fn launch_instance(
         }
     }
 
+    // Stamp the instance itself, so the Home page can rank every instance by
+    // recency rather than knowing only which one was last. Also non-fatal.
+    if let Some(meta) = instance_meta.as_ref() {
+        let played_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or_default();
+        let mut stamped = meta.clone();
+        stamped.last_played = Some(played_at);
+        let path = instance_meta_file(Path::new(&instance_location));
+        if let Err(e) = crate::json::write_json(path, &stamped) {
+            log::warn!("failed to record last_played for '{instance_id}': {e}");
+        }
+    }
+
     let auth_account = match resolve_account(auth_record, launch_mode, &state, &app_handle, &instance_id).await {
         Ok(a) => a,
         Err(e) => fail!(e),
