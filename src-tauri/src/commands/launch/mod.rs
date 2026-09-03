@@ -126,21 +126,6 @@ pub async fn launch_instance(
         }
     }
 
-    // Stamp the instance itself, so the Home page can rank every instance by
-    // recency rather than knowing only which one was last. Also non-fatal.
-    if let Some(meta) = instance_meta.as_ref() {
-        let played_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or_default();
-        let mut stamped = meta.clone();
-        stamped.last_played = Some(played_at);
-        let path = instance_meta_file(Path::new(&instance_location));
-        if let Err(e) = crate::json::write_json(path, &stamped) {
-            log::warn!("failed to record last_played for '{instance_id}': {e}");
-        }
-    }
-
     let auth_account = match resolve_account(auth_record, launch_mode, &state, &app_handle, &instance_id).await {
         Ok(a) => a,
         Err(e) => fail!(e),
@@ -169,6 +154,23 @@ pub async fn launch_instance(
         Ok(m) => m,
         Err(e) => fail!(e),
     };
+
+    // Stamp the instance so the Home page can rank by recency rather than
+    // knowing only which one was last. Placed past the account, version and
+    // manifest checks, so a launch that never gets going does not claim to have
+    // been played. Non-fatal: losing the ordering beats failing the launch.
+    if let Some(meta) = instance_meta.as_ref() {
+        let played_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|since| since.as_millis() as i64)
+            .unwrap_or_default();
+        let mut stamped = meta.clone();
+        stamped.last_played = Some(played_at);
+        let path = instance_meta_file(Path::new(&instance_location));
+        if let Err(e) = crate::json::write_json(path, &stamped) {
+            log::warn!("failed to record last_played for '{instance_id}': {e}");
+        }
+    }
 
     // jrePath in `.launcher/instance.json` wins; otherwise fetch the JRE the manifest
     // recommends. We pick `java.exe` (not `javaw.exe`) so JVM startup errors
