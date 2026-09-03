@@ -136,7 +136,7 @@ pub fn HomePage() -> impl IntoView {
     // height rather than sitting at its natural size, so the two read as a pair.
     let news_row = css! {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(220px, 300px);
+        grid-template-columns: 1fr 380px;
         gap: 24px;
     };
     let trivia_card = css! {
