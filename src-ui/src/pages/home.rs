@@ -11,7 +11,7 @@ use yaminabe_launcher_shared::datamodels::{
 };
 
 use crate::changelog;
-use crate::components::activity_dock::{RunningRegistry, start_launch};
+use crate::components::activity_dock::{ActivityDockOpen, RunningRegistry, note_played, start_launch};
 use crate::curseforge::{call_search_projects, fmt_downloads};
 use crate::pages::search::PendingInstall;
 
@@ -56,11 +56,11 @@ pub fn HomePage() -> impl IntoView {
         match call_search_projects(option).await {
             Ok(mut results) => {
                 results.items.truncate(POPULAR_LIMIT);
-                results.items
+                Ok(results.items)
             }
             Err(e) => {
                 log::error!("popular modpacks failed: {e}");
-                Vec::new()
+                Err(e)
             }
         }
     });
@@ -144,16 +144,23 @@ pub fn HomePage() -> impl IntoView {
         gap: 12px;
     };
 
-    let popular_cards = move || {
-        popular
-            .get()
-            .map(|packs| {
-                packs
-                    .into_iter()
-                    .map(|pack| view! { <PopularCard pack=pack /> })
-                    .collect_view()
-            })
-            .into_any()
+    // A failed browse says so rather than leaving a heading over blank space,
+    // which is what an offline launcher or a missing API key would otherwise show.
+    let popular_cards = move || match popular.get().map(|result| result.clone()) {
+        Some(Ok(packs)) if packs.is_empty() => {
+            view! { <p class=empty>"No modpacks to show."</p> }.into_any()
+        }
+        Some(Ok(packs)) => view! {
+            <div class=popular_list>
+                {packs.into_iter().map(|pack| view! { <PopularCard pack=pack /> }).collect_view()}
+            </div>
+        }
+        .into_any(),
+        Some(Err(_)) => view! {
+            <p class=empty>"Could not reach CurseForge. Check your connection and API key."</p>
+        }
+        .into_any(),
+        None => ().into_any(),
     };
     let recent_cards = move || {
         recent
@@ -166,14 +173,17 @@ pub fn HomePage() -> impl IntoView {
         releases
             .get_value()
             .into_iter()
-            .enumerate()
-            .map(|(index, release)| {
+            .map(|release| {
+                // Marked by version rather than by position, so an Unreleased
+                // section or notes staged for the next release cannot claim to
+                // be what is running.
+                let current = release.version == env!("CARGO_PKG_VERSION");
                 view! {
                     <div>
                         <div class=release_head>
                             <span class=release_version>{release.version}</span>
                             <span class=release_date>{release.date}</span>
-                            {(index == 0).then(move || view! {
+                            {current.then(move || view! {
                                 <span class=release_current>"Current"</span>
                             })}
                         </div>
@@ -215,7 +225,7 @@ pub fn HomePage() -> impl IntoView {
                     <A href="/search" attr:class=section_link>"Browse all"</A>
                 </div>
                 <Transition fallback=move || view! { <p class=empty>"Loading modpacks…"</p> }>
-                    <div class=popular_list>{popular_cards}</div>
+                    {popular_cards}
                 </Transition>
             </div>
 
@@ -293,7 +303,7 @@ fn PopularCard(pack: ModProjectInfo) -> impl IntoView {
     let title = pack.name.clone();
     let hover = title.clone();
     let chosen = StoredValue::new(pack);
-    let on_pick = move |_| {
+    let pick = move || {
         pending.0.set(Some(chosen.get_value()));
         navigate.with_value(|nav| nav("/search", Default::default()));
     };
@@ -304,7 +314,14 @@ fn PopularCard(pack: ModProjectInfo) -> impl IntoView {
             role="button"
             tabindex="0"
             title=hover
-            on:click=on_pick
+            on:click=move |_| pick()
+            // A div has no activation behaviour of its own.
+            on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                if ev.key() == "Enter" || ev.key() == " " {
+                    ev.prevent_default();
+                    pick();
+                }
+            }
         >
             {logo_view}
             <div>
@@ -376,6 +393,13 @@ fn RecentCard(instance: InstanceMeta, registry: RunningRegistry) -> impl IntoVie
         cursor: default;
     };
 
+    // The same side effects every launch entry point performs: point the navbar's
+    // Instant-Play at what was just started, open the dock so there is more than
+    // a pill for feedback, and reorder the strip immediately.
+    let instances = use_context::<RwSignal<Vec<InstanceMeta>>>().expect("instances context");
+    let last_played_ctx = use_context::<RwSignal<Option<String>>>();
+    let dock_open = use_context::<ActivityDockOpen>();
+
     let id = StoredValue::new(instance.id.clone());
     let launchable = StoredValue::new(instance.clone());
     let detail = format!("/library/{}", instance.id);
@@ -395,12 +419,21 @@ fn RecentCard(instance: InstanceMeta, registry: RunningRegistry) -> impl IntoVie
                 .any(|r| r.id == id.get_value() && r.status.is_active())
         })
     };
-    let on_play = move |_| {
+    let launch = move || {
         if running() {
             return;
         }
-        start_launch(registry, &launchable.get_value(), LaunchMode::Online);
+        let instance = launchable.get_value();
+        start_launch(registry, &instance, LaunchMode::Online);
+        note_played(instances, &instance.id);
+        if let Some(last_played) = last_played_ctx {
+            last_played.set(Some(instance.id));
+        }
+        if let Some(dock) = dock_open {
+            dock.0.set(true);
+        }
     };
+    let label = move || if running() { "Already running" } else { "Play" };
 
     view! {
         <div class=card>
@@ -412,9 +445,16 @@ fn RecentCard(instance: InstanceMeta, registry: RunningRegistry) -> impl IntoVie
                 class=move || if running() { play_running } else { play }
                 role="button"
                 tabindex="0"
-                title=move || if running() { "Already running" } else { "Play" }
-                aria-label="Play"
-                on:click=on_play
+                title=label
+                aria-label=label
+                on:click=move |_| launch()
+                // A span has no activation behaviour of its own.
+                on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                    if ev.key() == "Enter" || ev.key() == " " {
+                        ev.prevent_default();
+                        launch();
+                    }
+                }
             >
                 <Icon icon=PLAY size="16px" weight=IconWeight::Fill />
             </span>
