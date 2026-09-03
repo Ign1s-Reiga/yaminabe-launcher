@@ -139,6 +139,12 @@ pub async fn call_link_mods(
     .await
 }
 
+/// The most-downloaded modpacks. Backed by a disk cache, so repeated visits to
+/// the Home page cost nothing and the list survives being offline.
+pub async fn call_get_popular_modpacks() -> Result<ModProjectSearchResults, String> {
+    ipc::call_noargs("get_popular_modpacks").await
+}
+
 pub async fn call_pick_mod_files() -> Result<Vec<String>, String> {
     ipc::call_noargs("pick_mod_files").await
 }

@@ -147,6 +147,19 @@ pub fn start_launch(registry: RunningRegistry, inst: &InstanceMeta, mode: Launch
     });
 }
 
+/// Mark `id` as just played in the in-session instance list, so anything ordered
+/// by `last_played` reorders at once. The backend writes the authoritative stamp
+/// during launch; mirroring it here avoids a re-fetch that would race that write,
+/// and the persisted value is read back on the next start.
+pub fn note_played(instances: RwSignal<Vec<InstanceMeta>>, id: &str) {
+    let now = js_sys::Date::now() as i64;
+    instances.update(|list| {
+        if let Some(instance) = list.iter_mut().find(|i| i.id == id) {
+            instance.last_played = Some(now);
+        }
+    });
+}
+
 /// Terminate a running instance via the backend. IPC failures are appended to
 /// that instance's log buffer so they surface in the viewer.
 pub fn stop_instance(registry: RunningRegistry, id: String) {

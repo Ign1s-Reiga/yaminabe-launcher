@@ -5,13 +5,13 @@ use crate::http_utils::sha1_hex;
 use crate::json::{read_json, read_json_or_default, write_json};
 use crate::mod_repo;
 use crate::{ActivityGuard, AppState, InstanceActivity, emit_progress};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
 use yaminabe_launcher_shared::datamodels::{
     DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModProjectSearchResults, ModState,
-    ProjectFileInfo, ProjectFileTarget, SearchOptions,
+    Platform, ProjectFileInfo, ProjectFileTarget, ProjectSortField, SearchOptions,
 };
 use yaminabe_launcher_shared::error::Error;
 
@@ -294,4 +294,73 @@ pub async fn open_project_page(
     app.opener()
         .open_url(url, Option::<String>::None)
         .map_err(|e| Error::ChildProcess(e.to_string()))
+}
+
+/// How long a cached page of popular modpacks is served without asking
+/// CurseForge again. They move on the order of days; the Home page asks on
+/// every visit.
+const POPULAR_TTL_MS: i64 = 6 * 60 * 60 * 1000;
+
+fn popular_cache_file() -> std::path::PathBuf {
+    crate::caches_dir().join("popular_modpacks.json")
+}
+
+/// A cached response and when it was taken, so freshness is decided here rather
+/// than trusted from a header the search endpoint does not send.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CachedPopular {
+    fetched_at: i64,
+    results: ModProjectSearchResults,
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+/// The most-downloaded modpacks, cached on disk.
+///
+/// A fresh cache is served without a request at all. A stale one is still kept
+/// as the fallback: if CurseForge cannot be reached, yesterday's list beats an
+/// empty section, and only a cold cache surfaces the error.
+#[tauri::command]
+pub async fn get_popular_modpacks(
+    state: State<'_, AppState>,
+) -> Result<ModProjectSearchResults, Error> {
+    let cached: Option<CachedPopular> = read_json(popular_cache_file()).ok();
+    if let Some(cached) = &cached {
+        if now_ms().saturating_sub(cached.fetched_at) < POPULAR_TTL_MS {
+            return Ok(cached.results.clone());
+        }
+    }
+
+    let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
+    let option = SearchOptions {
+        query: String::new(),
+        index: 0,
+        target: ProjectFileTarget::Modpack,
+        game_version: None,
+        mod_loader: None,
+        sort: ProjectSortField::Popularity,
+        platform: Platform::CurseForge,
+    };
+    match mod_repo::search_projects(&option, &state.http_client, &api_key).await {
+        Ok(results) => {
+            let entry = CachedPopular { fetched_at: now_ms(), results };
+            if let Err(e) = write_json(popular_cache_file(), &entry) {
+                log::warn!("cannot cache popular modpacks: {e}");
+            }
+            Ok(entry.results)
+        }
+        Err(e) => match cached {
+            Some(cached) => {
+                log::warn!("serving stale popular modpacks: {e}");
+                Ok(cached.results)
+            }
+            None => Err(e),
+        },
+    }
 }

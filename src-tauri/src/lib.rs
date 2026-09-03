@@ -21,7 +21,8 @@ use crate::commands::minecraft::{
     VersionManifest, fetch_minecraft_versions, get_minecraft_versions, get_modloader_versions,
 };
 use crate::commands::modfile::{
-    download_mods, install_modpack, link_mods, list_project_files, open_project_page,
+    download_mods, get_popular_modpacks, install_modpack, link_mods, list_project_files,
+    open_project_page,
     search_projects, upgrade_modpack,
 };
 use crate::commands::settings::{
@@ -137,6 +138,7 @@ static VERSIONS_DIR: OnceLock<PathBuf> = OnceLock::new();
 static ASSETS_DIR: OnceLock<PathBuf> = OnceLock::new();
 static LIBRARIES_DIR: OnceLock<PathBuf> = OnceLock::new();
 static RUNTIMES_DIR: OnceLock<PathBuf> = OnceLock::new();
+static CACHES_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 fn settings_path() -> &'static PathBuf {
     SETTINGS_PATH.get().unwrap()
@@ -162,6 +164,11 @@ pub fn libraries_dir() -> &'static PathBuf {
 pub fn runtimes_dir() -> &'static PathBuf {
     RUNTIMES_DIR.get().unwrap()
 }
+/// Responses cached under `.yaminabe/caches` to spare a round-trip and to keep
+/// working offline. Everything here is disposable — deleting it costs a refetch.
+pub fn caches_dir() -> &'static PathBuf {
+    CACHES_DIR.get().unwrap()
+}
 fn init_dirs(app: &tauri::App) -> Result<(), InitializationError> {
     fn path_err(e: tauri::Error) -> InitializationError {
         InitializationError::PathResolution(e.to_string())
@@ -177,6 +184,7 @@ fn init_dirs(app: &tauri::App) -> Result<(), InitializationError> {
     LIBRARIES_DIR.set(bin_dir.join("libraries"))?;
     ASSETS_DIR.set(bin_dir.join("assets"))?;
     RUNTIMES_DIR.set(bin_dir.join("runtimes"))?;
+    CACHES_DIR.set(app_dir.join("caches"))?;
     BIN_DIR.set(bin_dir)?;
     SETTINGS_PATH.set(app_dir.join("settings.json"))?;
     ACCOUNTS_PATH.set(app_dir.join("accounts.json"))?;
@@ -185,6 +193,7 @@ fn init_dirs(app: &tauri::App) -> Result<(), InitializationError> {
         libraries_dir(),
         assets_dir(),
         runtimes_dir(),
+        caches_dir(),
     ] {
         std::fs::create_dir_all(p)?;
     }
@@ -288,6 +297,7 @@ pub fn run() {
             toggle_state_instance_mod,
             download_mods,
             link_mods,
+            get_popular_modpacks,
             open_project_page,
             pick_mod_files,
             create_instance,

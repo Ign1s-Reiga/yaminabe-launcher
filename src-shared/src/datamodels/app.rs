@@ -25,6 +25,11 @@ pub struct InstanceMeta {
     pub window_height: u32,
     #[serde(default)]
     pub origin: DownloadSource,
+    /// When the instance was last launched, as epoch milliseconds. `None` for an
+    /// instance that has never been played, which sorts it below every one that
+    /// has. Written at launch, so it also covers instances created before it.
+    #[serde(default)]
+    pub last_played: Option<i64>,
 }
 
 impl Default for InstanceMeta {
@@ -53,6 +58,7 @@ impl Default for InstanceMeta {
             window_width: 0,
             window_height: 0,
             origin: DownloadSource::Manual,
+            last_played: None,
         }
     }
 }

@@ -1,6 +1,7 @@
 use crate::components::activity_dock::{
     ActivityDock, ActivityDockOpen, InstallJob, RunStatus, RunningInstance, RunningRegistry,
 };
+use crate::pages::search::PendingInstall;
 use crate::pages::{
     home::HomePage,
     library::LibraryPage,
@@ -18,7 +19,7 @@ use leptos_router::components::{Route, Router, Routes};
 use leptos_router::hooks::{use_location, use_navigate};
 use leptos_router::path;
 use phosphor_leptos::{Icon, IconData, IconWeight, BOOKS, GEAR_SIX, HOUSE, MAGNIFYING_GLASS, PLAY};
-use yaminabe_launcher_shared::datamodels::{AppSettings, InstanceMeta, LaunchMode};
+use yaminabe_launcher_shared::datamodels::{AppSettings, InstanceMeta, LaunchMode, ModProjectInfo};
 use yaminabe_launcher_shared::ipc::LogLine;
 
 styled!(MainViewWrapper, div, {
@@ -68,6 +69,11 @@ pub fn App() -> impl IntoView {
     // Instant-Play button.
     let last_played: RwSignal<Option<String>> = RwSignal::new(None);
     provide_context(last_played);
+
+    // Lets the Home page's popular strip hand a pack to the Search page's
+    // install dialog instead of duplicating that flow.
+    let pending_install: RwSignal<Option<ModProjectInfo>> = RwSignal::new(None);
+    provide_context(PendingInstall(pending_install));
     leptos::task::spawn_local(async move {
         if let Ok(s) = ipc::call_noargs::<AppSettings>("get_settings").await {
             if !s.last_played_instance_id.is_empty() {

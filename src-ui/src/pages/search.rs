@@ -13,11 +13,19 @@ use yaminabe_launcher_shared::datamodels::{
 
 const PAGE_SIZE: usize = 50;
 
+/// A modpack picked somewhere other than this page — the Home page's popular
+/// strip — waiting for the Search page to open its install dialog. Carried
+/// through context rather than a route param so the whole `ModProjectInfo`
+/// survives, sparing a second lookup.
+#[derive(Clone, Copy)]
+pub struct PendingInstall(pub RwSignal<Option<ModProjectInfo>>);
+
 #[component]
 pub fn SearchPage() -> impl IntoView {
     let install: RwSignal<Option<InstallState>> = RwSignal::new(None);
     let install_name: RwSignal<String> = RwSignal::new(String::new());
     let default_location: RwSignal<String> = RwSignal::new(String::new());
+    let pending = use_context::<PendingInstall>().expect("pending install context");
 
     leptos::task::spawn_local(async move {
         if let Ok(s) = ipc::call_noargs::<AppSettings>("get_settings").await {
@@ -69,6 +77,15 @@ pub fn SearchPage() -> impl IntoView {
             }
         });
     };
+
+    // A pack picked on the Home page: open its dialog once, then clear it so a
+    // later visit to Search does not reopen it.
+    Effect::new(move |_| {
+        if let Some(pack) = pending.0.get() {
+            pending.0.set(None);
+            open_install(pack);
+        }
+    });
 
     let close_install = move || install.set(None);
 

@@ -1,6 +1,8 @@
 use crate::components::log_viewer::LogViewer;
 use crate::components::open_in_file_manager::OpenInFileManager;
-use crate::components::activity_dock::{start_launch, stop_instance, ActivityDockOpen, RunStatus, RunningRegistry};
+use crate::components::activity_dock::{
+    note_played, start_launch, stop_instance, ActivityDockOpen, RunStatus, RunningRegistry,
+};
 use crate::signal_ext::VecSignalExt;
 use crate::components::ui::{Button, ButtonVariant};
 use bamboo_css_macro::css;
@@ -72,6 +74,9 @@ pub fn PlayPage() -> impl IntoView {
         // instance; otherwise just view the existing (live or stopped) entry.
         if !is_running && (!has_entry || launch_intent) {
             start_launch(registry, &inst, launch_mode.get_untracked());
+            // Reorder anything ranked by last_played without waiting for a
+            // re-fetch that would race the backend's own write.
+            note_played(instances_ctx, &inst.id);
             // Point the navbar Instant-Play button at what we just launched —
             // the backend persists this too, but the in-session signal has no
             // other refresh path.
