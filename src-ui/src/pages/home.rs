@@ -133,10 +133,11 @@ pub fn HomePage() -> impl IntoView {
         line-height: 1.55;
     };
     // Release notes beside the trivia. The trivia column stretches to the row's
-    // height rather than sitting at its natural size, so the two read as a pair.
+    // height rather than sitting at its natural size, so the two read as a pair,
+    // and it gives up width before the notes do on a narrow window.
     let news_row = css! {
         display: grid;
-        grid-template-columns: 1fr 380px;
+        grid-template-columns: minmax(0, 1fr) minmax(280px, 400px);
         gap: 24px;
     };
     let trivia_card = css! {
