@@ -15,5 +15,8 @@ serde-wasm-bindgen = "0.6"
 console_error_panic_hook = "0.1"
 phosphor-leptos = "0.8"
 yaminabe-launcher-shared.workspace = true
-bamboo-css-macro = { version = "0.1.0", path = "../../bamboo-css/bamboo-css-macro" }
+# 0.1.1 recovers CSS spacing from span locations. An older macro silently
+# emits styles the parser rejects — a dropped declaration leaves the class in
+# place with no rule, so the page lays out wrong with nothing in the console.
+bamboo-css-macro = { version = "0.1.1", path = "../../bamboo-css/bamboo-css-macro" }
 log.workspace = true
