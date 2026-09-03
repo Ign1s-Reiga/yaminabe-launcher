@@ -8,6 +8,7 @@ use phosphor_leptos::{Icon, IconWeight, PLAY};
 use yaminabe_launcher_shared::datamodels::{InstanceMeta, LaunchMode, ModProjectInfo};
 
 use crate::changelog;
+use crate::trivia;
 use crate::components::activity_dock::{ActivityDockOpen, RunningRegistry, note_played, start_launch};
 use crate::curseforge::{call_get_popular_modpacks, fmt_downloads};
 use crate::pages::search::PendingInstall;
@@ -17,6 +18,9 @@ use crate::pages::search::PendingInstall;
 const RECENT_LIMIT: usize = 5;
 /// How many popular modpacks to tease before deferring to the search page.
 const POPULAR_LIMIT: usize = 6;
+/// How many facts to show beside the release notes — enough to fill the column
+/// to about the height of the notes without crowding it.
+const TRIVIA_COUNT: usize = 2;
 
 #[component]
 pub fn HomePage() -> impl IntoView {
@@ -37,6 +41,9 @@ pub fn HomePage() -> impl IntoView {
         played
     });
     let releases = StoredValue::new(changelog::releases());
+    // Drawn once per visit: a StoredValue so a reactive update elsewhere on the
+    // page cannot reshuffle the facts under the reader.
+    let facts = StoredValue::new(trivia::pick(TRIVIA_COUNT));
 
     // The backend serves these from a disk cache, so revisiting Home costs no
     // request and the strip still fills in offline.
@@ -124,6 +131,35 @@ pub fn HomePage() -> impl IntoView {
         font-size: 0.85rem;
         opacity: 0.75;
         line-height: 1.55;
+    };
+    // Release notes beside the trivia. The trivia column stretches to the row's
+    // height rather than sitting at its natural size, so the two read as a pair.
+    let news_row = css! {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(220px, 300px);
+        gap: 24px;
+    };
+    let trivia_card = css! {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 16px 18px;
+        border: 1px solid var(--secondary-color);
+        border-radius: 10px;
+    };
+    let trivia_title = css! {
+        margin: 0;
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        opacity: 0.5;
+    };
+    let trivia_fact = css! {
+        margin: 0;
+        font-size: 0.85rem;
+        line-height: 1.6;
+        opacity: 0.8;
     };
 
     let popular_list = css! {
@@ -218,15 +254,25 @@ pub fn HomePage() -> impl IntoView {
             </div>
 
             <div class=section>
-                <div class=section_head>
-                    <h2 class=section_title>"What is new"</h2>
+                <div class=news_row>
+                    <div>
+                        <div class=section_head>
+                            <h2 class=section_title>"What is new"</h2>
+                        </div>
+                        <Show
+                            when=move || !releases.get_value().is_empty()
+                            fallback=move || view! { <p class=empty>"No release notes yet."</p> }
+                        >
+                            <div class=release_list>{release_entries}</div>
+                        </Show>
+                    </div>
+                    <aside class=trivia_card>
+                        <p class=trivia_title>"Did you know?"</p>
+                        {facts.get_value().into_iter()
+                            .map(|fact| view! { <p class=trivia_fact>{fact}</p> })
+                            .collect_view()}
+                    </aside>
                 </div>
-                <Show
-                    when=move || !releases.get_value().is_empty()
-                    fallback=move || view! { <p class=empty>"No release notes yet."</p> }
-                >
-                    <div class=release_list>{release_entries}</div>
-                </Show>
             </div>
         </div>
     }
