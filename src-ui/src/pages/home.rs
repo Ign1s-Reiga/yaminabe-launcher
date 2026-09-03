@@ -5,14 +5,11 @@ use leptos::{IntoView, component, view};
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use phosphor_leptos::{Icon, IconWeight, PLAY};
-use yaminabe_launcher_shared::datamodels::{
-    InstanceMeta, LaunchMode, ModProjectInfo, Platform, ProjectFileTarget, ProjectSortField,
-    SearchOptions,
-};
+use yaminabe_launcher_shared::datamodels::{InstanceMeta, LaunchMode, ModProjectInfo};
 
 use crate::changelog;
 use crate::components::activity_dock::{ActivityDockOpen, RunningRegistry, note_played, start_launch};
-use crate::curseforge::{call_search_projects, fmt_downloads};
+use crate::curseforge::{call_get_popular_modpacks, fmt_downloads};
 use crate::pages::search::PendingInstall;
 
 /// How many instances the recently-played strip shows before deferring to the
@@ -41,19 +38,10 @@ pub fn HomePage() -> impl IntoView {
     });
     let releases = StoredValue::new(changelog::releases());
 
-    // Popular modpacks, browsed rather than searched: an empty query sorted by
-    // popularity is what the search page shows for the same options.
+    // The backend serves these from a disk cache, so revisiting Home costs no
+    // request and the strip still fills in offline.
     let popular = LocalResource::new(move || async move {
-        let option = SearchOptions {
-            query: String::new(),
-            index: 0,
-            target: ProjectFileTarget::Modpack,
-            game_version: None,
-            mod_loader: None,
-            sort: ProjectSortField::Popularity,
-            platform: Platform::CurseForge,
-        };
-        match call_search_projects(option).await {
+        match call_get_popular_modpacks().await {
             Ok(mut results) => {
                 results.items.truncate(POPULAR_LIMIT);
                 Ok(results.items)
