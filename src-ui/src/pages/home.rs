@@ -3,15 +3,23 @@ use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{IntoView, component, view};
 use leptos_router::components::A;
+use leptos_router::hooks::use_navigate;
 use phosphor_leptos::{Icon, IconWeight, PLAY};
-use yaminabe_launcher_shared::datamodels::{InstanceMeta, LaunchMode};
+use yaminabe_launcher_shared::datamodels::{
+    InstanceMeta, LaunchMode, ModProjectInfo, Platform, ProjectFileTarget, ProjectSortField,
+    SearchOptions,
+};
 
 use crate::changelog;
 use crate::components::activity_dock::{RunningRegistry, start_launch};
+use crate::curseforge::{call_search_projects, fmt_downloads};
+use crate::pages::search::PendingInstall;
 
 /// How many instances the recently-played strip shows before deferring to the
 /// library.
 const RECENT_LIMIT: usize = 5;
+/// How many popular modpacks to tease before deferring to the search page.
+const POPULAR_LIMIT: usize = 6;
 
 #[component]
 pub fn HomePage() -> impl IntoView {
@@ -32,6 +40,30 @@ pub fn HomePage() -> impl IntoView {
         played
     });
     let releases = StoredValue::new(changelog::releases());
+
+    // Popular modpacks, browsed rather than searched: an empty query sorted by
+    // popularity is what the search page shows for the same options.
+    let popular = LocalResource::new(move || async move {
+        let option = SearchOptions {
+            query: String::new(),
+            index: 0,
+            target: ProjectFileTarget::Modpack,
+            game_version: None,
+            mod_loader: None,
+            sort: ProjectSortField::Popularity,
+            platform: Platform::CurseForge,
+        };
+        match call_search_projects(option).await {
+            Ok(mut results) => {
+                results.items.truncate(POPULAR_LIMIT);
+                results.items
+            }
+            Err(e) => {
+                log::error!("popular modpacks failed: {e}");
+                Vec::new()
+            }
+        }
+    });
 
     let section = css! {
         margin-bottom: 40px;
@@ -106,6 +138,23 @@ pub fn HomePage() -> impl IntoView {
         line-height: 1.55;
     };
 
+    let popular_list = css! {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 12px;
+    };
+
+    let popular_cards = move || {
+        popular
+            .get()
+            .map(|packs| {
+                packs
+                    .into_iter()
+                    .map(|pack| view! { <PopularCard pack=pack /> })
+                    .collect_view()
+            })
+            .into_any()
+    };
     let recent_cards = move || {
         recent
             .get()
@@ -162,6 +211,16 @@ pub fn HomePage() -> impl IntoView {
 
             <div class=section>
                 <div class=section_head>
+                    <h2 class=section_title>"Popular modpacks"</h2>
+                    <A href="/search" attr:class=section_link>"Browse all"</A>
+                </div>
+                <Transition fallback=move || view! { <p class=empty>"Loading modpacks…"</p> }>
+                    <div class=popular_list>{popular_cards}</div>
+                </Transition>
+            </div>
+
+            <div class=section>
+                <div class=section_head>
                     <h2 class=section_title>"What is new"</h2>
                 </div>
                 <Show
@@ -170,6 +229,87 @@ pub fn HomePage() -> impl IntoView {
                 >
                     <div class=release_list>{release_entries}</div>
                 </Show>
+            </div>
+        </div>
+    }
+}
+
+/// One popular modpack. Picking it hands the pack to the search page rather
+/// than duplicating the install dialog and its version fetching here.
+#[component]
+fn PopularCard(pack: ModProjectInfo) -> impl IntoView {
+    let pending = use_context::<PendingInstall>().expect("pending install context");
+    let navigate = StoredValue::new(use_navigate());
+
+    let card = css! {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 12px;
+        border: 1.5px solid var(--secondary-color);
+        border-radius: 10px;
+        cursor: pointer;
+        user-select: none;
+        transition: border-color 0.12s ease, background-color 0.12s ease;
+        &:hover {
+            border-color: rgba(58, 158, 95, 0.45);
+            background-color: rgba(58, 158, 95, 0.04);
+        }
+    };
+    let logo = css! {
+        width: 100%;
+        aspect-ratio: 1 / 1;
+        border-radius: 8px;
+        object-fit: cover;
+        background-color: var(--secondary-color);
+    };
+    let logo_placeholder = css! {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        aspect-ratio: 1 / 1;
+        border-radius: 8px;
+        background-color: var(--secondary-color);
+        font-size: 1.6rem;
+    };
+    let name = css! {
+        font-weight: 600;
+        font-size: 0.85rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    };
+    let downloads = css! {
+        font-size: 0.72rem;
+        opacity: 0.5;
+    };
+
+    let logo_view = match pack.logo_url.clone() {
+        Some(url) => view! { <img class=logo src=url alt="" /> }.into_any(),
+        None => view! { <div class=logo_placeholder>"📦"</div> }.into_any(),
+    };
+    let count = format!("{} downloads", fmt_downloads(pack.download_count));
+    let title = pack.name.clone();
+    let hover = title.clone();
+    let chosen = StoredValue::new(pack);
+    let on_pick = move |_| {
+        pending.0.set(Some(chosen.get_value()));
+        navigate.with_value(|nav| nav("/search", Default::default()));
+    };
+
+    view! {
+        <div
+            class=card
+            role="button"
+            tabindex="0"
+            title=hover
+            on:click=on_pick
+        >
+            {logo_view}
+            <div>
+                <div class=name>{title}</div>
+                <div class=downloads>{count}</div>
             </div>
         </div>
     }
