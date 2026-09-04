@@ -79,10 +79,13 @@ struct VersionFile {
     primary: bool,
 }
 
+/// A version this one pulls in. Modrinth names a dependency by version, by
+/// project, or by neither — an embedded jar it only knows a file name for
+/// reports both ids as null — so neither id can be required.
 #[derive(Deserialize)]
 struct Dependency {
     version_id: Option<String>,
-    project_id: String,
+    project_id: Option<String>,
     dependency_type: DependencyType,
 }
 
@@ -835,5 +838,59 @@ mod mrpack_tests {
         assert_eq!(target_for("resourcepacks/b.zip"), Some(ProjectFileTarget::ResourcePack));
         assert_eq!(target_for("shaderpacks/c.zip"), Some(ProjectFileTarget::ShaderPack));
         assert_eq!(target_for("config/d.json"), None);
+    }
+}
+
+#[cfg(test)]
+mod api_tests {
+    use super::Version;
+    use yaminabe_launcher_shared::datamodels::{ProjectFileTarget, ProjectId};
+
+    /// Trimmed from a real `/v2/project/{id}/version` response. The last
+    /// dependency is the shape that matters: Modrinth reports an embedded jar
+    /// it knows only a file name for with both ids null.
+    const VERSION_JSON: &str = r#"{
+        "id": "BSg2ZS8u",
+        "project_id": "t1tOiUHZ",
+        "name": "Create+ 6.0.0 Alpha f",
+        "version_number": "6.0.0-alpha-f",
+        "date_published": "2026-06-15T00:34:52.861465Z",
+        "version_type": "alpha",
+        "files": [{
+            "hashes": { "sha1": "7849fc32ce67b03033ad6aad68665b9b62a8627e" },
+            "url": "https://cdn.modrinth.com/data/t1tOiUHZ/versions/BSg2ZS8u/pack.mrpack",
+            "filename": "Create+ 6.0.0 Alpha f.mrpack",
+            "primary": true,
+            "size": 3540285
+        }],
+        "dependencies": [
+            { "version_id": "qYqVf5jP", "project_id": "SNVQ2c0g", "dependency_type": "embedded" },
+            { "version_id": null, "project_id": null, "dependency_type": "embedded" }
+        ]
+    }"#;
+
+    #[test]
+    fn decodes_a_version_whose_dependency_names_no_project() {
+        let version: Version = serde_json::from_str(VERSION_JSON).expect("decode version");
+        assert_eq!(version.dependencies.len(), 2);
+        assert!(version.dependencies[1].project_id.is_none());
+    }
+
+    #[test]
+    fn a_version_carries_its_own_id_and_display_name() {
+        let version: Version = serde_json::from_str(VERSION_JSON).expect("decode version");
+        let file = version
+            .to_project_file_info(ProjectFileTarget::Modpack)
+            .expect("primary file");
+        assert_eq!(file.display_name, "Create+ 6.0.0 Alpha f");
+        assert_eq!(file.file_name, "Create+ 6.0.0 Alpha f.mrpack");
+        assert_eq!(
+            file.source.version_key().as_deref(),
+            Some("BSg2ZS8u")
+        );
+        assert_eq!(
+            ProjectId::Modrinth(version.project_id.clone()),
+            ProjectId::Modrinth("t1tOiUHZ".to_string())
+        );
     }
 }
