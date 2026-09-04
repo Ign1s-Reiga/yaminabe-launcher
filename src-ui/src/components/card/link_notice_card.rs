@@ -2,19 +2,11 @@ use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
-use serde::Deserialize;
 use yaminabe_launcher_shared::datamodels::{DownloadSource, ModListEntry};
 use crate::components::ui::*;
 use phosphor_leptos::{ARROW_SQUARE_OUT, Icon, IconWeight};
 use crate::curseforge::{call_link_mods, call_open_project_page, call_pick_mod_files};
 use crate::ipc;
-
-/// Payload of Tauri's `tauri://drag-drop` event — only the dropped file paths
-/// are needed here.
-#[derive(Deserialize)]
-struct DragDropPayload {
-    paths: Vec<String>,
-}
 
 /// Mods-tab notice shown when one or more mods failed to download. Explains the
 /// situation and opens a modal where the user links jars from disk by SHA-1.
@@ -113,7 +105,7 @@ fn LinkModal(
             }
         });
     };
-    let subscription = ipc::subscribe::<DragDropPayload, _>(
+    let subscription = ipc::subscribe::<ipc::DragDropPayload, _>(
         "tauri://drag-drop",
         move |payload| add_paths(payload.paths),
     );

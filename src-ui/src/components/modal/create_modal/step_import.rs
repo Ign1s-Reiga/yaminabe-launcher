@@ -7,6 +7,15 @@ use yaminabe_launcher_shared::datamodels::LocalModpackInfo;
 use super::WizardState;
 use crate::components::ui::*;
 use crate::curseforge::{call_pick_modpack_file, call_read_modpack_file};
+use crate::ipc;
+
+/// Whether a dropped path looks like a modpack this step can read. The file
+/// itself is still checked by the backend; this only decides which of several
+/// dropped paths is worth offering it.
+fn is_modpack_file(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.ends_with(".zip") || lower.ends_with(".mrpack")
+}
 
 /// What the picker knows about the file so far. One value rather than a pile of
 /// options, so "read a pack but also hold an error" cannot be represented.
@@ -36,7 +45,12 @@ pub fn StepImport(
     let picked: RwSignal<Picked> = RwSignal::new(Picked::Nothing);
     // The name this step last filled in, to tell it apart from one the user typed.
     let filled_name: StoredValue<Option<String>> = StoredValue::new(None);
+    // Whether a file is currently being dragged over the window.
+    let dragging: RwSignal<bool> = RwSignal::new(false);
 
+    // The drag highlight is a nested rule rather than a second class: the
+    // generated bundle is ordered by class hash, so two classes setting the
+    // same property would depend on which hash happened to sort later.
     let drop_zone = css! {
         border: 2px dashed var(--tertiary-color);
         border-radius: 10px;
@@ -48,7 +62,12 @@ pub fn StepImport(
             border-color: #3a9e5f;
             background-color: var(--secondary-color);
         }
+        &[data-dragging="true"] {
+            border-color: #3a9e5f;
+            background-color: var(--secondary-color);
+        }
     };
+    let dragging_attr = move || dragging.get().to_string();
     let drop_hint = css! {
         margin: 0;
         font-size: 0.85rem;
@@ -85,15 +104,9 @@ pub fn StepImport(
         line-height: 1.5;
     };
 
-    let choose = move |_| {
+    let read_path = move |path: String| {
         picked.set(Picked::Reading);
         leptos::task::spawn_local(async move {
-            let Ok(Some(path)) = call_pick_modpack_file().await else {
-                // Cancelled, or the dialog failed: fall back to the idle prompt
-                // rather than reporting a rejection the user did not cause.
-                picked.set(Picked::Nothing);
-                return;
-            };
             match call_read_modpack_file(path.clone()).await {
                 Ok(info) => {
                     // Default the instance name to the pack's own, so the common
@@ -115,6 +128,45 @@ pub fn StepImport(
         });
     };
 
+    let choose = move |_| {
+        picked.set(Picked::Reading);
+        leptos::task::spawn_local(async move {
+            let Ok(Some(path)) = call_pick_modpack_file().await else {
+                // Cancelled, or the dialog failed: fall back to the idle prompt
+                // rather than reporting a rejection the user did not cause.
+                picked.set(Picked::Nothing);
+                return;
+            };
+            read_path(path);
+        });
+    };
+
+    // Tauri handles OS file drops itself, so the webview never gets an HTML
+    // `drop` event — the paths arrive as an event instead, and only while this
+    // step is mounted. The subscriptions detach when it unmounts.
+    let on_drop = move |payload: ipc::DragDropPayload| {
+        dragging.set(false);
+        // A drop can carry several files, or a folder, or something unrelated.
+        // Take the first modpack among them rather than refusing the whole drop
+        // over the company it arrived in.
+        match payload.paths.into_iter().find(|path| is_modpack_file(path)) {
+            Some(path) => read_path(path),
+            None => picked.set(Picked::Rejected(
+                "Drop a .zip or .mrpack modpack file.".to_string(),
+            )),
+        }
+    };
+    let subscriptions = StoredValue::new_local(Some((
+        ipc::subscribe::<ipc::DragDropPayload, _>("tauri://drag-drop", on_drop),
+        ipc::subscribe::<ipc::DragDropPayload, _>("tauri://drag-enter", move |_| {
+            dragging.set(true)
+        }),
+        ipc::subscribe::<ipc::DragDropPayload, _>("tauri://drag-leave", move |_| {
+            dragging.set(false)
+        }),
+    )));
+    on_cleanup(move || subscriptions.update_value(|s| { s.take(); }));
+
     let chosen_path = move || match picked.get() {
         Picked::Pack(path, _) => Some(path),
         _ => None,
@@ -129,7 +181,7 @@ pub fn StepImport(
 
             {move || match picked.get() {
                 Picked::Reading => view! {
-                    <div class=drop_zone>
+                    <div class=drop_zone data-dragging=dragging_attr>
                         <p class=drop_hint>"Reading modpack…"</p>
                     </div>
                 }.into_any(),
@@ -168,14 +220,14 @@ pub fn StepImport(
                 }.into_any()
                 },
                 Picked::Rejected(message) => view! {
-                    <div class=drop_zone on:click=choose>
-                        <p class=drop_hint>"Click to choose another file"</p>
+                    <div class=drop_zone data-dragging=dragging_attr on:click=choose>
+                        <p class=drop_hint>{move || if dragging.get() { "Drop the modpack here" } else { "Click to choose another file, or drop one here" }}</p>
                     </div>
                     <p class=error_text style="margin-top: 10px;">{message}</p>
                 }.into_any(),
                 Picked::Nothing => view! {
-                    <div class=drop_zone on:click=choose>
-                        <p class=drop_hint>"Click to choose a .zip or .mrpack"</p>
+                    <div class=drop_zone data-dragging=dragging_attr on:click=choose>
+                        <p class=drop_hint>{move || if dragging.get() { "Drop the modpack here" } else { "Click to choose a .zip or .mrpack, or drop one here" }}</p>
                     </div>
                 }.into_any(),
             }}
