@@ -49,6 +49,24 @@ pub async fn pick_mod_files(app: tauri::AppHandle) -> Vec<String> {
     rx.await.unwrap_or_default()
 }
 
+/// Open a native picker for a modpack zip already on disk, returning the chosen
+/// path. Filtered to `.zip`, the shape CurseForge exports.
+#[tauri::command]
+pub async fn pick_modpack_file(app: tauri::AppHandle) -> Option<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<String>>();
+    app.dialog()
+        .file()
+        .add_filter("Modpack zip", &["zip"])
+        .pick_file(move |path| {
+            let picked = path.and_then(|fp| match fp {
+                FilePath::Path(p) => p.to_str().map(|s| s.to_string()),
+                _ => None,
+            });
+            tx.send(picked).ok();
+        });
+    rx.await.ok().flatten()
+}
+
 /// Names of the well-known subfolders that actually exist for this instance —
 /// the single source of truth for the list (the UI renders the instance root
 /// plus whatever this returns). Extend the array here to offer more folders.

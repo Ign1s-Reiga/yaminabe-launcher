@@ -222,6 +222,23 @@ pub struct ModProjectSearchResults {
     pub total: u32,
 }
 
+/// What a modpack zip on disk says about itself, read before installing so the
+/// user can confirm they picked the right file and a zip that is not a
+/// CurseForge modpack is rejected up front rather than mid-install.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalModpackInfo {
+    /// The pack's own name from its manifest; empty when it declares none.
+    pub name: String,
+    pub version: String,
+    pub author: String,
+    pub game_version: String,
+    pub mod_loader: ModLoader,
+    pub mod_loader_version: Option<String>,
+    /// How many files the manifest lists, required and optional together.
+    pub file_count: usize,
+}
+
 /// A resolved project file: enough to display in a version picker and to
 /// download.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

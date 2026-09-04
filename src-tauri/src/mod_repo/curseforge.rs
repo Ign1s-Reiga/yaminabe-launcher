@@ -14,8 +14,8 @@ use log::info;
 use serde::Deserialize;
 use tauri::State;
 use yaminabe_launcher_shared::datamodels::{
-    DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModProjectInfo, ModProjectSearchResults,
-    ModState, Platform, ProjectFileInfo, ProjectFileTarget, SearchOptions,
+    DownloadSource, InstanceMeta, LocalModpackInfo, ModListEntry, ModLoader, ModProjectInfo,
+    ModProjectSearchResults, ModState, Platform, ProjectFileInfo, ProjectFileTarget, SearchOptions,
 };
 use yaminabe_launcher_shared::error::Error;
 
@@ -164,6 +164,14 @@ struct ModpackManifest {
     overrides: String,
     #[serde(default)]
     files: Vec<ManifestFilesItem>,
+    /// Shown before installing a pack picked off disk. Optional, since nothing
+    /// in the install itself depends on what the pack calls itself.
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    author: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -944,4 +952,96 @@ pub async fn project_file_page_url(
         )));
     }
     Ok(format!("{website}/files/{file_id}"))
+}
+
+/// Read a modpack zip's manifest without installing anything, so the user can
+/// confirm the file they picked and a zip that is not a CurseForge modpack is
+/// rejected before an instance directory exists.
+pub fn read_local_modpack(zip_path: &Path) -> Result<LocalModpackInfo, Error> {
+    let file = std::fs::File::open(zip_path)
+        .map_err(|e| Error::Invalid(format!("cannot open {}: {e}", zip_path.display())))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|_| Error::Invalid(format!("{} is not a zip file", zip_path.display())))?;
+    let manifest = read_manifest(&mut archive)?;
+    let (mod_loader, mod_loader_version) = resolve_loader(&manifest)?;
+    Ok(LocalModpackInfo {
+        name: manifest.name,
+        version: manifest.version,
+        author: manifest.author,
+        game_version: manifest.minecraft.version,
+        mod_loader,
+        mod_loader_version,
+        file_count: manifest.files.len(),
+    })
+}
+
+/// Install a modpack from a zip already on disk. The zip is read where it lies
+/// and left alone — it is the user's file, not a staged download — so this skips
+/// the fetch that `install_modpack` performs and shares everything after it.
+///
+/// The instance records a `Manual` origin: a manifest names the mods it wants
+/// but not the pack it came from, so there is no project to offer an upgrade
+/// against.
+pub async fn install_modpack_from_file(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    category: String,
+    zip_path: &Path,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
+    let (api_key, install_dir) = {
+        let settings = state.settings.read().unwrap();
+        (settings.curseforge_api_key.clone(), settings.instance_install_dir.clone())
+    };
+
+    let instance_path = PathBuf::from(&install_dir).join(instance_name.to_lowercase());
+    if instance_path.exists() {
+        return Err(Error::Invalid(format!(
+            "folder '{}' already exists at this location",
+            instance_name.to_lowercase()
+        )));
+    }
+    std::fs::create_dir_all(&instance_path)?;
+
+    let prepared = prepare_from_cached_zip(
+        app_handle,
+        id,
+        instance_name,
+        &instance_path,
+        zip_path,
+        state,
+    )
+    .await?;
+
+    emit_progress(app_handle, id, instance_name, "Downloading mods", false, None);
+    let file_ids = manifest_file_ids(&prepared.manifest);
+    let files = resolve_project_files(&file_ids, &api_key, &state.http_client).await?;
+    let modlist_entries =
+        super::download_project_files(files, &instance_path, &state.http_client).await?;
+
+    emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
+    upsert_modlist_entries(&instance_path, modlist_entries)?;
+
+    let meta = InstanceMeta {
+        id: id.to_string(),
+        name: instance_name.to_string(),
+        description: prepared.manifest.name.clone(),
+        game_version: prepared.mc_version.clone(),
+        mod_loader: prepared.mod_loader.clone(),
+        mod_loader_version: prepared.loader_version,
+        version_id: prepared.version_id,
+        category,
+        ..InstanceMeta::default()
+    };
+    write_json(instance_meta_file(&instance_path), &meta)?;
+
+    info!(
+        "Installed '{}' from {} (MC {}, {})",
+        instance_name,
+        zip_path.display(),
+        prepared.mc_version,
+        prepared.mod_loader
+    );
+    Ok(())
 }

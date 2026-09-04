@@ -21,12 +21,12 @@ use crate::commands::minecraft::{
     VersionManifest, fetch_minecraft_versions, get_minecraft_versions, get_modloader_versions,
 };
 use crate::commands::modfile::{
-    download_mods, get_popular_modpacks, install_modpack, link_mods, list_project_files,
-    open_project_page,
+    download_mods, get_popular_modpacks, install_modpack, install_modpack_from_file,
+    link_mods, list_project_files, open_project_page, read_modpack_file,
     search_projects, upgrade_modpack,
 };
 use crate::commands::settings::{
-    get_instance_subfolders, get_settings, open_instance_subfolder, pick_folder, pick_mod_files,
+    get_instance_subfolders, get_settings, open_instance_subfolder, pick_folder, pick_mod_files, pick_modpack_file,
     save_settings,
 };
 use log::warn;
@@ -298,6 +298,9 @@ pub fn run() {
             download_mods,
             link_mods,
             get_popular_modpacks,
+            read_modpack_file,
+            install_modpack_from_file,
+            pick_modpack_file,
             open_project_page,
             pick_mod_files,
             create_instance,

@@ -8,8 +8,8 @@ use reqwest::Client;
 use tauri::State;
 use yaminabe_launcher_shared::datamodels::ModState;
 use yaminabe_launcher_shared::datamodels::{
-    DownloadSource, ModListEntry, ModLoader, ModProjectSearchResults, Platform, ProjectFileInfo,
-    ProjectFileTarget, SearchOptions,
+    DownloadSource, LocalModpackInfo, ModListEntry, ModLoader, ModProjectSearchResults, Platform,
+    ProjectFileInfo, ProjectFileTarget, SearchOptions,
 };
 use yaminabe_launcher_shared::error::Error;
 
@@ -214,4 +214,30 @@ pub async fn project_page_url(
             "a hand-added file has no project page".to_string(),
         )),
     }
+}
+
+/// Read a modpack zip on disk. Only the CurseForge format is understood, which
+/// is what the file picker offers.
+pub fn read_local_modpack(zip_path: &Path) -> Result<LocalModpackInfo, Error> {
+    curseforge::read_local_modpack(zip_path)
+}
+
+/// Install from a zip the user already has, rather than one fetched by id.
+pub async fn install_modpack_from_file(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    category: String,
+    zip_path: &Path,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
+    curseforge::install_modpack_from_file(
+        app_handle,
+        id,
+        instance_name,
+        category,
+        zip_path,
+        state,
+    )
+    .await
 }
