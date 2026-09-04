@@ -312,6 +312,12 @@ pub fn list_instance_mods(
     let instance_dir = find_instance_dir(Path::new(&install_dir), &instance_id)?;
     let mut modlist: Vec<ModListEntry> = read_json(modlist_file(&instance_dir))
         .unwrap_or_default();
+    // The file records every file a modpack installed, so that an upgrade can
+    // remove the ones a later version drops. This tab is about mods, plus any
+    // file still waiting for a hand-supplied copy.
+    modlist.retain(|entry| {
+        entry.target.tracks_modlist() || entry.state == ModState::DownloadFailed
+    });
     let untracked = untracked_mods(&instance_dir, &modlist);
     modlist.extend(untracked);
     sort_modlist(&mut modlist);

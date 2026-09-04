@@ -798,6 +798,10 @@ fn disabled_path(dest: &Path) -> PathBuf {
 /// file whose hash has not changed keeps the state it was in — so a mod the
 /// user disabled stays disabled through an upgrade, and is left on disk under
 /// its `.disabled` name rather than being downloaded back into place.
+///
+/// Every file the pack installs is reported, not only mods: a resource pack the
+/// next version drops can only be deleted if this one recorded installing it.
+/// `list_instance_mods` filters the rest back out.
 async fn sync_pack_files(
     index: &MrpackIndex,
     instance_path: &Path,
@@ -826,48 +830,72 @@ async fn sync_pack_files(
             continue;
         }
 
+        let disabled = disabled_path(&dest);
+        let installed = previous.get(&file_name_of(&dest));
+        let was_disabled = installed.is_some_and(|entry| entry.state == ModState::Disabled);
+
         // A disabled mod lives under another name, so downloading `dest` would
         // reinstate the jar the user turned off and leave both copies on disk.
-        let kept_disabled = previous
-            .get(&file_name_of(&dest))
-            .filter(|entry| entry.state == ModState::Disabled && is_unchanged(entry, file))
-            .filter(|_| disabled_path(&dest).exists());
-        if let Some(entry) = kept_disabled {
-            entries.push(entry.clone());
+        // Only when the file has not changed: a new version of it still has to
+        // be fetched, and is disabled again below.
+        if was_disabled && installed.is_some_and(|entry| is_unchanged(entry, file)) && disabled.exists()
+        {
+            entries.push(installed.expect("checked above").clone());
             continue;
         }
 
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mod_state = match download_from_mirrors(file, &dest, client).await {
-            Ok(()) => ModState::Enabled,
+        let (mod_state, written) = match download_from_mirrors(file, &dest, client).await {
+            // The user turned this mod off, so the version replacing it is off
+            // too — the choice was about the mod, not about that build of it.
+            Ok(()) if was_disabled => {
+                std::fs::remove_file(&disabled).ok();
+                match std::fs::rename(&dest, &disabled) {
+                    Ok(()) => (ModState::Disabled, disabled.clone()),
+                    Err(e) => {
+                        warn!("cannot disable {}: {e}; leaving it enabled", file.path);
+                        (ModState::Enabled, dest.clone())
+                    }
+                }
+            }
+            Ok(()) => (ModState::Enabled, dest.clone()),
             Err(e) => {
                 warn!("download failed for {}: {e}; marking for manual install", file.path);
-                ModState::DownloadFailed
+                // Whatever sits at this name is the old pack's copy, and it is
+                // not what this one ships — `download_resource` leaves a file
+                // whose hash did not match in place. Left there it would load
+                // against the upgraded pack while the mod list reports the file
+                // as missing, so the two would disagree about what is installed.
+                for stale in [&dest, &disabled] {
+                    if stale.exists() {
+                        if let Err(e) = std::fs::remove_file(stale) {
+                            warn!("cannot remove stale {}: {e}", stale.display());
+                        }
+                    }
+                }
+                (ModState::DownloadFailed, dest.clone())
             }
         };
         let Some(target) = target else { continue };
-        // Only mods are tracked once installed; anything else is tracked solely
-        // to drive the link prompt when it could not be fetched.
-        if target.tracks_modlist() || mod_state == ModState::DownloadFailed {
-            // The index states a size; fall back to the file itself when it
-            // does not, so a mod never lists as 0 B once it is on disk.
-            let size = match (file.file_size, mod_state) {
-                (0, ModState::Enabled) => std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0),
-                (size, _) => size,
-            };
-            entries.push(ModListEntry {
-                file_name: file_name_of(&dest),
-                project_name: String::new(),
-                icon_url: None,
-                sha1: file.hashes.sha1.clone(),
-                source: DownloadSource::Manual,
-                target,
-                size,
-                state: mod_state,
-            });
-        }
+        // The index states a size; fall back to the file itself when it does
+        // not, so a mod never lists as 0 B once it is on disk.
+        let size = match (file.file_size, mod_state) {
+            (0, ModState::DownloadFailed) => 0,
+            (0, _) => std::fs::metadata(&written).map(|m| m.len()).unwrap_or(0),
+            (size, _) => size,
+        };
+        entries.push(ModListEntry {
+            file_name: file_name_of(&dest),
+            project_name: String::new(),
+            icon_url: None,
+            sha1: file.hashes.sha1.clone(),
+            source: DownloadSource::Manual,
+            target,
+            size,
+            state: mod_state,
+        });
     }
     Ok(entries)
 }
@@ -1215,6 +1243,7 @@ mod mrpack_tests {
 #[cfg(test)]
 mod upgrade_tests {
     use super::{disabled_path, is_unchanged, remove_dropped_file, MrpackFile, MrpackHashes};
+    use std::collections::HashMap;
     use std::path::{Path, PathBuf};
     use yaminabe_launcher_shared::datamodels::{
         DownloadSource, ModListEntry, ModState, ProjectFileTarget,
@@ -1237,6 +1266,16 @@ mod upgrade_tests {
             target: ProjectFileTarget::Mod,
             size: 0,
             state,
+        }
+    }
+
+    fn index_with(file: MrpackFile) -> super::MrpackIndex {
+        super::MrpackIndex {
+            name: String::new(),
+            version_id: String::new(),
+            summary: String::new(),
+            files: vec![file],
+            dependencies: HashMap::new(),
         }
     }
 
@@ -1281,6 +1320,72 @@ mod upgrade_tests {
 
         remove_dropped_file(&dir, &entry("old.jar", "abc", ModState::Disabled));
         assert!(!disabled.exists(), "the .disabled file should be gone");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A mirror failure leaves the previous jar at that name on disk.
+    /// `download_resource` only replaces a file once it has verified bytes, so
+    /// the upgrade has to clear it: the pack no longer ships that build, and
+    /// the mod list already calls the file missing.
+    #[tokio::test]
+    async fn a_failed_replacement_does_not_leave_the_old_jar_behind() {
+        let dir = temp_dir("failed-replacement");
+        let jar = dir.join("mods").join("a.jar");
+        std::fs::write(&jar, b"the previous version").expect("write old jar");
+
+        // No mirrors reachable: the index points at a host that cannot serve it.
+        let index = index_with(MrpackFile {
+            path: "mods/a.jar".to_string(),
+            hashes: MrpackHashes { sha1: "0000000000000000000000000000000000000000".to_string() },
+            env: None,
+            downloads: vec!["http://127.0.0.1:1/nope.jar".to_string()],
+            file_size: 0,
+        });
+        let previous = HashMap::from([(
+            "a.jar".to_string(),
+            entry("a.jar", "aaaa", ModState::Enabled),
+        )]);
+
+        let entries = super::sync_pack_files(&index, &dir, &previous, &reqwest::Client::new())
+            .await
+            .expect("sync");
+
+        assert!(!jar.exists(), "the superseded jar must not survive a failed fetch");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].state, ModState::DownloadFailed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Disabling a mod is a choice about the mod, not about one build of it, so
+    /// a new version arrives disabled too rather than switching itself back on.
+    #[tokio::test]
+    async fn a_changed_mod_the_user_disabled_stays_disabled() {
+        let dir = temp_dir("changed-disabled");
+        let disabled = dir.join("mods").join("a.jar.disabled");
+        std::fs::write(&disabled, b"the previous version").expect("write disabled jar");
+
+        let index = index_with(MrpackFile {
+            path: "mods/a.jar".to_string(),
+            hashes: MrpackHashes { sha1: String::new() },
+            env: None,
+            downloads: vec![String::new()],
+            file_size: 0,
+        });
+        // Recorded under a different hash, so this is a new build of it.
+        let previous = HashMap::from([(
+            "a.jar".to_string(),
+            entry("a.jar", "0ld0ld", ModState::Disabled),
+        )]);
+
+        let entries = super::sync_pack_files(&index, &dir, &previous, &reqwest::Client::new())
+            .await
+            .expect("sync");
+
+        // The fetch cannot succeed here, so what matters is that the stale
+        // disabled copy is gone rather than left beside a re-enabled jar.
+        assert!(!disabled.exists(), "the superseded disabled copy must not survive");
+        assert!(!dir.join("mods").join("a.jar").exists(), "and it must not come back enabled");
+        assert_eq!(entries.len(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 
