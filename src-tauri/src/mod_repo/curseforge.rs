@@ -994,7 +994,7 @@ pub fn read_local_modpack(zip_path: &Path) -> Result<LocalModpackInfo, Error> {
 /// and left alone — it is the user's file, not a staged download — so this skips
 /// the fetch that `install_modpack` performs and shares everything after it.
 ///
-/// The instance records a `Manual` origin: a manifest names the mods it wants
+/// The instance records a `LocalFile` origin: a manifest names the mods it wants
 /// but not the pack it came from, so there is no project to offer an upgrade
 /// against.
 pub async fn install_modpack_from_file(
@@ -1059,7 +1059,7 @@ async fn install_from_zip(
         category,
         instance_path,
         prepared,
-        InstallOrigin { source: DownloadSource::Manual, description },
+        InstallOrigin { source: DownloadSource::LocalFile, description },
         api_key,
         state,
     )

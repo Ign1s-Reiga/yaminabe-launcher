@@ -1,7 +1,7 @@
 use crate::components::mod_manager::ModManager;
 use crate::components::open_in_file_manager::OpenInFileManager;
 use crate::components::activity_dock::RunningRegistry;
-use crate::components::card::managed_notice_card::ManagedNoticeCard;
+use crate::components::card::origin_notice_card::OriginNoticeCard;
 use crate::components::modal::upgrade_modal::UpgradeModpackModal;
 use crate::signal_ext::VecSignalExt;
 use crate::components::settings::{SaveState, SettingsProp, SettingsSection};
@@ -15,7 +15,9 @@ use leptos::{component, view, IntoView};
 use leptos_router::hooks::{use_navigate, use_params, use_query_map};
 use leptos_router::params::Params;
 use serde::Serialize;
-use yaminabe_launcher_shared::datamodels::{InstanceMeta, JavaInstall, LaunchMode, ModLoader};
+use yaminabe_launcher_shared::datamodels::{
+    DownloadSource, InstanceMeta, JavaInstall, LaunchMode, ModLoader,
+};
 
 /// Detail-page tabs, in order; the first is the default. Single source for both
 /// the TabBar and the `?tab=` deep-link validation.
@@ -192,8 +194,8 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
         <Show when=move || active_tab.get() == "Mods">
             {if instance.origin.is_managed() {
                 view! {
-                    <ManagedNoticeCard
-                        can_upgrade=pack_origin.get_value().is_some()
+                    <OriginNoticeCard
+                        message="Managed by a modpack — its mod list updates with the pack."
                         on_upgrade=Callback::new(move |_| show_upgrade.set(true))
                     />
                     {(instance.mod_loader != ModLoader::Vanilla).then(move || view! {
@@ -203,6 +205,22 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
                                 game_version=mods_game_version.get_value()
                                 mod_loader=mods_loader.get_value()
                                 read_only=true
+                            />
+                        </div>
+                    })}
+                }.into_any()
+            } else if instance.origin == DownloadSource::LocalFile {
+                // Installed from a pack file, which names no project — so the
+                // mods are the user's to manage, and the tab says why no
+                // upgrade is offered rather than simply not offering one.
+                view! {
+                    <OriginNoticeCard message="Installed from a modpack file — it names no project, so there is no newer version to check for." />
+                    {(instance.mod_loader != ModLoader::Vanilla).then(move || view! {
+                        <div style="margin-top: 20px;">
+                            <ModManager
+                                instance_id=instance_id.get_value()
+                                game_version=mods_game_version.get_value()
+                                mod_loader=mods_loader.get_value()
                             />
                         </div>
                     })}

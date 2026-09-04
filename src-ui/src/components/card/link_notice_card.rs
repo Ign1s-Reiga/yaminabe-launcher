@@ -18,7 +18,7 @@ struct DragDropPayload {
 
 /// Mods-tab notice shown when one or more mods failed to download. Explains the
 /// situation and opens a modal where the user links jars from disk by SHA-1.
-/// Rendered below `ManagedNoticeCard` for managed instances.
+/// Rendered below `OriginNoticeCard` for managed instances.
 #[component]
 pub fn LinkNoticeCard(
     instance_id: String,

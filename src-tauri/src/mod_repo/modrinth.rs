@@ -705,7 +705,7 @@ pub async fn install_modpack_from_file(
         instance_name,
         category,
         zip_path,
-        DownloadSource::Manual,
+        DownloadSource::LocalFile,
         &instance_path,
         state,
     )

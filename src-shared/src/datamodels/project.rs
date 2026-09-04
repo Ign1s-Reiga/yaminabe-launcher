@@ -11,6 +11,10 @@ use std::fmt::Display;
 pub enum DownloadSource {
     #[default]
     Manual,
+    /// An instance installed from a modpack file the user supplied. Its mods
+    /// came from a pack, but the file names no project, so there is nothing to
+    /// check for a newer version — unlike a pack fetched from a site.
+    LocalFile,
     CurseForge {
         project_id: u32,
         file_id: u32,
@@ -22,8 +26,14 @@ pub enum DownloadSource {
 }
 
 impl DownloadSource {
+    /// Whether a site keeps this up to date. A pack read off disk is not
+    /// managed: nothing can refresh its mod list, so the user keeps control of
+    /// it rather than being locked out of a list that will never change.
     pub fn is_managed(&self) -> bool {
-        !matches!(self, DownloadSource::Manual)
+        matches!(
+            self,
+            DownloadSource::CurseForge { .. } | DownloadSource::Modrinth { .. }
+        )
     }
 
     pub fn curseforge_ids(&self) -> Option<(u32, u32)> {
@@ -46,7 +56,7 @@ impl DownloadSource {
             DownloadSource::Modrinth { project_id, .. } => {
                 Some(ProjectId::Modrinth(project_id.clone()))
             }
-            DownloadSource::Manual => None,
+            DownloadSource::Manual | DownloadSource::LocalFile => None,
         }
     }
 
@@ -57,7 +67,7 @@ impl DownloadSource {
         match self {
             DownloadSource::CurseForge { file_id, .. } => Some(file_id.to_string()),
             DownloadSource::Modrinth { version_id, .. } => Some(version_id.clone()),
-            DownloadSource::Manual => None,
+            DownloadSource::Manual | DownloadSource::LocalFile => None,
         }
     }
 }

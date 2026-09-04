@@ -3,16 +3,19 @@ use leptos::prelude::*;
 use leptos::{component, view, web_sys, IntoView};
 use crate::components::ui::{Button, ButtonSize, ButtonVariant};
 
-/// One-line notice for the Mods tab of a modpack-managed instance: the list is
-/// maintained by the pack, not by hand. CurseForge instances also get an
-/// "Upgrade modpack…" action wired to `on_upgrade`. Kept to a single bar so the
-/// mod list itself stays the first thing on screen.
+/// One-line notice for the Mods tab saying where this instance's mods came
+/// from, and what that means for keeping them current.
+///
+/// A pack fetched from a site passes `on_upgrade` and gets the action; a pack
+/// read off disk passes none and gets only the explanation, so the absence of
+/// an upgrade button reads as a stated reason rather than an omission. Kept to
+/// a single bar so the mod list itself stays the first thing on screen.
 #[component]
-pub fn ManagedNoticeCard(
-    /// Whether to surface the modpack upgrade action (CurseForge instances).
-    can_upgrade: bool,
-    /// Fired when the upgrade button is clicked.
-    on_upgrade: Callback<web_sys::MouseEvent>,
+pub fn OriginNoticeCard(
+    /// What to say about where the mods come from.
+    #[prop(into)] message: String,
+    /// Fired when the upgrade button is clicked. Without it, no button.
+    #[prop(optional)] on_upgrade: Option<Callback<web_sys::MouseEvent>>,
 ) -> impl IntoView {
     let bar = css! {
         display: flex;
@@ -34,10 +37,8 @@ pub fn ManagedNoticeCard(
 
     view! {
         <div class=bar>
-            <p class=text>
-                "Managed by a modpack — its mod list updates with the pack."
-            </p>
-            {can_upgrade.then(move || view! {
+            <p class=text>{message}</p>
+            {on_upgrade.map(move |on_upgrade| view! {
                 <Button
                     variant=ButtonVariant::Primary
                     size=ButtonSize::Small

@@ -83,8 +83,8 @@ pub async fn install_modpack(
         DownloadSource::Modrinth { .. } => {
             modrinth::install_modpack(app_handle, id, instance_name, category, source, state).await
         }
-        DownloadSource::Manual => Err(Error::Unsupported(
-            "manual modpack installation is not yet supported".to_string(),
+        DownloadSource::Manual | DownloadSource::LocalFile => Err(Error::Unsupported(
+            "a modpack file is installed by path, not by source".to_string(),
         )),
     }
 }
@@ -106,8 +106,8 @@ pub async fn upgrade_modpack(
             modrinth::upgrade_modpack(app_handle, id, instance_name, instance_path, source, state)
                 .await
         }
-        DownloadSource::Manual => Err(Error::Unsupported(
-            "manual modpack upgrade is not yet supported".to_string(),
+        DownloadSource::Manual | DownloadSource::LocalFile => Err(Error::Unsupported(
+            "an instance installed from a file names no project to upgrade against".to_string(),
         )),
     }
 }
@@ -238,8 +238,8 @@ pub async fn project_page_url(
         DownloadSource::Modrinth { project_id, version_id } => {
             Ok(format!("https://modrinth.com/project/{project_id}/version/{version_id}"))
         }
-        DownloadSource::Manual => Err(Error::Unsupported(
-            "a hand-added file has no project page".to_string(),
+        DownloadSource::Manual | DownloadSource::LocalFile => Err(Error::Unsupported(
+            "a file added by hand has no project page".to_string(),
         )),
     }
 }
