@@ -271,10 +271,31 @@ pub async fn list_project_files(
     // page could repeat or skip a version another page already showed.
     versions.sort_by(|a, b| b.date_published.cmp(&a.date_published));
 
-    Ok(versions
+    let mut files = page_of(&versions, target, index);
+
+    // Every version on this page belongs to the one project asked for, so a
+    // single lookup names them all. A file added from here is recorded with
+    // that name and icon, the way the CurseForge path already does it.
+    if !files.is_empty() {
+        if let Some(project) = fetch_project(project_id, client).await {
+            for file in &mut files {
+                file.project_name = project.title.clone();
+                file.icon_url = project.icon_url.clone();
+            }
+        }
+    }
+    Ok(files)
+}
+
+/// One page of `versions` as project files, in the order given.
+///
+/// Unreadable versions are dropped before the page is cut, not after. The
+/// caller reads a short page as "no more versions", so filtering afterwards
+/// would end the list early at the first withdrawn file and hide every version
+/// below it.
+fn page_of(versions: &[Version], target: ProjectFileTarget, index: u32) -> Vec<ProjectFileInfo> {
+    versions
         .iter()
-        .skip(index as usize)
-        .take(PAGE_SIZE)
         .filter_map(|version| match version.to_project_file_info(target) {
             Ok(file) => Some(file),
             Err(e) => {
@@ -282,7 +303,22 @@ pub async fn list_project_files(
                 None
             }
         })
-        .collect())
+        .skip(index as usize)
+        .take(PAGE_SIZE)
+        .collect()
+}
+
+/// One project's name and icon. `None` on any failure: this only decorates a
+/// list that is already correct without it.
+async fn fetch_project(project_id: &str, client: &reqwest::Client) -> Option<ProjectSummary> {
+    let url = format!("https://api.modrinth.com/v2/project/{project_id}");
+    match fetch_json(client, &url).send::<ProjectSummary>().await {
+        Ok(project) => Some(project),
+        Err(e) => {
+            warn!("no name for Modrinth project {project_id}: {e}");
+            None
+        }
+    }
 }
 
 fn selected_file(version: &Version) -> Option<&VersionFile> {
@@ -1016,6 +1052,54 @@ mod api_tests {
         assert_eq!(
             ProjectId::Modrinth(version.project_id.clone()),
             ProjectId::Modrinth("t1tOiUHZ".to_string())
+        );
+    }
+
+    /// A version whose file list is empty — a withdrawn file, the case
+    /// `page_of` drops.
+    const NO_FILES_JSON: &str = r#"{
+        "id": "gone1234",
+        "project_id": "t1tOiUHZ",
+        "name": "Withdrawn",
+        "version_number": "0.0.1",
+        "date_published": "2026-06-14T00:00:00.000000Z",
+        "version_type": "release",
+        "files": [],
+        "dependencies": []
+    }"#;
+
+    fn version_named(id: &str) -> Version {
+        let json = VERSION_JSON.replace("BSg2ZS8u", id);
+        serde_json::from_str(&json).expect("decode version")
+    }
+
+    /// Paging counts only the versions a page can actually show. Slicing before
+    /// the filter would let a withdrawn version at the top of the list shift
+    /// every later page, re-showing a version the previous page already listed.
+    #[test]
+    fn a_withdrawn_version_does_not_shift_the_next_page() {
+        let versions = vec![
+            serde_json::from_str::<Version>(NO_FILES_JSON).expect("decode"),
+            version_named("aaaaaaaa"),
+            version_named("bbbbbbbb"),
+        ];
+
+        let first = super::page_of(&versions, ProjectFileTarget::Modpack, 0);
+        assert_eq!(
+            first
+                .iter()
+                .filter_map(|f| f.source.version_key())
+                .collect::<Vec<_>>(),
+            vec!["aaaaaaaa", "bbbbbbbb"]
+        );
+
+        let second = super::page_of(&versions, ProjectFileTarget::Modpack, 1);
+        assert_eq!(
+            second
+                .iter()
+                .filter_map(|f| f.source.version_key())
+                .collect::<Vec<_>>(),
+            vec!["bbbbbbbb"]
         );
     }
 }

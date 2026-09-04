@@ -152,11 +152,7 @@ struct ProjectSummary {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FilesIndex {
-    #[serde(default)]
-    file_id: u32,
     game_version: String,
-    #[serde(default)]
-    mod_loader: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
