@@ -107,7 +107,15 @@ fn sort_modlist(entries: &mut [ModListEntry]) {
 /// already exists — installing over an existing instance would overlay its files
 /// and overwrite its record, orphaning it from the library.
 pub fn create_instance_dir(install_dir: &str, instance_name: &str) -> Result<PathBuf, Error> {
-    let folder = instance_name.to_lowercase();
+    let folder = instance_name.trim().to_lowercase();
+    // The name is untrusted: an import fills it from the pack's own manifest.
+    // A separator or `..` here would put the instance outside the install
+    // directory, which the overrides extracted into it would then follow.
+    if !is_bare_file_name(&folder) {
+        return Err(Error::Invalid(format!(
+            "'{instance_name}' cannot be used as an instance name"
+        )));
+    }
     let instance_path = Path::new(install_dir).join(&folder);
     if instance_path.exists() {
         return Err(Error::Invalid(format!(

@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use crate::commands::instance::{
-    create_instance_dir, instance_meta_file, modlist_file, replace_modlist_entries_for_file_ids,
-    upsert_modlist_entries,
+    create_instance_dir, discard_unfinished_instance_dir, instance_meta_file, modlist_file,
+    replace_modlist_entries_for_file_ids, upsert_modlist_entries,
 };
 use crate::http_utils::{download_resource, fetch_json, rejected_status};
 use crate::install_task::ensure_game_and_loader;
@@ -769,20 +769,54 @@ pub async fn install_modpack(
         (settings.curseforge_api_key.clone(), settings.instance_install_dir.clone())
     };
     let instance_path = create_instance_dir(&install_dir, instance_name)?;
+    // Nothing usable exists until the instance record is written, so clear the
+    // directory on failure rather than leaving one the library never shows and
+    // that blocks retrying the same name — a missing API key gets this far.
+    let result = install_by_id(
+        app_handle,
+        id,
+        instance_name,
+        category,
+        source,
+        project_id,
+        file_id,
+        &api_key,
+        &instance_path,
+        state,
+    )
+    .await;
+    if result.is_err() {
+        discard_unfinished_instance_dir(&instance_path);
+    }
+    result
+}
 
+#[allow(clippy::too_many_arguments)]
+async fn install_by_id(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    category: String,
+    source: DownloadSource,
+    project_id: u32,
+    file_id: u32,
+    api_key: &str,
+    instance_path: &Path,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
     let prepared = prepare_modpack(
         app_handle,
         id,
         instance_name,
-        &instance_path,
+        instance_path,
         file_id,
-        &api_key,
+        api_key,
         state,
     ).await?;
 
     // Seed the instance description with the pack's own blurb. It is cosmetic,
     // so a failed lookup leaves it empty instead of failing the install.
-    let description = match fetch_project_summaries(&[project_id], &api_key, &state.http_client).await {
+    let description = match fetch_project_summaries(&[project_id], api_key, &state.http_client).await {
         Ok(projects) => projects
             .get(&project_id)
             .map(|project| project.summary.clone())
@@ -798,10 +832,10 @@ pub async fn install_modpack(
         id,
         instance_name,
         category,
-        &instance_path,
+        instance_path,
         prepared,
         InstallOrigin { source, description },
-        &api_key,
+        api_key,
         state,
     )
     .await
@@ -1015,12 +1049,39 @@ pub async fn install_modpack_from_file(
         (settings.curseforge_api_key.clone(), settings.instance_install_dir.clone())
     };
     let instance_path = create_instance_dir(&install_dir, instance_name)?;
+    let result = install_from_zip(
+        app_handle,
+        id,
+        instance_name,
+        category,
+        zip_path,
+        &api_key,
+        &instance_path,
+        state,
+    )
+    .await;
+    if result.is_err() {
+        discard_unfinished_instance_dir(&instance_path);
+    }
+    result
+}
 
+#[allow(clippy::too_many_arguments)]
+async fn install_from_zip(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    category: String,
+    zip_path: &Path,
+    api_key: &str,
+    instance_path: &Path,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
     let prepared = prepare_from_cached_zip(
         app_handle,
         id,
         instance_name,
-        &instance_path,
+        instance_path,
         zip_path,
         state,
     )
@@ -1035,10 +1096,10 @@ pub async fn install_modpack_from_file(
         id,
         instance_name,
         category,
-        &instance_path,
+        instance_path,
         prepared,
         InstallOrigin { source: DownloadSource::Manual, description },
-        &api_key,
+        api_key,
         state,
     )
     .await

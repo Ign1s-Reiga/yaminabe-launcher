@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::commands::instance::{create_instance_dir, instance_meta_file, upsert_modlist_entries};
+use crate::commands::instance::{
+    create_instance_dir, discard_unfinished_instance_dir, instance_meta_file,
+    upsert_modlist_entries,
+};
 use crate::emit_progress;
 use crate::http_utils::{download_resource, fetch_json};
 use crate::install_task::ensure_game_and_loader;
@@ -332,7 +335,12 @@ fn safe_destination(instance_path: &Path, relative: &str) -> Option<PathBuf> {
 /// Which tracked kind a path belongs to, so a failed download can be linked by
 /// hand into the right place. `None` for a path the modlist does not model.
 fn target_for(relative: &str) -> Option<ProjectFileTarget> {
-    match relative.split(['/', '\\']).next()? {
+    // Normalised the same way safe_destination does, so `./mods/x.jar` is not
+    // read as a different directory from `mods/x.jar` and left untracked.
+    let first = relative
+        .split(['/', '\\'])
+        .find(|part| !part.is_empty() && *part != "." && *part != ".." && !part.contains(':'))?;
+    match first {
         "mods" => Some(ProjectFileTarget::Mod),
         "resourcepacks" => Some(ProjectFileTarget::ResourcePack),
         "shaderpacks" => Some(ProjectFileTarget::ShaderPack),
@@ -361,6 +369,48 @@ pub fn read_local_modpack(zip_path: &Path) -> Result<LocalModpackInfo, Error> {
         mod_loader_version,
         file_count: index.files.len(),
     })
+}
+
+/// The name a path ends in, for the modlist.
+fn file_name_of(dest: &Path) -> String {
+    dest.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// A modlist row for a file that was never fetched, so the Mods tab can offer
+/// to link it by hand.
+fn unfetched_entry(path: &str, sha1: &str, target: ProjectFileTarget) -> ModListEntry {
+    ModListEntry {
+        file_name: file_name_of(Path::new(path)),
+        project_name: String::new(),
+        icon_url: None,
+        sha1: sha1.to_string(),
+        source: DownloadSource::Manual,
+        target,
+        size: 0,
+        state: ModState::DownloadFailed,
+    }
+}
+
+/// Try each URL the index lists in turn. They are mirrors of one file, so the
+/// first that works wins and only the last error is worth reporting.
+async fn download_from_mirrors(
+    file: &MrpackFile,
+    dest: &Path,
+    client: &reqwest::Client,
+) -> Result<(), Error> {
+    let mut last = Error::Invalid(format!("no download URL for {}", file.path));
+    for url in &file.downloads {
+        match download_resource(client, url, &file.hashes.sha1, dest.to_path_buf()).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                warn!("mirror {url} failed for {}: {e}", file.path);
+                last = e;
+            }
+        }
+    }
+    Err(last)
 }
 
 /// Extract every `overrides/` tree the pack ships. `client-overrides/` is
@@ -413,6 +463,34 @@ pub async fn install_modpack_from_file(
 ) -> Result<(), Error> {
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
     let instance_path = create_instance_dir(&install_dir, instance_name)?;
+    // Nothing usable exists until the instance record is written, so a failure
+    // partway through clears the directory rather than leaving one that the
+    // library never shows and that blocks retrying the same name.
+    let result = install_into(
+        app_handle,
+        id,
+        instance_name,
+        category,
+        zip_path,
+        &instance_path,
+        state,
+    )
+    .await;
+    if result.is_err() {
+        discard_unfinished_instance_dir(&instance_path);
+    }
+    result
+}
+
+async fn install_into(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    category: String,
+    zip_path: &Path,
+    instance_path: &Path,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
 
     let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path)?)
         .map_err(|e| Error::Invalid(format!("modpack zip is invalid: {e}")))?;
@@ -435,48 +513,45 @@ pub async fn install_modpack_from_file(
     )
     .await?;
 
-    emit_progress(app_handle, id, instance_name, "Extracting files", false, None);
-    extract_overrides(&mut archive, &instance_path)?;
-
     emit_progress(app_handle, id, instance_name, "Downloading mods", false, None);
     let mut modlist_entries: Vec<ModListEntry> = Vec::new();
     for file in index.files.iter().filter(|file| file.wanted_by_client()) {
-        let Some(dest) = safe_destination(&instance_path, &file.path) else {
-            warn!("skipping pack file with an unusable path: {}", file.path);
+        let target = target_for(&file.path);
+        // A file that cannot even be attempted is recorded the same way a failed
+        // download is, so the Mods tab offers to link it rather than the install
+        // reporting success with the file quietly absent.
+        let mut record_failure = |reason: String| {
+            warn!("{}: {reason}", file.path);
+            if let Some(target) = target {
+                modlist_entries.push(unfetched_entry(&file.path, &file.hashes.sha1, target));
+            }
+        };
+
+        let Some(dest) = safe_destination(instance_path, &file.path) else {
+            record_failure("unusable path".to_string());
             continue;
         };
-        let Some(url) = file.downloads.first() else {
-            warn!("no download URL for {}", file.path);
+        if file.downloads.is_empty() {
+            record_failure("no download URL".to_string());
             continue;
-        };
+        }
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        let file_name = dest
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let result = download_resource(&state.http_client, url, &file.hashes.sha1, dest).await;
-        let Some(target) = target_for(&file.path) else {
-            // Downloaded, but the modlist models mods and their neighbours only.
-            if let Err(e) = result {
-                warn!("download failed for {}: {e}", file.path);
-            }
-            continue;
-        };
-        let mod_state = match result {
+        let mod_state = match download_from_mirrors(file, &dest, &state.http_client).await {
             Ok(()) => ModState::Enabled,
             Err(e) => {
                 warn!("download failed for {}: {e}; marking for manual install", file.path);
                 ModState::DownloadFailed
             }
         };
+        let Some(target) = target else { continue };
         // Only mods are tracked once installed; anything else is tracked solely
         // to drive the link prompt when it could not be fetched.
         if target.tracks_modlist() || mod_state == ModState::DownloadFailed {
             modlist_entries.push(ModListEntry {
-                file_name,
+                file_name: file_name_of(&dest),
                 project_name: String::new(),
                 icon_url: None,
                 sha1: file.hashes.sha1.clone(),
@@ -488,8 +563,15 @@ pub async fn install_modpack_from_file(
         }
     }
 
+    // After the downloads, not before: the format has overrides win over what a
+    // pack lists, and download_resource replaces a file whose hash does not
+    // match — so extracting first would let the stock jar overwrite a patched
+    // one the pack deliberately ships.
+    emit_progress(app_handle, id, instance_name, "Extracting files", false, None);
+    extract_overrides(&mut archive, instance_path)?;
+
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
-    upsert_modlist_entries(&instance_path, modlist_entries)?;
+    upsert_modlist_entries(instance_path, modlist_entries)?;
 
     let meta = InstanceMeta {
         id: id.to_string(),
@@ -502,7 +584,7 @@ pub async fn install_modpack_from_file(
         category,
         ..InstanceMeta::default()
     };
-    write_json(instance_meta_file(&instance_path), &meta)?;
+    write_json(instance_meta_file(instance_path), &meta)?;
 
     info!(
         "Installed '{}' from {} (MC {}, {})",
