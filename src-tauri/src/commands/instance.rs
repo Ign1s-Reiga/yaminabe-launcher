@@ -86,6 +86,19 @@ pub fn is_bare_file_name(name: &str) -> bool {
         && !name.contains(':')
 }
 
+/// Remove a directory that was created for an instance that never finished
+/// installing. Only ever touches one with no metadata file, so a real instance
+/// cannot be deleted this way; leaving it would block retrying the same name,
+/// while the library would never show it to be deleted by hand.
+pub fn discard_unfinished_instance_dir(instance_path: &Path) {
+    if instance_meta_file(instance_path).exists() {
+        return;
+    }
+    if let Err(e) = std::fs::remove_dir_all(instance_path) {
+        warn!("cannot clear {} after a failed install: {e}", instance_path.display());
+    }
+}
+
 fn sort_modlist(entries: &mut [ModListEntry]) {
     entries.sort_by(|a, b| a.file_name.to_lowercase().cmp(&b.file_name.to_lowercase()));
 }
@@ -153,11 +166,11 @@ pub async fn create_instance(
     }
 
     step!("Preparing directories");
-    let instance_path = PathBuf::from(&state.settings.read().unwrap().instance_install_dir).join(name.to_lowercase());
-    if instance_path.exists() {
-        fail!(Error::Invalid(format!("folder '{}' already exists at this location", name.to_lowercase())));
-    }
-    if let Err(e) = std::fs::create_dir_all(&instance_path) { fail!(Error::IO(e)); }
+    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
+    let instance_path = match create_instance_dir(&install_dir, &name) {
+        Ok(path) => path,
+        Err(e) => fail!(e),
+    };
 
     for dir in [versions_dir(), libraries_dir()] {
         if let Err(e) = std::fs::create_dir_all(dir) { fail!(Error::IO(e)); }
