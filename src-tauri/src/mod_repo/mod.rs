@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::AppState;
+use crate::commands::instance::is_bare_file_name;
 use crate::http_utils::download_resource;
 use log::warn;
 use reqwest::Client;
@@ -9,7 +10,7 @@ use tauri::State;
 use yaminabe_launcher_shared::datamodels::ModState;
 use yaminabe_launcher_shared::datamodels::{
     DownloadSource, LocalModpackInfo, ModListEntry, ModLoader, ModProjectSearchResults,
-    ModpackFormat, Platform, ProjectFileInfo, ProjectFileTarget, SearchOptions,
+    ModpackFormat, Platform, ProjectFileInfo, ProjectFileTarget, ProjectId, SearchOptions,
 };
 use yaminabe_launcher_shared::error::Error;
 
@@ -27,8 +28,11 @@ pub async fn search_projects(
     }
 }
 
+/// List one project's downloadable files. The id names its own platform, so a
+/// Modrinth project cannot be sent to a CurseForge endpoint that could not
+/// answer for it.
 pub async fn list_project_files(
-    mod_id: u32,
+    project_id: ProjectId,
     target: ProjectFileTarget,
     game_version: Option<String>,
     mod_loader: Option<ModLoader>,
@@ -36,16 +40,31 @@ pub async fn list_project_files(
     client: &Client,
     api_key: &str,
 ) -> Result<Vec<ProjectFileInfo>, Error> {
-    curseforge::list_project_files(
-        mod_id,
-        target,
-        game_version.as_deref(),
-        mod_loader.as_ref(),
-        index,
-        client,
-        api_key,
-    )
-    .await
+    match &project_id {
+        ProjectId::CurseForge(mod_id) => {
+            curseforge::list_project_files(
+                *mod_id,
+                target,
+                game_version.as_deref(),
+                mod_loader.as_ref(),
+                index,
+                client,
+                api_key,
+            )
+            .await
+        }
+        ProjectId::Modrinth(id) => {
+            modrinth::list_project_files(
+                id,
+                target,
+                game_version.as_deref(),
+                mod_loader.as_ref(),
+                index,
+                client,
+            )
+            .await
+        }
+    }
 }
 
 pub async fn install_modpack(
@@ -61,9 +80,9 @@ pub async fn install_modpack(
             curseforge::install_modpack(app_handle, id, instance_name, category, source, state)
                 .await
         }
-        DownloadSource::Modrinth { .. } => Err(Error::Unsupported(
-            "Modrinth modpack installation is not yet supported".to_string(),
-        )),
+        DownloadSource::Modrinth { .. } => {
+            modrinth::install_modpack(app_handle, id, instance_name, category, source, state).await
+        }
         DownloadSource::Manual => Err(Error::Unsupported(
             "manual modpack installation is not yet supported".to_string(),
         )),
@@ -151,7 +170,15 @@ async fn download_project_file(
     let dest = dir.join(&file.file_name);
     let written = dest.clone();
 
-    let download_result = if file.sha1.is_empty() {
+    let download_result = if !is_bare_file_name(&file.file_name) {
+        // The name is the site's, not ours. A name that would escape its own
+        // directory is recorded like any other unfetchable file rather than
+        // aborting the batch — link_mods applies the same guard before writing.
+        Err(Error::Invalid(format!(
+            "project file '{}' is not a plain file name",
+            file.file_name
+        )))
+    } else if file.sha1.is_empty() {
         Err(Error::Invalid(format!(
             "project file {} has no SHA-1 hash",
             file.file_name

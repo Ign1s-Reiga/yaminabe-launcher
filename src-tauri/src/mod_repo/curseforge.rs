@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use crate::commands::instance::{
-    create_instance_dir, discard_unfinished_instance_dir, instance_meta_file, modlist_file,
-    replace_modlist_entries_for_file_ids, upsert_modlist_entries,
+    create_instance_dir, discard_unfinished_instance_dir, instance_meta_file, is_bare_file_name,
+    modlist_file, replace_modlist_entries_for_file_ids, upsert_modlist_entries,
 };
 use crate::http_utils::{download_resource, fetch_json, rejected_status};
 use crate::install_task::ensure_game_and_loader;
@@ -16,8 +16,8 @@ use serde::Deserialize;
 use tauri::State;
 use yaminabe_launcher_shared::datamodels::{
     DownloadSource, InstanceMeta, LocalModpackInfo, ModListEntry, ModLoader, ModProjectInfo,
-    ModProjectSearchResults, ModState, ModpackFormat, Platform, ProjectFileInfo,
-    ProjectFileTarget, SearchOptions,
+    ModProjectSearchResults, ModState, ModpackFormat, ProjectFileInfo,
+    ProjectFileTarget, ProjectId, SearchOptions,
 };
 use yaminabe_launcher_shared::error::Error;
 
@@ -152,11 +152,7 @@ struct ProjectSummary {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FilesIndex {
-    #[serde(default)]
-    file_id: u32,
     game_version: String,
-    #[serde(default)]
-    mod_loader: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -203,29 +199,7 @@ struct ModLoaderVersion {
     primary: bool,
 }
 
-/// The newest `latestFilesIndexes` entry compatible with `mc_version` and
-/// `mod_loader` — the file the Add Mod button actually downloads. Loader-
-/// agnostic entries (no `modLoader`) are accepted for any loader. `None` when
-/// nothing listed fits, so the project is left non-installable rather than
-/// offering a file for the wrong version or loader.
-fn compatible_file_id(
-    indexes: &[FilesIndex],
-    mc_version: &str,
-    mod_loader: &ModLoader,
-) -> Option<u32> {
-    indexes
-        .iter()
-        .find(|f| {
-            f.game_version == mc_version && (f.mod_loader == mod_loader.mod_loader_id() || f.mod_loader.is_none())
-        })
-        .map(|f| f.file_id)
-        .filter(|id| *id != 0)
-}
-
-fn to_search_results(
-    body: CurseForgeArrayResponse<SearchModsEntry>,
-    compat: Option<(&str, &ModLoader)>,
-) -> ModProjectSearchResults {
+fn to_search_results(body: CurseForgeArrayResponse<SearchModsEntry>) -> ModProjectSearchResults {
     let total = body.pagination.total_count;
     let items: Vec<ModProjectInfo> = body
         .data
@@ -246,23 +220,8 @@ fn to_search_results(
             categories.sort_by_key(|c| if c.id == primary_category_id { 0 } else { 1 });
             let category: Vec<String> = categories.into_iter().map(|c| c.name).collect();
 
-            // Mods: pick the file matching the searched version/loader. Modpack
-            // search has no such filter, so fall back to the latest file.
-            let file_id = match compat {
-                Some((mc_version, mod_loader)) => {
-                    compatible_file_id(&m.latest_files_indexes, mc_version, mod_loader)
-                }
-                None => m
-                    .latest_files_indexes
-                    .first()
-                    .map(|f| f.file_id)
-                    .filter(|id| *id != 0),
-            };
-
             ModProjectInfo {
-                id: m.id,
-                platform: Platform::CurseForge,
-                file_id,
+                id: ProjectId::CurseForge(m.id),
                 name: m.name,
                 summary: m.summary,
                 logo_url: m.logo.map(|l| l.url),
@@ -322,13 +281,7 @@ pub async fn search_projects(
         .send::<CurseForgeArrayResponse<SearchModsEntry>>()
         .await?;
 
-    // Pick the version/loader-matching file only when both are known (mod
-    // search); otherwise keep the latest file.
-    let compat = match (option.game_version.as_deref(), option.mod_loader.as_ref()) {
-        (Some(version), Some(loader)) => Some((version, loader)),
-        _ => None,
-    };
-    Ok(to_search_results(body, compat))
+    Ok(to_search_results(body))
 }
 
 pub async fn list_project_files(
@@ -630,6 +583,14 @@ async fn prepare_modpack(
             file.file_name
         ))
     })?;
+    // The name comes from the API, not from us; refuse one that would stage the
+    // zip outside the instance's cache directory.
+    if !is_bare_file_name(&file.file_name) {
+        return Err(Error::Invalid(format!(
+            "CurseForge file {file_id} names itself '{}'",
+            file.file_name
+        )));
+    }
     let cache_path = instance_path
         .join(file.target.directory())
         .join(&file.file_name);

@@ -12,7 +12,7 @@ use tauri_plugin_opener::OpenerExt;
 use yaminabe_launcher_shared::datamodels::{
     DownloadSource, InstanceMeta, LocalModpackInfo, ModListEntry, ModLoader,
     ModProjectSearchResults, ModState, Platform, ProjectFileInfo, ProjectFileTarget,
-    ProjectSortField, SearchOptions,
+    ProjectId, ProjectSortField, SearchOptions,
 };
 use yaminabe_launcher_shared::error::Error;
 
@@ -27,7 +27,7 @@ pub async fn search_projects(
 
 #[tauri::command]
 pub async fn list_project_files(
-    mod_id: u32,
+    project_id: ProjectId,
     target: ProjectFileTarget,
     game_version: Option<String>,
     mod_loader: Option<ModLoader>,
@@ -36,7 +36,7 @@ pub async fn list_project_files(
 ) -> Result<Vec<ProjectFileInfo>, Error> {
     let api_key = state.settings.read().unwrap().curseforge_api_key.clone();
     mod_repo::list_project_files(
-        mod_id,
+        project_id,
         target,
         game_version,
         mod_loader,

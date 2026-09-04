@@ -7,9 +7,7 @@ use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{IntoView, component, view, web_sys};
 use wasm_bindgen::JsCast;
-use yaminabe_launcher_shared::datamodels::{
-    AppSettings, ModProjectInfo, Platform, ProjectFileTarget,
-};
+use yaminabe_launcher_shared::datamodels::{AppSettings, ModProjectInfo, ProjectFileTarget};
 
 const PAGE_SIZE: usize = 50;
 
@@ -34,13 +32,8 @@ pub fn SearchPage() -> impl IntoView {
     });
 
     let open_install = move |pack: ModProjectInfo| {
-        // Modpack install is CurseForge-only for now; Modrinth search results
-        // are display-only.
-        if pack.platform != Platform::CurseForge {
-            return;
-        }
         install_name.set(pack.name.clone());
-        let mod_id = pack.id;
+        let project_id = pack.id.clone();
         install.set(Some(InstallState {
             pack,
             version: String::new(),
@@ -50,12 +43,12 @@ pub fn SearchPage() -> impl IntoView {
             versions_done: false,
         }));
         leptos::task::spawn_local(async move {
-            match call_list_project_files(mod_id, ProjectFileTarget::Modpack, None, None, 0).await {
+            match call_list_project_files(project_id, ProjectFileTarget::Modpack, None, None, 0).await
+            {
                 Ok(files) => {
                     let first_version = files
                         .first()
-                        .and_then(|f| f.source.curseforge_ids())
-                        .map(|(_, id)| id.to_string())
+                        .and_then(|f| f.source.version_key())
                         .unwrap_or_default();
                     install.update(|opt| {
                         if let Some(s) = opt {
@@ -96,7 +89,7 @@ pub fn SearchPage() -> impl IntoView {
         if state.versions_loading || state.versions_done {
             return;
         }
-        let mod_id = state.pack.id;
+        let project_id = state.pack.id.clone();
         let index = state.versions.len() as u32;
         install.update(|opt| {
             if let Some(s) = opt {
@@ -105,7 +98,7 @@ pub fn SearchPage() -> impl IntoView {
             }
         });
         leptos::task::spawn_local(async move {
-            match call_list_project_files(mod_id, ProjectFileTarget::Modpack, None, None, index)
+            match call_list_project_files(project_id, ProjectFileTarget::Modpack, None, None, index)
                 .await
             {
                 Ok(mut files) => {
@@ -154,16 +147,11 @@ pub fn SearchPage() -> impl IntoView {
             return;
         }
 
-        let version_id: u32 = data
-            .get("version")
-            .as_string()
-            .unwrap_or_default()
-            .parse()
-            .unwrap_or(0);
+        let version_key = data.get("version").as_string().unwrap_or_default();
         let Some(ver) = state
             .versions
             .into_iter()
-            .find(|v| v.source.curseforge_ids().map(|(_, id)| id) == Some(version_id))
+            .find(|v| v.source.version_key().as_deref() == Some(version_key.as_str()))
         else {
             return;
         };
@@ -195,7 +183,7 @@ pub fn SearchPage() -> impl IntoView {
       <div class=page_root>
         <h1 style="margin: 0 0 8px 0; flex-shrink: 0;">"# Search"</h1>
         <h2 style="margin: 0 0 24px 0; font-size: 0.95rem; font-weight: 400; opacity: 0.55; flex-shrink: 0;">
-            "Browse and install modpacks directly from CurseForge."
+            "Browse and install modpacks directly from CurseForge or Modrinth."
         </h2>
 
         <ProjectSearch

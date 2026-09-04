@@ -11,7 +11,7 @@ use leptos::{IntoView, component, view, web_sys};
 use std::collections::HashSet;
 use wasm_bindgen::JsCast;
 use yaminabe_launcher_shared::datamodels::{
-    ModListEntry, ModLoader, ModProjectInfo, ModState, Platform, ProjectFileInfo, ProjectFileTarget,
+    ModListEntry, ModLoader, ModProjectInfo, ModState, ProjectFileInfo, ProjectFileTarget, ProjectId,
 };
 
 /// Human-readable file size.
@@ -216,10 +216,10 @@ fn AddModModal(
     let versions_error: RwSignal<Option<String>> = RwSignal::new(None);
     let versions_done: RwSignal<bool> = RwSignal::new(false);
     let selected_file_id: RwSignal<String> = RwSignal::new(String::new());
-    let installing: RwSignal<HashSet<u32>> = RwSignal::new(HashSet::new());
-    let installed: RwSignal<HashSet<u32>> = RwSignal::new(HashSet::new());
+    let installing: RwSignal<HashSet<ProjectId>> = RwSignal::new(HashSet::new());
+    let installed: RwSignal<HashSet<ProjectId>> = RwSignal::new(HashSet::new());
 
-    let load_versions = move |project_id: u32, append: bool| {
+    let load_versions = move |project_id: ProjectId, append: bool| {
         if versions_loading.get_untracked() || (append && versions_done.get_untracked()) {
             return;
         }
@@ -256,8 +256,7 @@ fn AddModModal(
                     } else {
                         let first_id = files
                             .first()
-                            .and_then(|file| file.source.curseforge_ids())
-                            .map(|(_, file_id)| file_id.to_string())
+                            .and_then(|file| file.source.version_key())
                             .unwrap_or_default();
                         selected_file_id.set(first_id);
                         versions.set(files);
@@ -273,30 +272,27 @@ fn AddModModal(
     };
 
     let on_details = move |project: ModProjectInfo| {
-        // The version/download flow is CurseForge-only for now; Modrinth search
-        // results are display-only.
-        if project.platform != Platform::CurseForge {
-            return;
-        }
-        let project_id = project.id;
+        let project_id = project.id.clone();
         selected_project.set(Some(project));
         load_versions(project_id, false);
     };
 
-    let on_add = move |project_id: u32| {
+    let on_add = move |project_id: ProjectId| {
         if installing.get_untracked().contains(&project_id)
             || installed.get_untracked().contains(&project_id)
         {
             return;
         }
-        let file_id = selected_file_id.get_untracked();
-        let Some(file) = versions.get_untracked().into_iter().find(|file| {
-            file.source.curseforge_ids().map(|(_, id)| id.to_string()) == Some(file_id.clone())
-        }) else {
+        let version_key = selected_file_id.get_untracked();
+        let Some(file) = versions
+            .get_untracked()
+            .into_iter()
+            .find(|file| file.source.version_key().as_deref() == Some(version_key.as_str()))
+        else {
             return;
         };
         installing.update(|s| {
-            s.insert(project_id);
+            s.insert(project_id.clone());
         });
         let id = instance_id.get_value();
         leptos::task::spawn_local(async move {
@@ -307,7 +303,7 @@ fn AddModModal(
             match result {
                 Ok(()) => {
                     installed.update(|s| {
-                        s.insert(project_id);
+                        s.insert(project_id.clone());
                     });
                     on_installed.run(());
                 }
@@ -402,7 +398,7 @@ fn AddModModal(
                     </div>
 
                     {move || selected_project.get().map(|project| {
-                        let pid = project.id;
+                        let pid = StoredValue::new(project.id.clone());
                         let logo_view = if let Some(url) = project.logo_url.clone() {
                             view! { <img class=logo src=url alt="" /> }.into_any()
                         } else {
@@ -434,13 +430,12 @@ fn AddModModal(
                                                     else { return; };
                                                     let remaining = list.scroll_height() - list.scroll_top() - list.client_height();
                                                     if remaining <= 8 {
-                                                        load_versions(pid, true);
+                                                        load_versions(pid.get_value(), true);
                                                     }
                                                 }
                                             >
                                                 {move || versions.get().into_iter().map(|file| {
-                                                    let value = file.source.curseforge_ids()
-                                                        .map(|(_, id)| id.to_string())
+                                                    let value = file.source.version_key()
                                                         .unwrap_or_default();
                                                     let picked = value.clone();
                                                     view! {
@@ -469,14 +464,14 @@ fn AddModModal(
                                                     disabled=Signal::derive(move || {
                                                         selected_file_id.get().is_empty()
                                                             || versions_loading.get()
-                                                            || installing.get().contains(&pid)
-                                                            || installed.get().contains(&pid)
+                                                            || installing.get().contains(&pid.get_value())
+                                                            || installed.get().contains(&pid.get_value())
                                                     })
-                                                    on_click=Callback::new(move |_| on_add(pid))
+                                                    on_click=Callback::new(move |_| on_add(pid.get_value()))
                                                 >
-                                                    {move || if installed.get().contains(&pid) {
+                                                    {move || if installed.get().contains(&pid.get_value()) {
                                                         "Added"
-                                                    } else if installing.get().contains(&pid) {
+                                                    } else if installing.get().contains(&pid.get_value()) {
                                                         "Adding…"
                                                     } else {
                                                         "Add"

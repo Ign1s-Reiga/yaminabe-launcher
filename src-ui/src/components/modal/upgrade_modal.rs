@@ -6,7 +6,9 @@ use leptos::prelude::*;
 use leptos::{IntoView, component, view, web_sys};
 use leptos_router::hooks::use_navigate;
 use wasm_bindgen::JsCast;
-use yaminabe_launcher_shared::datamodels::{DownloadSource, ProjectFileInfo, ProjectFileTarget};
+use yaminabe_launcher_shared::datamodels::{
+    DownloadSource, ProjectFileInfo, ProjectFileTarget, ProjectId,
+};
 
 const PAGE_SIZE: usize = 50;
 
@@ -36,7 +38,14 @@ pub fn UpgradeModpackModal(
     let navigate = StoredValue::new(use_navigate());
 
     leptos::task::spawn_local(async move {
-        match call_list_project_files(project_id, ProjectFileTarget::Modpack, None, None, 0).await {
+        match call_list_project_files(
+            ProjectId::CurseForge(project_id),
+            ProjectFileTarget::Modpack,
+            None,
+            None,
+            0,
+        )
+        .await {
             Ok(list) => {
                 // Default to the newest file strictly newer than the installed one.
                 let default = list
@@ -65,8 +74,14 @@ pub fn UpgradeModpackModal(
         loading.set(true);
         error.set(None);
         leptos::task::spawn_local(async move {
-            match call_list_project_files(project_id, ProjectFileTarget::Modpack, None, None, index)
-                .await
+            match call_list_project_files(
+                ProjectId::CurseForge(project_id),
+                ProjectFileTarget::Modpack,
+                None,
+                None,
+                index,
+            )
+            .await
             {
                 Ok(mut list) => {
                     done.set(list.len() < PAGE_SIZE);

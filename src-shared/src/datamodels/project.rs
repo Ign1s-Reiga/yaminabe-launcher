@@ -35,6 +35,17 @@ impl DownloadSource {
             _ => None,
         }
     }
+
+    /// The file half of this source as a string, so a version picker can carry
+    /// a pick through a form without knowing which platform listed it. `None`
+    /// for a hand-added file, which no version list offers.
+    pub fn version_key(&self) -> Option<String> {
+        match self {
+            DownloadSource::CurseForge { file_id, .. } => Some(file_id.to_string()),
+            DownloadSource::Modrinth { version_id, .. } => Some(version_id.clone()),
+            DownloadSource::Manual => None,
+        }
+    }
 }
 
 /// Which kind of project file is being searched, listed, or downloaded.
@@ -108,6 +119,45 @@ impl ProjectFileTarget {
             "datapack" => ProjectFileTarget::DataPack,
             "modpack" => ProjectFileTarget::Modpack,
             _ => ProjectFileTarget::Mod,
+        }
+    }
+}
+
+/// Which project a search result names, on whichever platform it came from.
+///
+/// The two platforms identify projects differently — CurseForge numerically,
+/// Modrinth by an opaque string — so the id carries its platform rather than
+/// sitting beside a separate field that could disagree with it. This mirrors
+/// how `DownloadSource` already splits a file's identity.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "platform", content = "id")]
+pub enum ProjectId {
+    CurseForge(u32),
+    Modrinth(String),
+}
+
+impl ProjectId {
+    pub fn platform(&self) -> Platform {
+        match self {
+            ProjectId::CurseForge(_) => Platform::CurseForge,
+            ProjectId::Modrinth(_) => Platform::Modrinth,
+        }
+    }
+
+    /// The numeric id, for the CurseForge API. `None` for any other platform,
+    /// so a Modrinth project cannot reach an endpoint that cannot serve it.
+    pub fn curseforge(&self) -> Option<u32> {
+        match self {
+            ProjectId::CurseForge(id) => Some(*id),
+            _ => None,
+        }
+    }
+
+    /// The string id, for the Modrinth API.
+    pub fn modrinth(&self) -> Option<&str> {
+        match self {
+            ProjectId::Modrinth(id) => Some(id),
+            _ => None,
         }
     }
 }
@@ -202,11 +252,8 @@ pub struct SearchOptions {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModProjectInfo {
-    pub id: u32,
-    #[serde(default)]
-    pub platform: Platform,
-    #[serde(default)]
-    pub file_id: Option<u32>,
+    /// Names the project and the platform it lives on together.
+    pub id: ProjectId,
     pub name: String,
     pub summary: String,
     pub logo_url: Option<String>,
