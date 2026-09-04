@@ -11,7 +11,7 @@ use crate::install_task::ensure_game_and_loader;
 use crate::json::write_json;
 use crate::AppState;
 use log::{info, warn};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 use yaminabe_launcher_shared::datamodels::{
     DownloadSource, InstanceMeta, LocalModpackInfo, ModListEntry, ModLoader, ModProjectInfo,
@@ -522,6 +522,130 @@ fn extract_overrides<R: std::io::Read + std::io::Seek>(
     Ok(())
 }
 
+/// What Modrinth knows about a file the pack shipped, found by its hash.
+struct ResolvedFile {
+    project_id: String,
+    version_id: String,
+    project_name: String,
+    icon_url: Option<String>,
+}
+
+#[derive(Serialize)]
+struct HashQuery<'a> {
+    hashes: &'a [String],
+    algorithm: &'a str,
+}
+
+#[derive(Deserialize)]
+struct ProjectSummary {
+    id: String,
+    title: String,
+    #[serde(default)]
+    icon_url: Option<String>,
+}
+
+/// How many hashes or ids one bulk request carries.
+const BULK_CHUNK: usize = 100;
+
+/// Identify a pack's files on Modrinth by SHA-1.
+///
+/// A `.mrpack` index lists URLs and hashes but names no project, so an installed
+/// pack would otherwise show jar file names with no icons. Two bulk lookups close
+/// that gap: hashes to versions, then those versions' projects to names and icons.
+///
+/// This is cosmetic. A failed lookup logs and yields nothing for the files it
+/// covered, leaving them named by their file — never failing an install whose
+/// files are already on disk.
+async fn resolve_by_hash(
+    hashes: Vec<String>,
+    client: &reqwest::Client,
+) -> HashMap<String, ResolvedFile> {
+    let mut versions: HashMap<String, Version> = HashMap::new();
+    for chunk in hashes.chunks(BULK_CHUNK) {
+        let query = HashQuery { hashes: chunk, algorithm: "sha1" };
+        match fetch_json(client, "https://api.modrinth.com/v2/version_files")
+            .method(reqwest::Method::POST)
+            .payload(&query)
+            .send::<HashMap<String, Version>>()
+            .await
+        {
+            Ok(found) => versions.extend(found),
+            Err(e) => warn!("Modrinth hash lookup failed for {} files: {e}", chunk.len()),
+        }
+    }
+    if versions.is_empty() {
+        return HashMap::new();
+    }
+
+    let mut ids: Vec<String> = versions
+        .values()
+        .map(|version| version.project_id.clone())
+        .collect();
+    ids.sort();
+    ids.dedup();
+
+    let mut projects: HashMap<String, ProjectSummary> = HashMap::new();
+    for chunk in ids.chunks(BULK_CHUNK) {
+        let Ok(encoded) = serde_json::to_string(chunk) else {
+            continue;
+        };
+        match fetch_json(client, "https://api.modrinth.com/v2/projects")
+            .query(&[("ids", encoded.as_str())])
+            .send::<Vec<ProjectSummary>>()
+            .await
+        {
+            Ok(found) => projects.extend(
+                found
+                    .into_iter()
+                    .map(|project| (project.id.clone(), project)),
+            ),
+            Err(e) => warn!("Modrinth project lookup failed for {} ids: {e}", chunk.len()),
+        }
+    }
+
+    versions
+        .into_iter()
+        .map(|(sha1, version)| {
+            let project = projects.get(&version.project_id);
+            let resolved = ResolvedFile {
+                project_name: project.map(|p| p.title.clone()).unwrap_or_default(),
+                icon_url: project.and_then(|p| p.icon_url.clone()),
+                project_id: version.project_id,
+                version_id: version.id,
+            };
+            (sha1.to_ascii_lowercase(), resolved)
+        })
+        .collect()
+}
+
+/// Name the pack's files after the projects they come from, so the Mods tab
+/// shows "Sodium" with its icon rather than `sodium-fabric-0.5.8.jar`. Also
+/// records where each file came from, which the index alone cannot say — a
+/// failed entry can then link to its project page.
+async fn name_entries_by_project(entries: &mut [ModListEntry], client: &reqwest::Client) {
+    let hashes: Vec<String> = entries
+        .iter()
+        .filter(|entry| !entry.sha1.is_empty())
+        .map(|entry| entry.sha1.to_ascii_lowercase())
+        .collect();
+    if hashes.is_empty() {
+        return;
+    }
+
+    let resolved = resolve_by_hash(hashes, client).await;
+    for entry in entries.iter_mut() {
+        let Some(found) = resolved.get(&entry.sha1.to_ascii_lowercase()) else {
+            continue;
+        };
+        entry.project_name = found.project_name.clone();
+        entry.icon_url = found.icon_url.clone();
+        entry.source = DownloadSource::Modrinth {
+            project_id: found.project_id.clone(),
+            version_id: found.version_id.clone(),
+        };
+    }
+}
+
 /// Install a `.mrpack` from disk. Each file is fetched straight from the URLs
 /// the index lists and verified against its hash, so nothing here needs an API
 /// key. A file that cannot be fetched is recorded rather than aborting the
@@ -656,6 +780,7 @@ async fn install_into(
     extract_overrides(&mut archive, instance_path)?;
 
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
+    name_entries_by_project(&mut modlist_entries, &state.http_client).await;
     upsert_modlist_entries(instance_path, modlist_entries)?;
 
     // The pack's own blurb where it ships one; its name is all a pack without a
