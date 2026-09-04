@@ -262,6 +262,10 @@ struct MrpackFile {
     /// Mirrors to try in order; the first that works wins.
     #[serde(default)]
     downloads: Vec<String>,
+    /// What the index says the file weighs. Recorded even for a file that could
+    /// not be fetched, so the Mods tab can show what is missing rather than 0 B.
+    #[serde(default)]
+    file_size: u64,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -380,15 +384,15 @@ fn file_name_of(dest: &Path) -> String {
 
 /// A modlist row for a file that was never fetched, so the Mods tab can offer
 /// to link it by hand.
-fn unfetched_entry(path: &str, sha1: &str, target: ProjectFileTarget) -> ModListEntry {
+fn unfetched_entry(file: &MrpackFile, target: ProjectFileTarget) -> ModListEntry {
     ModListEntry {
-        file_name: file_name_of(Path::new(path)),
+        file_name: file_name_of(Path::new(&file.path)),
         project_name: String::new(),
         icon_url: None,
-        sha1: sha1.to_string(),
+        sha1: file.hashes.sha1.clone(),
         source: DownloadSource::Manual,
         target,
-        size: 0,
+        size: file.file_size,
         state: ModState::DownloadFailed,
     }
 }
@@ -523,7 +527,7 @@ async fn install_into(
         let mut record_failure = |reason: String| {
             warn!("{}: {reason}", file.path);
             if let Some(target) = target {
-                modlist_entries.push(unfetched_entry(&file.path, &file.hashes.sha1, target));
+                modlist_entries.push(unfetched_entry(file, target));
             }
         };
 
@@ -550,6 +554,12 @@ async fn install_into(
         // Only mods are tracked once installed; anything else is tracked solely
         // to drive the link prompt when it could not be fetched.
         if target.tracks_modlist() || mod_state == ModState::DownloadFailed {
+            // The index states a size; fall back to the file itself when it
+            // does not, so a mod never lists as 0 B once it is on disk.
+            let size = match (file.file_size, mod_state) {
+                (0, ModState::Enabled) => std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0),
+                (size, _) => size,
+            };
             modlist_entries.push(ModListEntry {
                 file_name: file_name_of(&dest),
                 project_name: String::new(),
@@ -557,7 +567,7 @@ async fn install_into(
                 sha1: file.hashes.sha1.clone(),
                 source: DownloadSource::Manual,
                 target,
-                size: 0,
+                size,
                 state: mod_state,
             });
         }
