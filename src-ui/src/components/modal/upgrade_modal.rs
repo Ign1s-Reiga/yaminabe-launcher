@@ -6,55 +6,69 @@ use leptos::prelude::*;
 use leptos::{IntoView, component, view, web_sys};
 use leptos_router::hooks::use_navigate;
 use wasm_bindgen::JsCast;
-use yaminabe_launcher_shared::datamodels::{
-    DownloadSource, ProjectFileInfo, ProjectFileTarget, ProjectId,
-};
+use yaminabe_launcher_shared::datamodels::{ProjectFileInfo, ProjectFileTarget, ProjectId};
 
 const PAGE_SIZE: usize = 50;
 
-/// The CurseForge file id behind a resolved file. Upgrade is CurseForge-only,
-/// so a (never-expected) non-CurseForge source sorts as 0.
-fn file_id(file: &ProjectFileInfo) -> u32 {
-    file.source.curseforge_ids().map(|(_, id)| id).unwrap_or(0)
-}
-
-/// Version picker for upgrading a CurseForge-origin instance to a newer modpack
-/// file. Fetches the project's file list, lets the user pick a newer file (older
-/// and the current file are disabled), and kicks off the upgrade — whose
-/// progress flows through the install sidebar.
+/// Version picker for upgrading a modpack instance to a newer pack file.
+///
+/// Age comes from position, not from the ids: the backend returns a project's
+/// files newest-first on both platforms, so everything above the installed
+/// version is newer than it. CurseForge file ids happen to sort that way and
+/// Modrinth version ids do not, so comparing ids would only work on one.
 #[component]
 pub fn UpgradeModpackModal(
     instance_id: String,
-    project_id: u32,
-    current_file_id: u32,
+    project_id: ProjectId,
+    /// The installed file, as `DownloadSource::version_key` spells it.
+    current_version: String,
     on_close: Callback<()>,
 ) -> impl IntoView {
     let files: RwSignal<Vec<ProjectFileInfo>> = RwSignal::new(vec![]);
     let loading: RwSignal<bool> = RwSignal::new(true);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
     let done: RwSignal<bool> = RwSignal::new(false);
-    let selected: RwSignal<u32> = RwSignal::new(0);
+    let selected: RwSignal<String> = RwSignal::new(String::new());
     let instance_id = StoredValue::new(instance_id);
+    let project_id = StoredValue::new(project_id);
+    let current_version = StoredValue::new(current_version);
     let navigate = StoredValue::new(use_navigate());
+
+    // How far down the list the installed version sits. `None` while the list is
+    // still short of it, which is also what a version the site has withdrawn
+    // looks like — either way nothing loaded so far is older than it.
+    let current_index = Memo::new(move |_| {
+        let installed = current_version.get_value();
+        files
+            .get()
+            .iter()
+            .position(|file| file.source.version_key().as_deref() == Some(installed.as_str()))
+    });
+
+    let is_older = move |index: usize| current_index.get().is_some_and(|current| index >= current);
 
     leptos::task::spawn_local(async move {
         match call_list_project_files(
-            ProjectId::CurseForge(project_id),
+            project_id.get_value(),
             ProjectFileTarget::Modpack,
             None,
             None,
             0,
         )
-        .await {
+        .await
+        {
             Ok(list) => {
-                // Default to the newest file strictly newer than the installed one.
-                let default = list
-                    .iter()
-                    .map(file_id)
-                    .filter(|id| *id > current_file_id)
-                    .max()
-                    .unwrap_or(0);
-                selected.set(default);
+                // The list is newest-first, so the newest upgrade target is the
+                // top of it — unless the top is what is already installed.
+                let installed = current_version.get_value();
+                let newest = list
+                    .first()
+                    .filter(|file| {
+                        file.source.version_key().as_deref() != Some(installed.as_str())
+                    })
+                    .and_then(|file| file.source.version_key())
+                    .unwrap_or_default();
+                selected.set(newest);
                 done.set(list.len() < PAGE_SIZE);
                 files.set(list);
                 loading.set(false);
@@ -75,7 +89,7 @@ pub fn UpgradeModpackModal(
         error.set(None);
         leptos::task::spawn_local(async move {
             match call_list_project_files(
-                ProjectId::CurseForge(project_id),
+                project_id.get_value(),
                 ProjectFileTarget::Modpack,
                 None,
                 None,
@@ -96,24 +110,31 @@ pub fn UpgradeModpackModal(
         });
     };
 
-    // Loaded, with nothing newer than the installed file to offer.
+    // Loaded, with nothing above the installed version to offer.
     let up_to_date = Signal::derive(move || {
-        !loading.get()
-            && error.get().is_none()
-            && files.get().iter().all(|f| file_id(f) <= current_file_id)
+        !loading.get() && error.get().is_none() && current_index.get() == Some(0)
     });
-    let can_upgrade = Signal::derive(move || selected.get() > current_file_id);
+    let can_upgrade = Signal::derive(move || {
+        let picked = selected.get();
+        !picked.is_empty() && picked != current_version.get_value()
+    });
 
     let on_confirm = move |_ev: leptos::web_sys::MouseEvent| {
-        let target_id = selected.get_untracked();
-        if target_id <= current_file_id {
+        let picked = selected.get_untracked();
+        if picked.is_empty() || picked == current_version.get_value() {
             return;
         }
-        let iid = instance_id.get_value();
-        let source = DownloadSource::CurseForge {
-            project_id,
-            file_id: target_id,
+        // The chosen file already carries the right source for its platform, so
+        // it is taken from the list rather than rebuilt from the ids.
+        let Some(source) = files
+            .get_untracked()
+            .into_iter()
+            .find(|file| file.source.version_key().as_deref() == Some(picked.as_str()))
+            .map(|file| file.source)
+        else {
+            return;
         };
+        let iid = instance_id.get_value();
         on_close.run(());
         // An upgrade is a whole-instance rewrite: send the user back to the
         // library and let the activity dock track progress, rather than leaving
@@ -144,18 +165,23 @@ pub fn UpgradeModpackModal(
             let note = if loading.get() { "Loading versions…" } else { "No versions available." };
             return view! { <p class=version_note>{note}</p> }.into_any();
         }
+        let installed = current_version.get_value();
         list.into_iter()
-            .map(|file| {
-                let fid = file_id(&file);
-                // The installed file and anything older cannot be upgraded to.
-                let older = fid <= current_file_id;
-                let note = if fid == current_file_id {
+            .enumerate()
+            .map(|(index, file)| {
+                let key = file.source.version_key().unwrap_or_default();
+                let is_current = key == installed;
+                // The installed version and anything below it cannot be
+                // upgraded to.
+                let older = is_older(index);
+                let note = if is_current {
                     "current"
                 } else if older {
                     "older"
                 } else {
                     ""
                 };
+                let picked = key.clone();
                 view! {
                     <VersionRow
                         label=file.display_name
@@ -163,8 +189,8 @@ pub fn UpgradeModpackModal(
                         release_type=file.release_type
                         note=note
                         disabled=older
-                        selected=Signal::derive(move || selected.get() == fid)
-                        on_pick=Callback::new(move |_: ()| selected.set(fid))
+                        selected=Signal::derive(move || selected.get() == key)
+                        on_pick=Callback::new(move |_: ()| selected.set(picked.clone()))
                     />
                 }
             })

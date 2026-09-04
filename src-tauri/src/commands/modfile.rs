@@ -122,10 +122,10 @@ pub async fn upgrade_modpack(
 
     let meta: InstanceMeta =
         read_json(instance_meta_file(&instance_dir)).map_err(|e| fail(&instance_id, e))?;
-    if meta.origin.curseforge_ids().is_none() {
+    if !meta.origin.is_managed() {
         return Err(fail(
             &meta.name,
-            Error::Invalid("instance is not a CurseForge modpack instance".to_string()),
+            Error::Invalid("instance was not installed from a modpack".to_string()),
         ));
     }
     let instance_name = meta.name.clone();

@@ -36,6 +36,20 @@ impl DownloadSource {
         }
     }
 
+    /// The project half of this source. `None` for a hand-added file, which
+    /// names no project — and so has nothing to upgrade against.
+    pub fn project_id(&self) -> Option<ProjectId> {
+        match self {
+            DownloadSource::CurseForge { project_id, .. } => {
+                Some(ProjectId::CurseForge(*project_id))
+            }
+            DownloadSource::Modrinth { project_id, .. } => {
+                Some(ProjectId::Modrinth(project_id.clone()))
+            }
+            DownloadSource::Manual => None,
+        }
+    }
+
     /// The file half of this source as a string, so a version picker can carry
     /// a pick through a form without knowing which platform listed it. `None`
     /// for a hand-added file, which no version list offers.

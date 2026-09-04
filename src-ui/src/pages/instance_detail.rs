@@ -67,10 +67,11 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
         .unwrap_or_else(|| TABS[0].to_string()));
     let save_state: RwSignal<SaveState> = RwSignal::new(SaveState::Idle);
 
-    // `(project_id, file_id)` when this is a CurseForge instance, enabling the
-    // modpack Upgrade action in the read-only Mods tab. Kept as a binding (not
-    // inlined) because it is read by two separate view closures.
-    let cf_origin = instance.origin.curseforge_ids();
+    // The project and installed version when this instance came from a modpack,
+    // enabling the Upgrade action in the read-only Mods tab. Held as StoredValue
+    // because two separate view closures read it.
+    let pack_origin =
+        StoredValue::new(instance.origin.project_id().zip(instance.origin.version_key()));
     let show_upgrade: RwSignal<bool> = RwSignal::new(false);
     // Mod-loader pieces the Mods-tab `<Show>` children closure needs across
     // re-renders, held as StoredValue so the closure can copy them.
@@ -192,7 +193,7 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
             {if instance.origin.is_managed() {
                 view! {
                     <ManagedNoticeCard
-                        can_upgrade=cf_origin.is_some()
+                        can_upgrade=pack_origin.get_value().is_some()
                         on_upgrade=Callback::new(move |_| show_upgrade.set(true))
                     />
                     {(instance.mod_loader != ModLoader::Vanilla).then(move || view! {
@@ -308,13 +309,13 @@ fn InstanceDetailView(instance: InstanceMeta) -> impl IntoView {
             </form>
         </Show>
 
-        // ── Modpack upgrade modal (CurseForge instances only) ─────────────────
+        // ── Modpack upgrade modal (instances installed from a pack) ───────────
         <Show when=move || show_upgrade.get() fallback=|| ()>
-            {cf_origin.map(|(project_id, file_id)| view! {
+            {pack_origin.get_value().map(|(project_id, current_version)| view! {
                 <UpgradeModpackModal
                     instance_id=instance_id.get_value()
                     project_id=project_id
-                    current_file_id=file_id
+                    current_version=current_version
                     on_close=Callback::new(move |_: ()| show_upgrade.set(false))
                 />
             })}
