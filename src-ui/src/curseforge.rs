@@ -3,7 +3,7 @@ use leptos::web_sys;
 use serde::Serialize;
 use yaminabe_launcher_shared::datamodels::{
     DownloadSource, GameVersion, LoaderVersion, LocalModpackInfo, ModListEntry, ModLoader,
-    ModProjectSearchResults, ProjectFileInfo, ProjectFileTarget, SearchOptions,
+    ModProjectSearchResults, ProjectFileInfo, ProjectFileTarget, ProjectId, SearchOptions,
 };
 
 // ── IPC ───────────────────────────────────────────────────────────────────────
@@ -16,7 +16,7 @@ struct SearchProjectsArgs {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GetFilesArgs {
-    mod_id: u32,
+    project_id: ProjectId,
     target: ProjectFileTarget,
     game_version: Option<String>,
     mod_loader: Option<ModLoader>,
@@ -28,7 +28,7 @@ pub async fn call_search_projects(option: SearchOptions) -> Result<ModProjectSea
 }
 
 pub async fn call_list_project_files(
-    mod_id: u32,
+    project_id: ProjectId,
     target: ProjectFileTarget,
     game_version: Option<String>,
     mod_loader: Option<ModLoader>,
@@ -37,7 +37,7 @@ pub async fn call_list_project_files(
     ipc::call(
         "list_project_files",
         GetFilesArgs {
-            mod_id,
+            project_id,
             target,
             game_version,
             mod_loader,

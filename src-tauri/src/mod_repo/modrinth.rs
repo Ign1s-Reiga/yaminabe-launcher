@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::commands::instance::{
-    create_instance_dir, discard_unfinished_instance_dir, instance_meta_file,
+    create_instance_dir, discard_unfinished_instance_dir, instance_meta_file, is_bare_file_name,
     upsert_modlist_entries,
 };
 use crate::emit_progress;
@@ -15,8 +15,8 @@ use serde::Deserialize;
 use tauri::State;
 use yaminabe_launcher_shared::datamodels::{
     DownloadSource, InstanceMeta, LocalModpackInfo, ModListEntry, ModLoader, ModProjectInfo,
-    ModProjectSearchResults, ModState, ModpackFormat, Platform, ProjectFileInfo,
-    ProjectFileTarget, SearchOptions,
+    ModProjectSearchResults, ModState, ModpackFormat, ProjectFileInfo,
+    ProjectFileTarget, ProjectId, SearchOptions,
 };
 use yaminabe_launcher_shared::error::Error;
 
@@ -25,6 +25,15 @@ struct Version {
     id: String,
     project_id: String,
     version_type: String,
+    /// The version's display name, e.g. "Sodium 0.5.8". Optional in practice,
+    /// so `version_number` stands in when it is missing.
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    version_number: String,
+    /// ISO-8601 UTC, so string order is chronological order.
+    #[serde(default)]
+    date_published: String,
     #[serde(default)]
     files: Vec<VersionFile>,
     #[serde(default)]
@@ -32,20 +41,25 @@ struct Version {
 }
 
 impl Version {
-    fn to_project_file_info(&self, project_type: &str) -> Result<ProjectFileInfo, Error> {
+    fn to_project_file_info(&self, target: ProjectFileTarget) -> Result<ProjectFileInfo, Error> {
         let version_file = selected_file(self).ok_or_else(|| {
             Error::NotExists(format!("Modrinth version-file {} does not exists.", self.id))
         })?;
+        let display_name = [&self.name, &self.version_number, &version_file.filename]
+            .into_iter()
+            .find(|candidate| !candidate.is_empty())
+            .cloned()
+            .unwrap_or_default();
         Ok(ProjectFileInfo {
             source: DownloadSource::Modrinth {
                 project_id: self.project_id.clone(),
                 version_id: self.id.clone(),
             },
-            target: ProjectFileTarget::from_modrinth_type(project_type),
+            target,
             release_type: self.version_type.clone().into(),
             file_name: version_file.filename.clone(),
             download_url: Some(version_file.url.clone()),
-            display_name: version_file.filename.clone(),
+            display_name,
             project_name: String::new(),
             icon_url: None,
             sha1: version_file.hashes.sha1.clone(),
@@ -127,6 +141,8 @@ struct SearchResponse {
 
 #[derive(Deserialize)]
 struct SearchHit {
+    /// Modrinth's own opaque project id, e.g. `AANobbMI`.
+    project_id: String,
     title: String,
     description: String,
     #[serde(default)]
@@ -143,9 +159,7 @@ struct SearchHit {
 
 /// Search Modrinth projects via `GET /v2/search`. Mods are narrowed by game
 /// version and loader through the `facets` filter; the sort `index` and result
-/// shape are normalized to the shared `ModProjectInfo`. Modrinth identifies
-/// projects by string id, which `ModProjectInfo` (CurseForge-shaped `u32` id)
-/// can't carry, so results are display-only for now — `id` is left 0.
+/// shape are normalized to the shared `ModProjectInfo`.
 pub async fn search_projects(
     option: &SearchOptions,
     client: &reqwest::Client,
@@ -192,9 +206,7 @@ pub async fn search_projects(
             game_versions.sort();
             game_versions.dedup();
             ModProjectInfo {
-                id: 0,
-                platform: Platform::Modrinth,
-                file_id: None,
+                id: ProjectId::Modrinth(hit.project_id),
                 name: hit.title,
                 summary: hit.description,
                 logo_url: hit.icon_url,
@@ -212,8 +224,62 @@ pub async fn search_projects(
     })
 }
 
-pub fn list_project_files() {
-    unimplemented!()
+/// How many versions one page of a project's file list holds. Modrinth returns
+/// every matching version in one response, so the page is cut here to match what
+/// the frontend expects from the CurseForge path.
+const PAGE_SIZE: usize = 50;
+
+/// List a project's files via `GET /v2/project/{id}/version`, newest first.
+///
+/// Modrinth filters by loader and game version but does not paginate, so the
+/// requested page is sliced out of the full response. A version whose files
+/// cannot be read is skipped rather than failing the whole page.
+pub async fn list_project_files(
+    project_id: &str,
+    target: ProjectFileTarget,
+    game_version: Option<&str>,
+    mod_loader: Option<&ModLoader>,
+    index: u32,
+    client: &reqwest::Client,
+) -> Result<Vec<ProjectFileInfo>, Error> {
+    // Both filters are JSON arrays in the query string, so they outlive the
+    // borrow the query builder takes.
+    let loaders = mod_loader
+        .and_then(|loader| loader.modrinth_name())
+        .map(|name| format!("[\"{name}\"]"));
+    let game_versions = game_version.map(|version| format!("[\"{version}\"]"));
+
+    let mut query: Vec<(&str, &str)> = Vec::new();
+    if let Some(loaders) = loaders.as_deref() {
+        query.push(("loaders", loaders));
+    }
+    if let Some(game_versions) = game_versions.as_deref() {
+        query.push(("game_versions", game_versions));
+    }
+
+    let url = format!("https://api.modrinth.com/v2/project/{project_id}/version");
+    let mut versions = fetch_json(client, &url)
+        .query(&query)
+        .send::<Vec<Version>>()
+        .await?;
+
+    // The endpoint documents no order, and pages are sliced out of the whole
+    // response — so newest-first is imposed here rather than assumed, or one
+    // page could repeat or skip a version another page already showed.
+    versions.sort_by(|a, b| b.date_published.cmp(&a.date_published));
+
+    Ok(versions
+        .iter()
+        .skip(index as usize)
+        .take(PAGE_SIZE)
+        .filter_map(|version| match version.to_project_file_info(target) {
+            Ok(file) => Some(file),
+            Err(e) => {
+                warn!("skipping Modrinth version {}: {e}", version.id);
+                None
+            }
+        })
+        .collect())
 }
 
 fn selected_file(version: &Version) -> Option<&VersionFile> {
@@ -476,6 +542,7 @@ pub async fn install_modpack_from_file(
         instance_name,
         category,
         zip_path,
+        DownloadSource::Manual,
         &instance_path,
         state,
     )
@@ -486,12 +553,17 @@ pub async fn install_modpack_from_file(
     result
 }
 
+/// Install a `.mrpack` already on disk into `instance_path`. `origin` is what
+/// the instance records as its provenance: `Manual` for a zip the user picked,
+/// or the Modrinth version it was fetched from.
+#[allow(clippy::too_many_arguments)]
 async fn install_into(
     app_handle: &tauri::AppHandle,
     id: &str,
     instance_name: &str,
     category: String,
     zip_path: &Path,
+    origin: DownloadSource,
     instance_path: &Path,
     state: &State<'_, AppState>,
 ) -> Result<(), Error> {
@@ -583,15 +655,23 @@ async fn install_into(
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
     upsert_modlist_entries(instance_path, modlist_entries)?;
 
+    // The pack's own blurb where it ships one; its name is all a pack without a
+    // summary offers.
+    let description = if index.summary.is_empty() {
+        index.name.clone()
+    } else {
+        index.summary.clone()
+    };
     let meta = InstanceMeta {
         id: id.to_string(),
         name: instance_name.to_string(),
-        description: index.name.clone(),
+        description,
         game_version: mc_version.clone(),
         mod_loader: mod_loader.clone(),
         mod_loader_version: loader_version,
         version_id,
         category,
+        origin,
         ..InstanceMeta::default()
     };
     write_json(instance_meta_file(instance_path), &meta)?;
@@ -604,6 +684,105 @@ async fn install_into(
         mod_loader
     );
     Ok(())
+}
+
+/// Install a modpack named by a Modrinth version id.
+///
+/// The version's `.mrpack` is staged in the instance's cache directory and then
+/// installed by the same code that handles a pack the user picked off disk — the
+/// file is identical either way. What differs is the origin recorded: an install
+/// from here knows the project and version it came from.
+pub async fn install_modpack(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    category: String,
+    source: DownloadSource,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
+    let DownloadSource::Modrinth { version_id, .. } = &source else {
+        return Err(Error::Unsupported(
+            "not a Modrinth modpack source".to_string(),
+        ));
+    };
+    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
+    let instance_path = create_instance_dir(&install_dir, instance_name)?;
+    // Nothing usable exists until the instance record is written, so clear the
+    // directory on failure rather than leaving one the library never shows and
+    // that blocks retrying the same name.
+    let result = install_by_version(
+        app_handle,
+        id,
+        instance_name,
+        category,
+        &source,
+        version_id,
+        &instance_path,
+        state,
+    )
+    .await;
+    if result.is_err() {
+        discard_unfinished_instance_dir(&instance_path);
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn install_by_version(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    category: String,
+    source: &DownloadSource,
+    version_id: &str,
+    instance_path: &Path,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
+    emit_progress(app_handle, id, instance_name, "Downloading modpack", false, None);
+
+    let url = format!("https://api.modrinth.com/v2/version/{version_id}");
+    let version = fetch_json(&state.http_client, &url)
+        .send::<Version>()
+        .await?;
+    let file = selected_file(&version).ok_or_else(|| {
+        Error::NotExists(format!("Modrinth version {version_id} lists no file"))
+    })?;
+
+    // The name comes from the API, not from us; refuse one that would stage the
+    // zip outside the instance's cache directory.
+    if !is_bare_file_name(&file.filename) {
+        return Err(Error::Invalid(format!(
+            "Modrinth version {version_id} names its file '{}'",
+            file.filename
+        )));
+    }
+    let cache_path = instance_path
+        .join(ProjectFileTarget::Modpack.directory())
+        .join(&file.filename);
+    download_resource(
+        &state.http_client,
+        &file.url,
+        &file.hashes.sha1,
+        cache_path.clone(),
+    )
+    .await?;
+
+    let installed = install_into(
+        app_handle,
+        id,
+        instance_name,
+        category,
+        &cache_path,
+        source.clone(),
+        instance_path,
+        state,
+    )
+    .await;
+
+    // Always drop the staged zip: its overrides are in the instance now and its
+    // files were fetched from the URLs the index carries.
+    std::fs::remove_file(&cache_path).ok();
+    installed
 }
 
 #[cfg(test)]
