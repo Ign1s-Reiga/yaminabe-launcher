@@ -1,9 +1,12 @@
 mod step_basics;
 mod step_loader;
+mod step_import;
 mod step_method;
 
 use crate::components::ui::*;
-use crate::curseforge::{call_get_minecraft_versions, call_get_modloader_versions};
+use crate::curseforge::{
+    call_get_minecraft_versions, call_get_modloader_versions, call_install_modpack_from_file,
+};
 use crate::ipc;
 use bamboo_css_macro::css;
 use leptos::control_flow::Show;
@@ -164,6 +167,23 @@ pub fn CreateInstanceModal(
 
     // Step 3 Create handler: close modal, notify parent of pending tile, run
     // the IPC, notify parent again on success.
+    // Installing from a zip runs on the same job stream as a search-page
+    // install, so the dock reports it and the modal can close immediately
+    // rather than holding the user through a long download.
+    let on_import = move |file_path: String| {
+        let instance_name = state.instance_name.get_untracked();
+        let category = state.category.get_untracked();
+        leptos::task::spawn_local(async move {
+            show.set(false);
+            reset();
+            if let Err(e) =
+                call_install_modpack_from_file(instance_name, category, file_path).await
+            {
+                log::error!("install_modpack_from_file failed: {e}");
+            }
+        });
+    };
+
     let on_create = move || {
         let mod_loader = ModLoader::from_str(&state.selected_modloader.get_untracked())
             .unwrap_or(ModLoader::Vanilla);
@@ -209,12 +229,16 @@ pub fn CreateInstanceModal(
                     <Show when=move || modal_step.get() == 1 fallback=|| ()>
                         <step_method::StepMethod
                             selected_method=selected_method
-                            on_next=Callback::new(move |_: ()| {
-                                if selected_method.get_untracked() == Some(1) {
-                                    modal_step.set(2);
-                                }
-                            })
+                            on_next=Callback::new(move |_: ()| modal_step.set(2))
                             on_cancel=Callback::new(move |_: ()| show_cancel_dialog.set(true))
+                        />
+                    </Show>
+
+                    <Show when=move || modal_step.get() == 2 && selected_method.get() == Some(0) fallback=|| ()>
+                        <step_import::StepImport
+                            state=state
+                            on_back=Callback::new(move |_: ()| modal_step.set(1))
+                            on_install=Callback::new(move |path: String| on_import(path))
                         />
                     </Show>
 

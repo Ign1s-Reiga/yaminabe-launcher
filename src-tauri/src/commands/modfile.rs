@@ -10,8 +10,9 @@ use std::path::Path;
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
 use yaminabe_launcher_shared::datamodels::{
-    DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModProjectSearchResults, ModState,
-    Platform, ProjectFileInfo, ProjectFileTarget, ProjectSortField, SearchOptions,
+    DownloadSource, InstanceMeta, LocalModpackInfo, ModListEntry, ModLoader,
+    ModProjectSearchResults, ModState, Platform, ProjectFileInfo, ProjectFileTarget,
+    ProjectSortField, SearchOptions,
 };
 use yaminabe_launcher_shared::error::Error;
 
@@ -362,5 +363,51 @@ pub async fn get_popular_modpacks(
             }
             None => Err(e),
         },
+    }
+}
+
+/// Describe a modpack zip on disk without installing it, so the picker can show
+/// what was chosen and reject a zip that is not a CurseForge modpack before an
+/// instance directory exists.
+#[tauri::command]
+pub fn read_modpack_file(file_path: String) -> Result<LocalModpackInfo, Error> {
+    mod_repo::read_local_modpack(Path::new(&file_path))
+}
+
+/// Install a modpack from a zip the user already has. Progress reaches the
+/// activity dock through the same events as an install from the search page.
+#[tauri::command]
+pub async fn install_modpack_from_file(
+    app_handle: tauri::AppHandle,
+    instance_name: String,
+    category: String,
+    file_path: String,
+    state: State<'_, AppState>,
+) -> Result<(), Error> {
+    let id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .to_string();
+
+    let result = mod_repo::install_modpack_from_file(
+        &app_handle,
+        &id,
+        &instance_name,
+        category,
+        Path::new(&file_path),
+        &state,
+    )
+    .await;
+
+    match result {
+        Ok(()) => {
+            emit_progress(&app_handle, &id, &instance_name, "Done", true, None);
+            Ok(())
+        }
+        Err(e) => {
+            emit_progress(&app_handle, &id, &instance_name, "Failed", false, Some(e.to_string()));
+            Err(e)
+        }
     }
 }

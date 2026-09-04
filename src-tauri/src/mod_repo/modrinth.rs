@@ -1,9 +1,21 @@
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
+use crate::commands::instance::{
+    create_instance_dir, discard_unfinished_instance_dir, instance_meta_file,
+    upsert_modlist_entries,
+};
+use crate::emit_progress;
 use crate::http_utils::{download_resource, fetch_json};
+use crate::install_task::ensure_game_and_loader;
+use crate::json::write_json;
+use crate::AppState;
+use log::{info, warn};
 use serde::Deserialize;
+use tauri::State;
 use yaminabe_launcher_shared::datamodels::{
-    DownloadSource, ModProjectInfo, ModProjectSearchResults, Platform, ProjectFileInfo,
+    DownloadSource, InstanceMeta, LocalModpackInfo, ModListEntry, ModLoader, ModProjectInfo,
+    ModProjectSearchResults, ModState, ModpackFormat, Platform, ProjectFileInfo,
     ProjectFileTarget, SearchOptions,
 };
 use yaminabe_launcher_shared::error::Error;
@@ -210,4 +222,439 @@ fn selected_file(version: &Version) -> Option<&VersionFile> {
         .iter()
         .find(|f| f.primary)
         .or_else(|| version.files.first())
+}
+
+/// The index at the root of a `.mrpack`, Modrinth's modpack format.
+///
+/// The format is handled here beside the API client rather than in a module of
+/// its own: `mod_repo` is one module per provider, and `curseforge.rs` likewise
+/// holds both its API and the manifest format it exports. Installing a pack
+/// fetched from the Modrinth API will read this from the same file rather than
+/// reaching across modules for it.
+///
+/// Unlike a CurseForge manifest, this carries each file's download URL and hash
+/// outright, so installing from it needs no API and no key.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MrpackIndex {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    version_id: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    files: Vec<MrpackFile>,
+    /// Maps `minecraft` and one loader to their versions.
+    #[serde(default)]
+    dependencies: HashMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MrpackFile {
+    /// Where the file belongs, relative to the instance root.
+    path: String,
+    #[serde(default)]
+    hashes: MrpackHashes,
+    #[serde(default)]
+    env: Option<MrpackEnv>,
+    /// Mirrors to try in order; the first that works wins.
+    #[serde(default)]
+    downloads: Vec<String>,
+    /// What the index says the file weighs. Recorded even for a file that could
+    /// not be fetched, so the Mods tab can show what is missing rather than 0 B.
+    #[serde(default)]
+    file_size: u64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct MrpackHashes {
+    #[serde(default)]
+    sha1: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MrpackEnv {
+    /// `required`, `optional` or `unsupported` — a launcher installs a client.
+    #[serde(default)]
+    client: String,
+}
+
+impl MrpackFile {
+    /// Whether a client install wants this file. Only an explicit `unsupported`
+    /// excludes it; an optional file is still installed, since a pack ships the
+    /// set it expects to run with.
+    fn wanted_by_client(&self) -> bool {
+        !matches!(self.env.as_ref().map(|env| env.client.as_str()), Some("unsupported"))
+    }
+}
+
+const INDEX_NAME: &str = "modrinth.index.json";
+
+fn read_index<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+) -> Result<MrpackIndex, Error> {
+    let entry = archive
+        .by_name(INDEX_NAME)
+        .map_err(|_| Error::Invalid(format!("modpack zip is missing {INDEX_NAME}")))?;
+    serde_json::from_reader(entry).map_err(Error::from)
+}
+
+/// The loader a pack asks for. Modrinth keys the loader by its own name, and
+/// spells the two that end in `-loader` differently from how the launcher does.
+fn resolve_loader(dependencies: &HashMap<String, String>) -> (ModLoader, Option<String>) {
+    for (key, loader) in [
+        ("neoforge", ModLoader::NeoForge),
+        ("forge", ModLoader::Forge),
+        ("fabric-loader", ModLoader::Fabric),
+        ("quilt-loader", ModLoader::Quilt),
+    ] {
+        if let Some(version) = dependencies.get(key) {
+            return (loader, Some(version.clone()));
+        }
+    }
+    (ModLoader::Vanilla, None)
+}
+
+/// Resolve a path from the index against `instance_path`, refusing one that
+/// would land outside it. The index is attacker-controlled in the same way a
+/// zip's entry names are: `..` climbs out, and a drive prefix discards the base
+/// entirely on Windows.
+fn safe_destination(instance_path: &Path, relative: &str) -> Option<PathBuf> {
+    let components: Vec<&str> = relative
+        .split(['/', '\\'])
+        .filter(|part| !part.is_empty() && *part != "." && *part != ".." && !part.contains(':'))
+        .collect();
+    if components.is_empty() {
+        return None;
+    }
+    Some(
+        components
+            .iter()
+            .fold(instance_path.to_path_buf(), |path, part| path.join(part)),
+    )
+}
+
+/// Which tracked kind a path belongs to, so a failed download can be linked by
+/// hand into the right place. `None` for a path the modlist does not model.
+fn target_for(relative: &str) -> Option<ProjectFileTarget> {
+    // Normalised the same way safe_destination does, so `./mods/x.jar` is not
+    // read as a different directory from `mods/x.jar` and left untracked.
+    let first = relative
+        .split(['/', '\\'])
+        .find(|part| !part.is_empty() && *part != "." && *part != ".." && !part.contains(':'))?;
+    match first {
+        "mods" => Some(ProjectFileTarget::Mod),
+        "resourcepacks" => Some(ProjectFileTarget::ResourcePack),
+        "shaderpacks" => Some(ProjectFileTarget::ShaderPack),
+        "datapacks" => Some(ProjectFileTarget::DataPack),
+        _ => None,
+    }
+}
+
+/// Describe a `.mrpack` without installing it.
+pub fn read_local_modpack(zip_path: &Path) -> Result<LocalModpackInfo, Error> {
+    let file = std::fs::File::open(zip_path)
+        .map_err(|e| Error::Invalid(format!("cannot open {}: {e}", zip_path.display())))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|_| Error::Invalid(format!("{} is not a zip file", zip_path.display())))?;
+    let index = read_index(&mut archive)?;
+    let (mod_loader, mod_loader_version) = resolve_loader(&index.dependencies);
+    Ok(LocalModpackInfo {
+        format: ModpackFormat::Modrinth,
+        name: index.name,
+        version: index.version_id,
+        // The format carries no author field; a summary is the closest thing to
+        // show, and an empty string simply renders nothing.
+        author: index.summary,
+        game_version: index.dependencies.get("minecraft").cloned().unwrap_or_default(),
+        mod_loader,
+        mod_loader_version,
+        file_count: index.files.len(),
+    })
+}
+
+/// The name a path ends in, for the modlist.
+fn file_name_of(dest: &Path) -> String {
+    dest.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// A modlist row for a file that was never fetched, so the Mods tab can offer
+/// to link it by hand.
+fn unfetched_entry(file: &MrpackFile, target: ProjectFileTarget) -> ModListEntry {
+    ModListEntry {
+        file_name: file_name_of(Path::new(&file.path)),
+        project_name: String::new(),
+        icon_url: None,
+        sha1: file.hashes.sha1.clone(),
+        source: DownloadSource::Manual,
+        target,
+        size: file.file_size,
+        state: ModState::DownloadFailed,
+    }
+}
+
+/// Try each URL the index lists in turn. They are mirrors of one file, so the
+/// first that works wins and only the last error is worth reporting.
+async fn download_from_mirrors(
+    file: &MrpackFile,
+    dest: &Path,
+    client: &reqwest::Client,
+) -> Result<(), Error> {
+    let mut last = Error::Invalid(format!("no download URL for {}", file.path));
+    for url in &file.downloads {
+        match download_resource(client, url, &file.hashes.sha1, dest.to_path_buf()).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                warn!("mirror {url} failed for {}: {e}", file.path);
+                last = e;
+            }
+        }
+    }
+    Err(last)
+}
+
+/// Extract every `overrides/` tree the pack ships. `client-overrides/` is
+/// applied after `overrides/`, since it exists precisely to win on a client.
+fn extract_overrides<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    instance_path: &Path,
+) -> Result<(), Error> {
+    for prefix in ["overrides/", "client-overrides/"] {
+        for i in 0..archive.len() {
+            let mut entry = archive
+                .by_index(i)
+                .map_err(|e| Error::Invalid(format!("reading zip entry at index {i}: {e}")))?;
+            let name = entry.name().to_string();
+            let Some(relative) = name.strip_prefix(prefix) else {
+                continue;
+            };
+            if relative.is_empty() {
+                continue;
+            }
+            let Some(dest) = safe_destination(instance_path, relative) else {
+                warn!("skipping override with an unusable path: {name}");
+                continue;
+            };
+            if name.ends_with('/') {
+                std::fs::create_dir_all(&dest)?;
+                continue;
+            }
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut out = std::fs::File::create(&dest)?;
+            std::io::copy(&mut entry, &mut out)?;
+        }
+    }
+    Ok(())
+}
+
+/// Install a `.mrpack` from disk. Each file is fetched straight from the URLs
+/// the index lists and verified against its hash, so nothing here needs an API
+/// key. A file that cannot be fetched is recorded rather than aborting the
+/// install, matching how a CurseForge pack handles a file it cannot get.
+pub async fn install_modpack_from_file(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    category: String,
+    zip_path: &Path,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
+    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
+    let instance_path = create_instance_dir(&install_dir, instance_name)?;
+    // Nothing usable exists until the instance record is written, so a failure
+    // partway through clears the directory rather than leaving one that the
+    // library never shows and that blocks retrying the same name.
+    let result = install_into(
+        app_handle,
+        id,
+        instance_name,
+        category,
+        zip_path,
+        &instance_path,
+        state,
+    )
+    .await;
+    if result.is_err() {
+        discard_unfinished_instance_dir(&instance_path);
+    }
+    result
+}
+
+async fn install_into(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    category: String,
+    zip_path: &Path,
+    instance_path: &Path,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
+
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path)?)
+        .map_err(|e| Error::Invalid(format!("modpack zip is invalid: {e}")))?;
+    let index = read_index(&mut archive)?;
+    let mc_version = index
+        .dependencies
+        .get("minecraft")
+        .cloned()
+        .ok_or_else(|| Error::Invalid(format!("{INDEX_NAME} names no Minecraft version")))?;
+    let (mod_loader, loader_version) = resolve_loader(&index.dependencies);
+
+    let version_id = ensure_game_and_loader(
+        app_handle,
+        id,
+        instance_name,
+        &mc_version,
+        &mod_loader,
+        &loader_version,
+        state,
+    )
+    .await?;
+
+    emit_progress(app_handle, id, instance_name, "Downloading mods", false, None);
+    let mut modlist_entries: Vec<ModListEntry> = Vec::new();
+    for file in index.files.iter().filter(|file| file.wanted_by_client()) {
+        let target = target_for(&file.path);
+        // A file that cannot even be attempted is recorded the same way a failed
+        // download is, so the Mods tab offers to link it rather than the install
+        // reporting success with the file quietly absent.
+        let mut record_failure = |reason: String| {
+            warn!("{}: {reason}", file.path);
+            if let Some(target) = target {
+                modlist_entries.push(unfetched_entry(file, target));
+            }
+        };
+
+        let Some(dest) = safe_destination(instance_path, &file.path) else {
+            record_failure("unusable path".to_string());
+            continue;
+        };
+        if file.downloads.is_empty() {
+            record_failure("no download URL".to_string());
+            continue;
+        }
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let mod_state = match download_from_mirrors(file, &dest, &state.http_client).await {
+            Ok(()) => ModState::Enabled,
+            Err(e) => {
+                warn!("download failed for {}: {e}; marking for manual install", file.path);
+                ModState::DownloadFailed
+            }
+        };
+        let Some(target) = target else { continue };
+        // Only mods are tracked once installed; anything else is tracked solely
+        // to drive the link prompt when it could not be fetched.
+        if target.tracks_modlist() || mod_state == ModState::DownloadFailed {
+            // The index states a size; fall back to the file itself when it
+            // does not, so a mod never lists as 0 B once it is on disk.
+            let size = match (file.file_size, mod_state) {
+                (0, ModState::Enabled) => std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0),
+                (size, _) => size,
+            };
+            modlist_entries.push(ModListEntry {
+                file_name: file_name_of(&dest),
+                project_name: String::new(),
+                icon_url: None,
+                sha1: file.hashes.sha1.clone(),
+                source: DownloadSource::Manual,
+                target,
+                size,
+                state: mod_state,
+            });
+        }
+    }
+
+    // After the downloads, not before: the format has overrides win over what a
+    // pack lists, and download_resource replaces a file whose hash does not
+    // match — so extracting first would let the stock jar overwrite a patched
+    // one the pack deliberately ships.
+    emit_progress(app_handle, id, instance_name, "Extracting files", false, None);
+    extract_overrides(&mut archive, instance_path)?;
+
+    emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
+    upsert_modlist_entries(instance_path, modlist_entries)?;
+
+    let meta = InstanceMeta {
+        id: id.to_string(),
+        name: instance_name.to_string(),
+        description: index.name.clone(),
+        game_version: mc_version.clone(),
+        mod_loader: mod_loader.clone(),
+        mod_loader_version: loader_version,
+        version_id,
+        category,
+        ..InstanceMeta::default()
+    };
+    write_json(instance_meta_file(instance_path), &meta)?;
+
+    info!(
+        "Installed '{}' from {} (MC {}, {})",
+        instance_name,
+        zip_path.display(),
+        mc_version,
+        mod_loader
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod mrpack_tests {
+    use super::{resolve_loader, safe_destination, target_for};
+    use std::collections::HashMap;
+    use std::path::Path;
+    use yaminabe_launcher_shared::datamodels::{ModLoader, ProjectFileTarget};
+
+    fn deps(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn reads_the_loader_modrinth_names() {
+        let (loader, version) = resolve_loader(&deps(&[
+            ("minecraft", "1.21.1"),
+            ("fabric-loader", "0.16.9"),
+        ]));
+
+        assert_eq!(loader, ModLoader::Fabric);
+        assert_eq!(version.as_deref(), Some("0.16.9"));
+    }
+
+    #[test]
+    fn a_pack_with_no_loader_is_vanilla() {
+        let (loader, version) = resolve_loader(&deps(&[("minecraft", "1.21.1")]));
+
+        assert_eq!(loader, ModLoader::Vanilla);
+        assert_eq!(version, None);
+    }
+
+    #[test]
+    fn refuses_a_path_that_climbs_out_of_the_instance() {
+        let root = Path::new("/instances/pack");
+
+        assert_eq!(safe_destination(root, "mods/../../evil.jar"), Some(root.join("mods/evil.jar")));
+        assert_eq!(safe_destination(root, "../evil.jar"), Some(root.join("evil.jar")));
+        // A drive prefix would otherwise replace the base outright on Windows.
+        assert_eq!(safe_destination(root, "C:/evil.jar"), Some(root.join("evil.jar")));
+        assert_eq!(safe_destination(root, ".."), None);
+    }
+
+    #[test]
+    fn maps_a_path_to_what_the_modlist_models() {
+        assert_eq!(target_for("mods/a.jar"), Some(ProjectFileTarget::Mod));
+        assert_eq!(target_for("resourcepacks/b.zip"), Some(ProjectFileTarget::ResourcePack));
+        assert_eq!(target_for("shaderpacks/c.zip"), Some(ProjectFileTarget::ShaderPack));
+        assert_eq!(target_for("config/d.json"), None);
+    }
 }

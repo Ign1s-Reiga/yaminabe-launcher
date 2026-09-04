@@ -86,8 +86,44 @@ pub fn is_bare_file_name(name: &str) -> bool {
         && !name.contains(':')
 }
 
+/// Remove a directory that was created for an instance that never finished
+/// installing. Only ever touches one with no metadata file, so a real instance
+/// cannot be deleted this way; leaving it would block retrying the same name,
+/// while the library would never show it to be deleted by hand.
+pub fn discard_unfinished_instance_dir(instance_path: &Path) {
+    if instance_meta_file(instance_path).exists() {
+        return;
+    }
+    if let Err(e) = std::fs::remove_dir_all(instance_path) {
+        warn!("cannot clear {} after a failed install: {e}", instance_path.display());
+    }
+}
+
 fn sort_modlist(entries: &mut [ModListEntry]) {
     entries.sort_by(|a, b| a.file_name.to_lowercase().cmp(&b.file_name.to_lowercase()));
+}
+
+/// Create the directory a new instance will live in, refusing to reuse one that
+/// already exists — installing over an existing instance would overlay its files
+/// and overwrite its record, orphaning it from the library.
+pub fn create_instance_dir(install_dir: &str, instance_name: &str) -> Result<PathBuf, Error> {
+    let folder = instance_name.trim().to_lowercase();
+    // The name is untrusted: an import fills it from the pack's own manifest.
+    // A separator or `..` here would put the instance outside the install
+    // directory, which the overrides extracted into it would then follow.
+    if !is_bare_file_name(&folder) {
+        return Err(Error::Invalid(format!(
+            "'{instance_name}' cannot be used as an instance name"
+        )));
+    }
+    let instance_path = Path::new(install_dir).join(&folder);
+    if instance_path.exists() {
+        return Err(Error::Invalid(format!(
+            "folder '{folder}' already exists at this location"
+        )));
+    }
+    std::fs::create_dir_all(&instance_path)?;
+    Ok(instance_path)
 }
 
 pub fn find_instance_dir(install_dir: &Path, id: &str) -> Result<PathBuf, Error> {
@@ -138,11 +174,11 @@ pub async fn create_instance(
     }
 
     step!("Preparing directories");
-    let instance_path = PathBuf::from(&state.settings.read().unwrap().instance_install_dir).join(name.to_lowercase());
-    if instance_path.exists() {
-        fail!(Error::Invalid(format!("folder '{}' already exists at this location", name.to_lowercase())));
-    }
-    if let Err(e) = std::fs::create_dir_all(&instance_path) { fail!(Error::IO(e)); }
+    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
+    let instance_path = match create_instance_dir(&install_dir, &name) {
+        Ok(path) => path,
+        Err(e) => fail!(e),
+    };
 
     for dir in [versions_dir(), libraries_dir()] {
         if let Err(e) = std::fs::create_dir_all(dir) { fail!(Error::IO(e)); }

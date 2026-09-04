@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use crate::commands::instance::{
-    instance_meta_file, modlist_file, replace_modlist_entries_for_file_ids, upsert_modlist_entries,
+    create_instance_dir, discard_unfinished_instance_dir, instance_meta_file, modlist_file,
+    replace_modlist_entries_for_file_ids, upsert_modlist_entries,
 };
 use crate::http_utils::{download_resource, fetch_json, rejected_status};
 use crate::install_task::ensure_game_and_loader;
@@ -14,8 +15,9 @@ use log::info;
 use serde::Deserialize;
 use tauri::State;
 use yaminabe_launcher_shared::datamodels::{
-    DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModProjectInfo, ModProjectSearchResults,
-    ModState, Platform, ProjectFileInfo, ProjectFileTarget, SearchOptions,
+    DownloadSource, InstanceMeta, LocalModpackInfo, ModListEntry, ModLoader, ModProjectInfo,
+    ModProjectSearchResults, ModState, ModpackFormat, Platform, ProjectFileInfo,
+    ProjectFileTarget, SearchOptions,
 };
 use yaminabe_launcher_shared::error::Error;
 
@@ -164,6 +166,14 @@ struct ModpackManifest {
     overrides: String,
     #[serde(default)]
     files: Vec<ManifestFilesItem>,
+    /// Shown before installing a pack picked off disk. Optional, since nothing
+    /// in the install itself depends on what the pack calls itself.
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    author: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -690,6 +700,59 @@ async fn prepare_from_cached_zip(
     })
 }
 
+/// What differs between installing a pack fetched by id and one read off disk:
+/// where the instance says it came from, and what seeds its description.
+struct InstallOrigin {
+    source: DownloadSource,
+    description: String,
+}
+
+/// Finish an install once the pack is prepared: resolve and download the mods
+/// its manifest lists, record them, and write the instance.
+async fn finish_install(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    category: String,
+    instance_path: &Path,
+    prepared: PreparedModpack,
+    origin: InstallOrigin,
+    api_key: &str,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
+    emit_progress(app_handle, id, instance_name, "Downloading mods", false, None);
+    let file_ids = manifest_file_ids(&prepared.manifest);
+    let files = resolve_project_files(&file_ids, api_key, &state.http_client).await?;
+    let modlist_entries =
+        super::download_project_files(files, instance_path, &state.http_client).await?;
+
+    emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
+    upsert_modlist_entries(instance_path, modlist_entries)?;
+
+    let meta = InstanceMeta {
+        id: id.to_string(),
+        name: instance_name.to_string(),
+        description: origin.description,
+        game_version: prepared.mc_version.clone(),
+        mod_loader: prepared.mod_loader.clone(),
+        mod_loader_version: prepared.loader_version,
+        version_id: prepared.version_id,
+        category,
+        origin: origin.source,
+        ..InstanceMeta::default()
+    };
+    write_json(instance_meta_file(instance_path), &meta)?;
+
+    info!(
+        "Installed '{}' (MC {}, {}) → {}",
+        instance_name,
+        prepared.mc_version,
+        prepared.mod_loader,
+        instance_path.display()
+    );
+    Ok(())
+}
+
 pub async fn install_modpack(
     app_handle: &tauri::AppHandle,
     id: &str,
@@ -705,47 +768,55 @@ pub async fn install_modpack(
         let settings = state.settings.read().unwrap();
         (settings.curseforge_api_key.clone(), settings.instance_install_dir.clone())
     };
-
-    // create_instance refuses an existing folder; do the same here, or a pack
-    // installed under a name that lowercases onto an existing instance would
-    // overlay its files and overwrite its metadata, orphaning the original.
-    let instance_path = PathBuf::from(&install_dir).join(instance_name.to_lowercase());
-    if instance_path.exists() {
-        return Err(Error::Invalid(format!(
-            "folder '{}' already exists at this location",
-            instance_name.to_lowercase()
-        )));
+    let instance_path = create_instance_dir(&install_dir, instance_name)?;
+    // Nothing usable exists until the instance record is written, so clear the
+    // directory on failure rather than leaving one the library never shows and
+    // that blocks retrying the same name — a missing API key gets this far.
+    let result = install_by_id(
+        app_handle,
+        id,
+        instance_name,
+        category,
+        source,
+        project_id,
+        file_id,
+        &api_key,
+        &instance_path,
+        state,
+    )
+    .await;
+    if result.is_err() {
+        discard_unfinished_instance_dir(&instance_path);
     }
-    std::fs::create_dir_all(&instance_path)?;
+    result
+}
 
+#[allow(clippy::too_many_arguments)]
+async fn install_by_id(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    category: String,
+    source: DownloadSource,
+    project_id: u32,
+    file_id: u32,
+    api_key: &str,
+    instance_path: &Path,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
     let prepared = prepare_modpack(
         app_handle,
         id,
         instance_name,
-        &instance_path,
+        instance_path,
         file_id,
-        &api_key,
+        api_key,
         state,
     ).await?;
 
-    emit_progress(
-        app_handle,
-        id,
-        instance_name,
-        "Downloading mods",
-        false,
-        None,
-    );
-    let file_ids = manifest_file_ids(&prepared.manifest);
-    let files = resolve_project_files(&file_ids, &api_key, &state.http_client).await?;
-    let modlist_entries = super::download_project_files(files, &instance_path, &state.http_client).await?;
-
-    emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
-    upsert_modlist_entries(&instance_path, modlist_entries)?;
-
     // Seed the instance description with the pack's own blurb. It is cosmetic,
     // so a failed lookup leaves it empty instead of failing the install.
-    let description = match fetch_project_summaries(&[project_id], &api_key, &state.http_client).await {
+    let description = match fetch_project_summaries(&[project_id], api_key, &state.http_client).await {
         Ok(projects) => projects
             .get(&project_id)
             .map(|project| project.summary.clone())
@@ -756,28 +827,18 @@ pub async fn install_modpack(
         }
     };
 
-    let meta = InstanceMeta {
-        id: id.to_string(),
-        name: instance_name.to_string(),
-        description,
-        game_version: prepared.mc_version.clone(),
-        mod_loader: prepared.mod_loader.clone(),
-        mod_loader_version: prepared.loader_version,
-        version_id: prepared.version_id,
-        category,
-        origin: source,
-        ..InstanceMeta::default()
-    };
-    write_json(instance_meta_file(&instance_path), &meta)?;
-
-    info!(
-        "Installed '{}' (MC {}, {}) → {}",
+    finish_install(
+        app_handle,
+        id,
         instance_name,
-        prepared.mc_version,
-        prepared.mod_loader,
-        instance_path.display()
-    );
-    Ok(())
+        category,
+        instance_path,
+        prepared,
+        InstallOrigin { source, description },
+        api_key,
+        state,
+    )
+    .await
 }
 
 /// Upgrade an existing CurseForge instance to a newer modpack file: re-ensure
@@ -944,4 +1005,184 @@ pub async fn project_file_page_url(
         )));
     }
     Ok(format!("{website}/files/{file_id}"))
+}
+
+/// Read a modpack zip's manifest without installing anything, so the user can
+/// confirm the file they picked and a zip that is not a CurseForge modpack is
+/// rejected before an instance directory exists.
+pub fn read_local_modpack(zip_path: &Path) -> Result<LocalModpackInfo, Error> {
+    let file = std::fs::File::open(zip_path)
+        .map_err(|e| Error::Invalid(format!("cannot open {}: {e}", zip_path.display())))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|_| Error::Invalid(format!("{} is not a zip file", zip_path.display())))?;
+    let manifest = read_manifest(&mut archive)?;
+    let (mod_loader, mod_loader_version) = resolve_loader(&manifest)?;
+    Ok(LocalModpackInfo {
+        format: ModpackFormat::CurseForge,
+        name: manifest.name,
+        version: manifest.version,
+        author: manifest.author,
+        game_version: manifest.minecraft.version,
+        mod_loader,
+        mod_loader_version,
+        file_count: manifest.files.len(),
+    })
+}
+
+/// Install a modpack from a zip already on disk. The zip is read where it lies
+/// and left alone — it is the user's file, not a staged download — so this skips
+/// the fetch that `install_modpack` performs and shares everything after it.
+///
+/// The instance records a `Manual` origin: a manifest names the mods it wants
+/// but not the pack it came from, so there is no project to offer an upgrade
+/// against.
+pub async fn install_modpack_from_file(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    category: String,
+    zip_path: &Path,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
+    let (api_key, install_dir) = {
+        let settings = state.settings.read().unwrap();
+        (settings.curseforge_api_key.clone(), settings.instance_install_dir.clone())
+    };
+    let instance_path = create_instance_dir(&install_dir, instance_name)?;
+    let result = install_from_zip(
+        app_handle,
+        id,
+        instance_name,
+        category,
+        zip_path,
+        &api_key,
+        &instance_path,
+        state,
+    )
+    .await;
+    if result.is_err() {
+        discard_unfinished_instance_dir(&instance_path);
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn install_from_zip(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    category: String,
+    zip_path: &Path,
+    api_key: &str,
+    instance_path: &Path,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
+    let prepared = prepare_from_cached_zip(
+        app_handle,
+        id,
+        instance_name,
+        instance_path,
+        zip_path,
+        state,
+    )
+    .await?;
+
+    // A manifest carries no project id for the pack itself, so there is nothing
+    // to offer an upgrade against; the pack's own name is the best description
+    // available without an API lookup that could not identify it anyway.
+    let description = prepared.manifest.name.clone();
+    finish_install(
+        app_handle,
+        id,
+        instance_name,
+        category,
+        instance_path,
+        prepared,
+        InstallOrigin { source: DownloadSource::Manual, description },
+        api_key,
+        state,
+    )
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_local_modpack;
+    use std::io::Write;
+    use yaminabe_launcher_shared::datamodels::ModLoader;
+
+    /// Write a zip holding exactly `entries`, and return where it landed.
+    fn zip_with(name: &str, entries: &[(&str, &str)]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("yaminabe-test-{name}.zip"));
+        let file = std::fs::File::create(&path).expect("create test zip");
+        let mut writer = zip::ZipWriter::new(file);
+        let options: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (entry, body) in entries {
+            writer.start_file(*entry, options).expect("start entry");
+            writer.write_all(body.as_bytes()).expect("write entry");
+        }
+        writer.finish().expect("finish zip");
+        path
+    }
+
+    /// Shaped after a real CurseForge export, field for field.
+    const MANIFEST: &str = r#"{
+        "minecraft": {
+            "version": "1.21.1",
+            "modLoaders": [{ "id": "neoforge-21.1.248", "primary": true }]
+        },
+        "manifestType": "minecraftModpack",
+        "manifestVersion": 1,
+        "name": "FTB StoneBlock 4",
+        "version": "1.20.0",
+        "author": "FTB Team",
+        "files": [
+            { "projectID": 1, "fileID": 2, "required": true },
+            { "projectID": 3, "fileID": 4, "required": false }
+        ],
+        "overrides": "overrides"
+    }"#;
+
+    #[test]
+    fn reads_what_a_curseforge_manifest_declares() {
+        let path = zip_with("manifest", &[("manifest.json", MANIFEST)]);
+
+        let info = read_local_modpack(&path).expect("manifest should parse");
+
+        assert_eq!(info.name, "FTB StoneBlock 4");
+        assert_eq!(info.version, "1.20.0");
+        assert_eq!(info.author, "FTB Team");
+        assert_eq!(info.game_version, "1.21.1");
+        assert_eq!(info.mod_loader, ModLoader::NeoForge);
+        assert_eq!(info.mod_loader_version.as_deref(), Some("21.1.248"));
+        // Optional files count too: the picker reports the manifest, not the
+        // subset that will be downloaded.
+        assert_eq!(info.file_count, 2);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn rejects_a_zip_that_is_not_a_modpack() {
+        let path = zip_with("no-manifest", &[("readme.txt", "just a zip")]);
+
+        let error = read_local_modpack(&path).expect_err("a zip with no manifest is not a modpack");
+
+        assert!(
+            error.to_string().contains("manifest.json"),
+            "the error should name what is missing, got: {error}"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn rejects_a_file_that_is_not_a_zip() {
+        let path = std::env::temp_dir().join("yaminabe-test-not-a-zip.zip");
+        std::fs::write(&path, b"not a zip at all").expect("write test file");
+
+        let error = read_local_modpack(&path).expect_err("plain bytes are not a zip");
+
+        assert!(error.to_string().contains("not a zip"), "got: {error}");
+        std::fs::remove_file(&path).ok();
+    }
 }
