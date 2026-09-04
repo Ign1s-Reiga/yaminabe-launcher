@@ -1,14 +1,14 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::commands::instance::{
     create_instance_dir, discard_unfinished_instance_dir, instance_meta_file, is_bare_file_name,
-    upsert_modlist_entries,
+    modlist_file, replace_modlist_entries, upsert_modlist_entries,
 };
 use crate::emit_progress;
 use crate::http_utils::{download_resource, fetch_json};
 use crate::install_task::ensure_game_and_loader;
-use crate::json::write_json;
+use crate::json::{read_json, read_json_or_default, write_json};
 use crate::AppState;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
@@ -720,17 +720,24 @@ pub async fn install_modpack_from_file(
 /// the instance records as its provenance: `Manual` for a zip the user picked,
 /// or the Modrinth version it was fetched from.
 #[allow(clippy::too_many_arguments)]
-async fn install_into(
+/// A staged `.mrpack` with its game and loader already installed. Shared by
+/// install and upgrade, which differ only in what they do with the files.
+struct PreparedPack {
+    archive: zip::ZipArchive<std::fs::File>,
+    index: MrpackIndex,
+    mc_version: String,
+    mod_loader: ModLoader,
+    loader_version: Option<String>,
+    version_id: String,
+}
+
+async fn prepare_pack(
     app_handle: &tauri::AppHandle,
     id: &str,
     instance_name: &str,
-    category: String,
     zip_path: &Path,
-    origin: DownloadSource,
-    instance_path: &Path,
     state: &State<'_, AppState>,
-) -> Result<(), Error> {
-
+) -> Result<PreparedPack, Error> {
     let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path)?)
         .map_err(|e| Error::Invalid(format!("modpack zip is invalid: {e}")))?;
     let index = read_index(&mut archive)?;
@@ -752,8 +759,52 @@ async fn install_into(
     )
     .await?;
 
-    emit_progress(app_handle, id, instance_name, "Downloading mods", false, None);
-    let mut modlist_entries: Vec<ModListEntry> = Vec::new();
+    Ok(PreparedPack {
+        archive,
+        index,
+        mc_version,
+        mod_loader,
+        loader_version,
+        version_id,
+    })
+}
+
+/// What the instance already had, by file name, so an upgrade can tell an
+/// unchanged file from a new one.
+fn installed_entries(instance_path: &Path) -> HashMap<String, ModListEntry> {
+    let modlist: Vec<ModListEntry> =
+        read_json_or_default(modlist_file(instance_path)).unwrap_or_default();
+    modlist
+        .into_iter()
+        .map(|entry| (entry.file_name.clone(), entry))
+        .collect()
+}
+
+/// Whether `previous` is the same file the index now lists. Compared by hash,
+/// not by name: a pack can ship a different jar under a name it used before.
+fn is_unchanged(previous: &ModListEntry, file: &MrpackFile) -> bool {
+    !previous.sha1.is_empty() && previous.sha1.eq_ignore_ascii_case(&file.hashes.sha1)
+}
+
+/// Where a disabled mod actually sits on disk.
+fn disabled_path(dest: &Path) -> PathBuf {
+    dest.with_file_name(format!("{}.disabled", file_name_of(dest)))
+}
+
+/// Put the files the index lists into the instance, and report what a mod list
+/// should say about them.
+///
+/// `previous` is what the instance already had, empty for a fresh install. A
+/// file whose hash has not changed keeps the state it was in — so a mod the
+/// user disabled stays disabled through an upgrade, and is left on disk under
+/// its `.disabled` name rather than being downloaded back into place.
+async fn sync_pack_files(
+    index: &MrpackIndex,
+    instance_path: &Path,
+    previous: &HashMap<String, ModListEntry>,
+    client: &reqwest::Client,
+) -> Result<Vec<ModListEntry>, Error> {
+    let mut entries: Vec<ModListEntry> = Vec::new();
     for file in index.files.iter().filter(|file| file.wanted_by_client()) {
         let target = target_for(&file.path);
         // A file that cannot even be attempted is recorded the same way a failed
@@ -762,7 +813,7 @@ async fn install_into(
         let mut record_failure = |reason: String| {
             warn!("{}: {reason}", file.path);
             if let Some(target) = target {
-                modlist_entries.push(unfetched_entry(file, target));
+                entries.push(unfetched_entry(file, target));
             }
         };
 
@@ -774,11 +825,22 @@ async fn install_into(
             record_failure("no download URL".to_string());
             continue;
         }
+
+        // A disabled mod lives under another name, so downloading `dest` would
+        // reinstate the jar the user turned off and leave both copies on disk.
+        let kept_disabled = previous
+            .get(&file_name_of(&dest))
+            .filter(|entry| entry.state == ModState::Disabled && is_unchanged(entry, file))
+            .filter(|_| disabled_path(&dest).exists());
+        if let Some(entry) = kept_disabled {
+            entries.push(entry.clone());
+            continue;
+        }
+
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
-
-        let mod_state = match download_from_mirrors(file, &dest, &state.http_client).await {
+        let mod_state = match download_from_mirrors(file, &dest, client).await {
             Ok(()) => ModState::Enabled,
             Err(e) => {
                 warn!("download failed for {}: {e}; marking for manual install", file.path);
@@ -795,7 +857,7 @@ async fn install_into(
                 (0, ModState::Enabled) => std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0),
                 (size, _) => size,
             };
-            modlist_entries.push(ModListEntry {
+            entries.push(ModListEntry {
                 file_name: file_name_of(&dest),
                 project_name: String::new(),
                 icon_url: None,
@@ -807,33 +869,59 @@ async fn install_into(
             });
         }
     }
+    Ok(entries)
+}
+
+/// The pack's own blurb where it ships one; its name is all a pack without a
+/// summary offers.
+fn pack_description(index: &MrpackIndex) -> String {
+    if index.summary.is_empty() {
+        index.name.clone()
+    } else {
+        index.summary.clone()
+    }
+}
+
+async fn install_into(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    category: String,
+    zip_path: &Path,
+    origin: DownloadSource,
+    instance_path: &Path,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
+    let mut prepared = prepare_pack(app_handle, id, instance_name, zip_path, state).await?;
+
+    emit_progress(app_handle, id, instance_name, "Downloading mods", false, None);
+    let mut modlist_entries = sync_pack_files(
+        &prepared.index,
+        instance_path,
+        &HashMap::new(),
+        &state.http_client,
+    )
+    .await?;
 
     // After the downloads, not before: the format has overrides win over what a
     // pack lists, and download_resource replaces a file whose hash does not
     // match — so extracting first would let the stock jar overwrite a patched
     // one the pack deliberately ships.
     emit_progress(app_handle, id, instance_name, "Extracting files", false, None);
-    extract_overrides(&mut archive, instance_path)?;
+    extract_overrides(&mut prepared.archive, instance_path)?;
 
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
     name_entries_by_project(&mut modlist_entries, &state.http_client).await;
     upsert_modlist_entries(instance_path, modlist_entries)?;
 
-    // The pack's own blurb where it ships one; its name is all a pack without a
-    // summary offers.
-    let description = if index.summary.is_empty() {
-        index.name.clone()
-    } else {
-        index.summary.clone()
-    };
     let meta = InstanceMeta {
         id: id.to_string(),
         name: instance_name.to_string(),
-        description,
-        game_version: mc_version.clone(),
-        mod_loader: mod_loader.clone(),
-        mod_loader_version: loader_version,
-        version_id,
+        description: pack_description(&prepared.index),
+        game_version: prepared.mc_version.clone(),
+        mod_loader: prepared.mod_loader.clone(),
+        mod_loader_version: prepared.loader_version,
+        version_id: prepared.version_id,
         category,
         origin,
         ..InstanceMeta::default()
@@ -844,8 +932,8 @@ async fn install_into(
         "Installed '{}' from {} (MC {}, {})",
         instance_name,
         zip_path.display(),
-        mc_version,
-        mod_loader
+        prepared.mc_version,
+        prepared.mod_loader
     );
     Ok(())
 }
@@ -903,33 +991,7 @@ async fn install_by_version(
     state: &State<'_, AppState>,
 ) -> Result<(), Error> {
     emit_progress(app_handle, id, instance_name, "Downloading modpack", false, None);
-
-    let url = format!("https://api.modrinth.com/v2/version/{version_id}");
-    let version = fetch_json(&state.http_client, &url)
-        .send::<Version>()
-        .await?;
-    let file = selected_file(&version).ok_or_else(|| {
-        Error::NotExists(format!("Modrinth version {version_id} lists no file"))
-    })?;
-
-    // The name comes from the API, not from us; refuse one that would stage the
-    // zip outside the instance's cache directory.
-    if !is_bare_file_name(&file.filename) {
-        return Err(Error::Invalid(format!(
-            "Modrinth version {version_id} names its file '{}'",
-            file.filename
-        )));
-    }
-    let cache_path = instance_path
-        .join(ProjectFileTarget::Modpack.directory())
-        .join(&file.filename);
-    download_resource(
-        &state.http_client,
-        &file.url,
-        &file.hashes.sha1,
-        cache_path.clone(),
-    )
-    .await?;
+    let cache_path = stage_version(version_id, instance_path, &state.http_client).await?;
 
     let installed = install_into(
         app_handle,
@@ -947,6 +1009,154 @@ async fn install_by_version(
     // files were fetched from the URLs the index carries.
     std::fs::remove_file(&cache_path).ok();
     installed
+}
+
+/// Upgrade an instance to another version of the Modrinth pack it came from.
+///
+/// The new `.mrpack` is staged and installed over the instance: files it still
+/// ships are downloaded (unchanged ones are skipped by their hash), files it no
+/// longer ships are deleted, and the user's saves, configs and screenshots are
+/// left untouched.
+pub async fn upgrade_modpack(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    instance_path: PathBuf,
+    source: DownloadSource,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
+    let DownloadSource::Modrinth { version_id, .. } = &source else {
+        return Err(Error::Unsupported(
+            "not a Modrinth modpack source".to_string(),
+        ));
+    };
+
+    emit_progress(app_handle, id, instance_name, "Downloading modpack", false, None);
+    let cache_path = stage_version(version_id, &instance_path, &state.http_client).await?;
+    let upgraded = upgrade_into(
+        app_handle,
+        id,
+        instance_name,
+        &instance_path,
+        &cache_path,
+        &source,
+        state,
+    )
+    .await;
+    std::fs::remove_file(&cache_path).ok();
+    upgraded
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn upgrade_into(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    instance_path: &Path,
+    zip_path: &Path,
+    source: &DownloadSource,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
+    let mut prepared = prepare_pack(app_handle, id, instance_name, zip_path, state).await?;
+
+    // Read before anything is written: this is the record of what the instance
+    // had, and it is only replaced once the new files are on disk.
+    let previous = installed_entries(instance_path);
+
+    emit_progress(app_handle, id, instance_name, "Updating mods", false, None);
+    let mut modlist_entries = sync_pack_files(
+        &prepared.index,
+        instance_path,
+        &previous,
+        &state.http_client,
+    )
+    .await?;
+
+    // Only now that the new files are down: a failure before this point leaves
+    // the old instance intact rather than stripped of mods it still lists.
+    //
+    // What the new pack ships is read from the index, not from the entries just
+    // returned: the mod list tracks mods, so a resource pack this upgrade
+    // successfully fetched has no entry and would look dropped.
+    let shipped: HashSet<String> = prepared
+        .index
+        .files
+        .iter()
+        .filter(|file| file.wanted_by_client())
+        .filter_map(|file| safe_destination(instance_path, &file.path))
+        .map(|dest| file_name_of(&dest))
+        .collect();
+    for (file_name, entry) in &previous {
+        if shipped.contains(file_name) {
+            continue;
+        }
+        remove_dropped_file(instance_path, entry);
+    }
+
+    emit_progress(app_handle, id, instance_name, "Extracting files", false, None);
+    extract_overrides(&mut prepared.archive, instance_path)?;
+
+    emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
+    name_entries_by_project(&mut modlist_entries, &state.http_client).await;
+    // The new pack defines the mod set outright, so the list is replaced rather
+    // than merged — a merge would keep rows for jars just deleted.
+    replace_modlist_entries(instance_path, modlist_entries)?;
+
+    let mut meta: InstanceMeta = read_json(instance_meta_file(instance_path))?;
+    meta.description = pack_description(&prepared.index);
+    meta.game_version = prepared.mc_version.clone();
+    meta.mod_loader = prepared.mod_loader.clone();
+    meta.mod_loader_version = prepared.loader_version;
+    meta.version_id = prepared.version_id;
+    meta.origin = source.clone();
+    write_json(instance_meta_file(instance_path), &meta)?;
+
+    info!(
+        "Upgraded '{}' (MC {}, {})",
+        instance_name, prepared.mc_version, prepared.mod_loader
+    );
+    Ok(())
+}
+
+/// Delete a file the new pack no longer ships, under whichever name it is on
+/// disk — a disabled mod is stored with a `.disabled` suffix.
+fn remove_dropped_file(instance_path: &Path, entry: &ModListEntry) {
+    let dir = instance_path.join(entry.target.directory());
+    let dest = dir.join(&entry.file_name);
+    for path in [disabled_path(&dest), dest] {
+        if path.exists() {
+            if let Err(e) = std::fs::remove_file(&path) {
+                warn!("failed to remove dropped file {}: {e}", path.display());
+            }
+        }
+    }
+}
+
+/// Download a version's `.mrpack` into the instance's cache directory.
+async fn stage_version(
+    version_id: &str,
+    instance_path: &Path,
+    client: &reqwest::Client,
+) -> Result<PathBuf, Error> {
+    let url = format!("https://api.modrinth.com/v2/version/{version_id}");
+    let version = fetch_json(client, &url).send::<Version>().await?;
+    let file = selected_file(&version).ok_or_else(|| {
+        Error::NotExists(format!("Modrinth version {version_id} lists no file"))
+    })?;
+
+    // The name comes from the API, not from us; refuse one that would stage the
+    // zip outside the instance's cache directory.
+    if !is_bare_file_name(&file.filename) {
+        return Err(Error::Invalid(format!(
+            "Modrinth version {version_id} names its file '{}'",
+            file.filename
+        )));
+    }
+    let cache_path = instance_path
+        .join(ProjectFileTarget::Modpack.directory())
+        .join(&file.filename);
+    download_resource(client, &file.url, &file.hashes.sha1, cache_path.clone()).await?;
+    Ok(cache_path)
 }
 
 #[cfg(test)]
@@ -999,6 +1209,90 @@ mod mrpack_tests {
         assert_eq!(target_for("resourcepacks/b.zip"), Some(ProjectFileTarget::ResourcePack));
         assert_eq!(target_for("shaderpacks/c.zip"), Some(ProjectFileTarget::ShaderPack));
         assert_eq!(target_for("config/d.json"), None);
+    }
+}
+
+#[cfg(test)]
+mod upgrade_tests {
+    use super::{disabled_path, is_unchanged, remove_dropped_file, MrpackFile, MrpackHashes};
+    use std::path::{Path, PathBuf};
+    use yaminabe_launcher_shared::datamodels::{
+        DownloadSource, ModListEntry, ModState, ProjectFileTarget,
+    };
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("yaminabe-upgrade-{name}"));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("mods")).expect("create mods dir");
+        dir
+    }
+
+    fn entry(file_name: &str, sha1: &str, state: ModState) -> ModListEntry {
+        ModListEntry {
+            file_name: file_name.to_string(),
+            project_name: String::new(),
+            icon_url: None,
+            sha1: sha1.to_string(),
+            source: DownloadSource::Manual,
+            target: ProjectFileTarget::Mod,
+            size: 0,
+            state,
+        }
+    }
+
+    fn indexed(sha1: &str) -> MrpackFile {
+        MrpackFile {
+            path: "mods/a.jar".to_string(),
+            hashes: MrpackHashes { sha1: sha1.to_string() },
+            env: None,
+            downloads: vec![],
+            file_size: 0,
+        }
+    }
+
+    #[test]
+    fn a_file_is_unchanged_only_when_its_hash_matches() {
+        let installed = entry("a.jar", "ABC123", ModState::Enabled);
+        assert!(is_unchanged(&installed, &indexed("abc123")));
+        assert!(!is_unchanged(&installed, &indexed("def456")));
+
+        // Nothing to compare against is not a match: re-fetching is the safe
+        // reading, since the alternative is keeping a file that may differ.
+        let unhashed = entry("a.jar", "", ModState::Enabled);
+        assert!(!is_unchanged(&unhashed, &indexed("")));
+    }
+
+    #[test]
+    fn a_disabled_mod_is_named_for_where_it_actually_sits() {
+        assert_eq!(
+            disabled_path(Path::new("/i/mods/a.jar")),
+            PathBuf::from("/i/mods/a.jar.disabled")
+        );
+    }
+
+    /// A dropped mod the user had disabled is on disk under its `.disabled`
+    /// name, so deleting only the plain name would leave it loading against the
+    /// upgraded pack.
+    #[test]
+    fn dropping_a_disabled_mod_removes_the_file_it_really_has() {
+        let dir = temp_dir("disabled");
+        let disabled = dir.join("mods").join("old.jar.disabled");
+        std::fs::write(&disabled, b"jar").expect("write disabled jar");
+
+        remove_dropped_file(&dir, &entry("old.jar", "abc", ModState::Disabled));
+        assert!(!disabled.exists(), "the .disabled file should be gone");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dropping_an_enabled_mod_removes_its_jar() {
+        let dir = temp_dir("enabled");
+        let jar = dir.join("mods").join("old.jar");
+        std::fs::write(&jar, b"jar").expect("write jar");
+
+        remove_dropped_file(&dir, &entry("old.jar", "abc", ModState::Enabled));
+        assert!(!jar.exists(), "the jar should be gone");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
 

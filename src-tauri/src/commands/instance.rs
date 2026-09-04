@@ -103,6 +103,18 @@ fn sort_modlist(entries: &mut [ModListEntry]) {
     entries.sort_by(|a, b| a.file_name.to_lowercase().cmp(&b.file_name.to_lowercase()));
 }
 
+/// Write `entries` as the whole modlist, replacing whatever was there.
+///
+/// For an upgrade, which recomputes the mod set outright: merging would leave
+/// rows describing jars the upgrade has just deleted.
+pub fn replace_modlist_entries(
+    instance_dir: &Path,
+    mut entries: Vec<ModListEntry>,
+) -> Result<(), Error> {
+    sort_modlist(&mut entries);
+    write_json(modlist_file(instance_dir), &entries)
+}
+
 /// Create the directory a new instance will live in, refusing to reuse one that
 /// already exists — installing over an existing instance would overlay its files
 /// and overwrite its record, orphaning it from the library.
