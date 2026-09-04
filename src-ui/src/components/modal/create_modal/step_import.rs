@@ -151,9 +151,17 @@ pub fn StepImport(
         // over the company it arrived in.
         match payload.paths.into_iter().find(|path| is_modpack_file(path)) {
             Some(path) => read_path(path),
-            None => picked.set(Picked::Rejected(
-                "Drop a .zip or .mrpack modpack file.".to_string(),
-            )),
+            // Tauri reports a drop anywhere in the window, so this fires for one
+            // aimed at nothing in particular. Say what is wanted only when there
+            // is nothing to lose: a pack already chosen and named must survive a
+            // stray file landing on the modal.
+            None => picked.update(|current| {
+                if !matches!(current, Picked::Pack(..)) {
+                    *current = Picked::Rejected(
+                        "Drop a .zip or .mrpack modpack file.".to_string(),
+                    );
+                }
+            }),
         }
     };
     let subscriptions = StoredValue::new_local(Some((
@@ -161,7 +169,9 @@ pub fn StepImport(
         ipc::subscribe::<ipc::DragDropPayload, _>("tauri://drag-enter", move |_| {
             dragging.set(true)
         }),
-        ipc::subscribe::<ipc::DragDropPayload, _>("tauri://drag-leave", move |_| {
+        // Emitted with no payload at all, so it decodes as `None` rather than
+        // failing and leaving the zone lit after the drag goes away.
+        ipc::subscribe::<Option<ipc::DragDropPayload>, _>("tauri://drag-leave", move |_| {
             dragging.set(false)
         }),
     )));

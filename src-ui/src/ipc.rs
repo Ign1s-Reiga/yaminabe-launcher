@@ -45,9 +45,13 @@ pub fn form_data_from_submit(ev: &leptos::ev::SubmitEvent) -> Option<web_sys::Fo
     web_sys::FormData::new_with_form(&form).ok()
 }
 
-/// Payload of Tauri's drag events (`tauri://drag-enter`, `drag-over`,
-/// `drag-drop`, `drag-leave`). Only `drag-enter` and `drag-drop` carry paths,
-/// so the field defaults rather than failing to decode the other two.
+/// Payload of Tauri's drag events. `drag-enter` and `drag-drop` carry paths;
+/// `drag-over` carries only a position, which `#[serde(default)]` covers.
+///
+/// `drag-leave` carries nothing at all — Tauri emits it as `&()`, which reaches
+/// JS as `null`. A struct cannot deserialize from `null`, so subscribe to that
+/// one as `Option<DragDropPayload>`; a field default does not help, because the
+/// failure is at the struct level.
 ///
 /// Tauri intercepts OS file drops itself, so the webview never sees an HTML
 /// `drop` event — these carry real filesystem paths instead, which is what the
