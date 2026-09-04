@@ -15,7 +15,6 @@ use yaminabe_launcher_shared::error::Error;
 
 mod curseforge;
 mod modrinth;
-mod mrpack;
 
 pub async fn search_projects(
     option: &SearchOptions,
@@ -242,7 +241,7 @@ fn detect_format(zip_path: &Path) -> Result<ModpackFormat, Error> {
 pub fn read_local_modpack(zip_path: &Path) -> Result<LocalModpackInfo, Error> {
     match detect_format(zip_path)? {
         ModpackFormat::CurseForge => curseforge::read_local_modpack(zip_path),
-        ModpackFormat::Modrinth => mrpack::read_local_modpack(zip_path),
+        ModpackFormat::Modrinth => modrinth::read_local_modpack(zip_path),
     }
 }
 
@@ -268,7 +267,7 @@ pub async fn install_modpack_from_file(
             .await
         }
         ModpackFormat::Modrinth => {
-            mrpack::install_modpack_from_file(
+            modrinth::install_modpack_from_file(
                 app_handle,
                 id,
                 instance_name,
