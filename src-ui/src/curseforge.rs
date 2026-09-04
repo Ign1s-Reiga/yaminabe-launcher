@@ -2,8 +2,8 @@ use crate::ipc;
 use leptos::web_sys;
 use serde::Serialize;
 use yaminabe_launcher_shared::datamodels::{
-    DownloadSource, GameVersion, LoaderVersion, ModListEntry, ModLoader, ModProjectSearchResults,
-    ProjectFileInfo, ProjectFileTarget, SearchOptions,
+    DownloadSource, GameVersion, LoaderVersion, LocalModpackInfo, ModListEntry, ModLoader,
+    ModProjectSearchResults, ProjectFileInfo, ProjectFileTarget, SearchOptions,
 };
 
 // ── IPC ───────────────────────────────────────────────────────────────────────
@@ -143,6 +143,43 @@ pub async fn call_link_mods(
 /// the Home page cost nothing and the list survives being offline.
 pub async fn call_get_popular_modpacks() -> Result<ModProjectSearchResults, String> {
     ipc::call_noargs("get_popular_modpacks").await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FilePathArgs {
+    file_path: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallFromFileArgs {
+    instance_name: String,
+    category: String,
+    file_path: String,
+}
+
+/// The chosen modpack zip, or `None` when the dialog was dismissed.
+pub async fn call_pick_modpack_file() -> Result<Option<String>, String> {
+    ipc::call_noargs("pick_modpack_file").await
+}
+
+/// Describe a modpack zip without installing it. An `Err` here is the reason
+/// the file cannot be used, ready to show.
+pub async fn call_read_modpack_file(file_path: String) -> Result<LocalModpackInfo, String> {
+    ipc::call("read_modpack_file", &FilePathArgs { file_path }).await
+}
+
+pub async fn call_install_modpack_from_file(
+    instance_name: String,
+    category: String,
+    file_path: String,
+) -> Result<(), String> {
+    ipc::call(
+        "install_modpack_from_file",
+        &InstallFromFileArgs { instance_name, category, file_path },
+    )
+    .await
 }
 
 pub async fn call_pick_mod_files() -> Result<Vec<String>, String> {
