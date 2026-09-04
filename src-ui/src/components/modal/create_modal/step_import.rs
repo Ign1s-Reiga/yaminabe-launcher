@@ -34,6 +34,8 @@ pub fn StepImport(
     on_install: Callback<String>,
 ) -> impl IntoView {
     let picked: RwSignal<Picked> = RwSignal::new(Picked::Nothing);
+    // The name this step last filled in, to tell it apart from one the user typed.
+    let filled_name: StoredValue<Option<String>> = StoredValue::new(None);
 
     let drop_zone = css! {
         border: 2px dashed var(--tertiary-color);
@@ -95,10 +97,16 @@ pub fn StepImport(
             match call_read_modpack_file(path.clone()).await {
                 Ok(info) => {
                     // Default the instance name to the pack's own, so the common
-                    // case needs no typing.
-                    if state.instance_name.get_untracked().trim().is_empty() && !info.name.is_empty()
+                    // case needs no typing. A name this step filled in itself is
+                    // replaced when another pack is picked; one the user typed is
+                    // left alone.
+                    let current = state.instance_name.get_untracked();
+                    let ours = filled_name.get_value();
+                    if (current.trim().is_empty() || Some(&current) == ours.as_ref())
+                        && !info.name.is_empty()
                     {
                         state.instance_name.set(info.name.clone());
+                        filled_name.set_value(Some(info.name.clone()));
                     }
                     picked.set(Picked::Pack(path, info));
                 }
