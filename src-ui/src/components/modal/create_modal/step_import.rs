@@ -134,7 +134,8 @@ pub fn StepImport(
                         </span>
                         <span class=pack_meta>
                             {format!(
-                                "MC {} · {}{} · {} files",
+                                "{} · MC {} · {}{} · {} files",
+                                info.format,
                                 info.game_version,
                                 info.mod_loader,
                                 if info.version.is_empty() {
@@ -166,7 +167,7 @@ pub fn StepImport(
                 }.into_any(),
                 Picked::Nothing => view! {
                     <div class=drop_zone on:click=choose>
-                        <p class=drop_hint>"Click to choose a modpack .zip"</p>
+                        <p class=drop_hint>"Click to choose a .zip or .mrpack"</p>
                     </div>
                 }.into_any(),
             }}

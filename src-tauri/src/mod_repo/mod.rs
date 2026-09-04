@@ -8,13 +8,14 @@ use reqwest::Client;
 use tauri::State;
 use yaminabe_launcher_shared::datamodels::ModState;
 use yaminabe_launcher_shared::datamodels::{
-    DownloadSource, LocalModpackInfo, ModListEntry, ModLoader, ModProjectSearchResults, Platform,
-    ProjectFileInfo, ProjectFileTarget, SearchOptions,
+    DownloadSource, LocalModpackInfo, ModListEntry, ModLoader, ModProjectSearchResults,
+    ModpackFormat, Platform, ProjectFileInfo, ProjectFileTarget, SearchOptions,
 };
 use yaminabe_launcher_shared::error::Error;
 
 mod curseforge;
 mod modrinth;
+mod mrpack;
 
 pub async fn search_projects(
     option: &SearchOptions,
@@ -216,10 +217,33 @@ pub async fn project_page_url(
     }
 }
 
-/// Read a modpack zip on disk. Only the CurseForge format is understood, which
-/// is what the file picker offers.
+/// Which format a modpack file is, decided by the index it carries rather than
+/// its extension — a `.mrpack` is a zip, and either format may reach us under
+/// either name.
+fn detect_format(zip_path: &Path) -> Result<ModpackFormat, Error> {
+    let file = std::fs::File::open(zip_path)
+        .map_err(|e| Error::Invalid(format!("cannot open {}: {e}", zip_path.display())))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|_| Error::Invalid(format!("{} is not a zip file", zip_path.display())))?;
+    if archive.by_name("modrinth.index.json").is_ok() {
+        return Ok(ModpackFormat::Modrinth);
+    }
+    if archive.by_name("manifest.json").is_ok() {
+        return Ok(ModpackFormat::CurseForge);
+    }
+    Err(Error::Invalid(format!(
+        "{} carries neither manifest.json nor modrinth.index.json, so it is not a modpack",
+        zip_path.display()
+    )))
+}
+
+/// Read a modpack file on disk, in whichever of the two supported formats it
+/// turns out to be.
 pub fn read_local_modpack(zip_path: &Path) -> Result<LocalModpackInfo, Error> {
-    curseforge::read_local_modpack(zip_path)
+    match detect_format(zip_path)? {
+        ModpackFormat::CurseForge => curseforge::read_local_modpack(zip_path),
+        ModpackFormat::Modrinth => mrpack::read_local_modpack(zip_path),
+    }
 }
 
 /// Install from a zip the user already has, rather than one fetched by id.
@@ -231,13 +255,28 @@ pub async fn install_modpack_from_file(
     zip_path: &Path,
     state: &State<'_, AppState>,
 ) -> Result<(), Error> {
-    curseforge::install_modpack_from_file(
-        app_handle,
-        id,
-        instance_name,
-        category,
-        zip_path,
-        state,
-    )
-    .await
+    match detect_format(zip_path)? {
+        ModpackFormat::CurseForge => {
+            curseforge::install_modpack_from_file(
+                app_handle,
+                id,
+                instance_name,
+                category,
+                zip_path,
+                state,
+            )
+            .await
+        }
+        ModpackFormat::Modrinth => {
+            mrpack::install_modpack_from_file(
+                app_handle,
+                id,
+                instance_name,
+                category,
+                zip_path,
+                state,
+            )
+            .await
+        }
+    }
 }

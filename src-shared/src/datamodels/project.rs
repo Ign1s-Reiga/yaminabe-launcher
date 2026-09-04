@@ -222,12 +222,35 @@ pub struct ModProjectSearchResults {
     pub total: u32,
 }
 
-/// What a modpack zip on disk says about itself, read before installing so the
-/// user can confirm they picked the right file and a zip that is not a
-/// CurseForge modpack is rejected up front rather than mid-install.
+/// Which modpack format a file on disk turned out to be. They differ in more
+/// than layout: a CurseForge manifest names mods by project id and needs the
+/// API to resolve them, while a Modrinth index carries download URLs and hashes
+/// outright.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ModpackFormat {
+    /// `manifest.json` at the root of a `.zip`.
+    CurseForge,
+    /// `modrinth.index.json` at the root of a `.mrpack`.
+    Modrinth,
+}
+
+impl Display for ModpackFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ModpackFormat::CurseForge => write!(f, "CurseForge"),
+            ModpackFormat::Modrinth => write!(f, "Modrinth"),
+        }
+    }
+}
+
+/// What a modpack file on disk says about itself, read before installing so the
+/// user can confirm they picked the right pack and a file that is not a modpack
+/// at all is rejected up front rather than mid-install.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalModpackInfo {
+    pub format: ModpackFormat,
     /// The pack's own name from its manifest; empty when it declares none.
     pub name: String,
     pub version: String,

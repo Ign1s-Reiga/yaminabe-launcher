@@ -15,7 +15,8 @@ use serde::Deserialize;
 use tauri::State;
 use yaminabe_launcher_shared::datamodels::{
     DownloadSource, InstanceMeta, LocalModpackInfo, ModListEntry, ModLoader, ModProjectInfo,
-    ModProjectSearchResults, ModState, Platform, ProjectFileInfo, ProjectFileTarget, SearchOptions,
+    ModProjectSearchResults, ModState, ModpackFormat, Platform, ProjectFileInfo,
+    ProjectFileTarget, SearchOptions,
 };
 use yaminabe_launcher_shared::error::Error;
 
@@ -965,6 +966,7 @@ pub fn read_local_modpack(zip_path: &Path) -> Result<LocalModpackInfo, Error> {
     let manifest = read_manifest(&mut archive)?;
     let (mod_loader, mod_loader_version) = resolve_loader(&manifest)?;
     Ok(LocalModpackInfo {
+        format: ModpackFormat::CurseForge,
         name: manifest.name,
         version: manifest.version,
         author: manifest.author,

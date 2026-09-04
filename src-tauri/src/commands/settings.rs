@@ -49,14 +49,16 @@ pub async fn pick_mod_files(app: tauri::AppHandle) -> Vec<String> {
     rx.await.unwrap_or_default()
 }
 
-/// Open a native picker for a modpack zip already on disk, returning the chosen
-/// path. Filtered to `.zip`, the shape CurseForge exports.
+/// Open a native picker for a modpack file already on disk, returning the chosen
+/// path. Both supported formats are zips: CurseForge exports `.zip`, Modrinth
+/// exports `.mrpack`, and the format is decided by reading the file rather than
+/// trusting which extension it arrived under.
 #[tauri::command]
 pub async fn pick_modpack_file(app: tauri::AppHandle) -> Option<String> {
     let (tx, rx) = tokio::sync::oneshot::channel::<Option<String>>();
     app.dialog()
         .file()
-        .add_filter("Modpack zip", &["zip"])
+        .add_filter("Modpack", &["zip", "mrpack"])
         .pick_file(move |path| {
             let picked = path.and_then(|fp| match fp {
                 FilePath::Path(p) => p.to_str().map(|s| s.to_string()),
