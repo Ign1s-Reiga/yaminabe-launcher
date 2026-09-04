@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::commands::instance::{
     create_instance_dir, discard_unfinished_instance_dir, instance_meta_file,
@@ -13,6 +15,7 @@ use crate::AppState;
 use log::{info, warn};
 use serde::Deserialize;
 use tauri::State;
+use tokio::sync::Semaphore;
 use yaminabe_launcher_shared::datamodels::{
     DownloadSource, InstanceMeta, LocalModpackInfo, ModListEntry, ModLoader, ModProjectInfo,
     ModProjectSearchResults, ModState, ModpackFormat, Platform, ProjectFileInfo,
@@ -397,24 +400,133 @@ fn unfetched_entry(file: &MrpackFile, target: ProjectFileTarget) -> ModListEntry
     }
 }
 
-/// Try each URL the index lists in turn. They are mirrors of one file, so the
-/// first that works wins and only the last error is worth reporting.
-async fn download_from_mirrors(
-    file: &MrpackFile,
+/// Try each URL in turn. They are mirrors of one file, so the first that works
+/// wins and only the last error is worth reporting.
+async fn download_mirrors(
+    path: &str,
+    urls: &[String],
+    sha1: &str,
     dest: &Path,
     client: &reqwest::Client,
 ) -> Result<(), Error> {
-    let mut last = Error::Invalid(format!("no download URL for {}", file.path));
-    for url in &file.downloads {
-        match download_resource(client, url, &file.hashes.sha1, dest.to_path_buf()).await {
+    let mut last = Error::Invalid(format!("no download URL for {path}"));
+    for url in urls {
+        match download_resource(client, url, sha1, dest.to_path_buf()).await {
             Ok(()) => return Ok(()),
             Err(e) => {
-                warn!("mirror {url} failed for {}: {e}", file.path);
+                warn!("mirror {url} failed for {path}: {e}");
                 last = e;
             }
         }
     }
     Err(last)
+}
+
+/// One file's worth of work, owned so it can be handed to a task of its own.
+struct PlannedDownload {
+    /// The index's own path, for logging.
+    path: String,
+    dest: PathBuf,
+    /// `None` when the modlist does not model where this file goes.
+    target: Option<ProjectFileTarget>,
+    sha1: String,
+    downloads: Vec<String>,
+    file_size: u64,
+}
+
+/// How many files to fetch at once. Matches what the CurseForge path allows,
+/// so neither install is markedly harder on a connection than the other.
+const DOWNLOAD_CONCURRENCY: usize = 3;
+
+/// Fetch the planned files a few at a time, reporting progress as they land.
+/// A per-file failure is recorded rather than aborting the batch; only a task
+/// panicking propagates.
+async fn run_downloads(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    planned: Vec<PlannedDownload>,
+    client: &reqwest::Client,
+) -> Result<Vec<ModListEntry>, Error> {
+    let total = planned.len();
+    let done = Arc::new(AtomicUsize::new(0));
+    let semaphore = Arc::new(Semaphore::new(DOWNLOAD_CONCURRENCY));
+    let mut handles = Vec::with_capacity(total);
+
+    for file in planned {
+        let client = client.clone();
+        let semaphore = Arc::clone(&semaphore);
+        let done = Arc::clone(&done);
+        let app_handle = app_handle.clone();
+        let id = id.to_string();
+        let instance_name = instance_name.to_string();
+        handles.push(tokio::spawn(async move {
+            let permit = semaphore
+                .acquire_owned()
+                .await
+                .map_err(|e| Error::ChildProcess(format!("semaphore acquire: {e}")))?;
+            let result = download_mirrors(&file.path, &file.downloads, &file.sha1, &file.dest, &client).await;
+            drop(permit);
+
+            // Counted as each lands, so a long install shows movement rather
+            // than one message for the whole run.
+            let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
+            emit_progress(
+                &app_handle,
+                &id,
+                &instance_name,
+                &format!("Downloading mods ({finished}/{total})"),
+                false,
+                None,
+            );
+            Ok::<_, Error>(entry_for(file, result))
+        }));
+    }
+
+    let mut entries = Vec::new();
+    for handle in handles {
+        if let Some(entry) = handle
+            .await
+            .map_err(|e| Error::ChildProcess(format!("download task panicked: {e}")))??
+        {
+            entries.push(entry);
+        }
+    }
+    Ok(entries)
+}
+
+/// The modlist row a finished download deserves, or `None` for a file the
+/// modlist does not model that arrived safely.
+fn entry_for(file: PlannedDownload, result: Result<(), Error>) -> Option<ModListEntry> {
+    let state = match result {
+        Ok(()) => ModState::Enabled,
+        Err(e) => {
+            warn!("download failed for {}: {e}; marking for manual install", file.path);
+            ModState::DownloadFailed
+        }
+    };
+    let target = file.target?;
+    // Only mods are tracked once installed; anything else is tracked solely to
+    // drive the link prompt when it could not be fetched.
+    if !target.tracks_modlist() && state == ModState::Enabled {
+        return None;
+    }
+    // The index states a size; fall back to the file itself when it does not,
+    // so a mod never lists as 0 B once it is on disk.
+    let size = match (file.file_size, state) {
+        (0, ModState::Enabled) => std::fs::metadata(&file.dest).map(|m| m.len()).unwrap_or(0),
+        (size, _) => size,
+    };
+    Some(ModListEntry {
+        file_name: file_name_of(&file.dest),
+        project_name: String::new(),
+        icon_url: None,
+        sha1: file.sha1,
+        source: DownloadSource::Manual,
+        target,
+        size,
+        state,
+    })
 }
 
 /// Extract every `overrides/` tree the pack ships. `client-overrides/` is
@@ -519,12 +631,16 @@ async fn install_into(
 
     emit_progress(app_handle, id, instance_name, "Downloading mods", false, None);
     let mut modlist_entries: Vec<ModListEntry> = Vec::new();
+
+    // Plan first, so the work handed to each task owns what it needs and a file
+    // that can never be attempted is recorded without occupying a slot.
+    let mut planned: Vec<PlannedDownload> = Vec::new();
     for file in index.files.iter().filter(|file| file.wanted_by_client()) {
         let target = target_for(&file.path);
         // A file that cannot even be attempted is recorded the same way a failed
         // download is, so the Mods tab offers to link it rather than the install
         // reporting success with the file quietly absent.
-        let mut record_failure = |reason: String| {
+        let mut unattemptable = |reason: &str| {
             warn!("{}: {reason}", file.path);
             if let Some(target) = target {
                 modlist_entries.push(unfetched_entry(file, target));
@@ -532,46 +648,29 @@ async fn install_into(
         };
 
         let Some(dest) = safe_destination(instance_path, &file.path) else {
-            record_failure("unusable path".to_string());
+            unattemptable("unusable path");
             continue;
         };
         if file.downloads.is_empty() {
-            record_failure("no download URL".to_string());
+            unattemptable("no download URL");
             continue;
         }
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
-
-        let mod_state = match download_from_mirrors(file, &dest, &state.http_client).await {
-            Ok(()) => ModState::Enabled,
-            Err(e) => {
-                warn!("download failed for {}: {e}; marking for manual install", file.path);
-                ModState::DownloadFailed
-            }
-        };
-        let Some(target) = target else { continue };
-        // Only mods are tracked once installed; anything else is tracked solely
-        // to drive the link prompt when it could not be fetched.
-        if target.tracks_modlist() || mod_state == ModState::DownloadFailed {
-            // The index states a size; fall back to the file itself when it
-            // does not, so a mod never lists as 0 B once it is on disk.
-            let size = match (file.file_size, mod_state) {
-                (0, ModState::Enabled) => std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0),
-                (size, _) => size,
-            };
-            modlist_entries.push(ModListEntry {
-                file_name: file_name_of(&dest),
-                project_name: String::new(),
-                icon_url: None,
-                sha1: file.hashes.sha1.clone(),
-                source: DownloadSource::Manual,
-                target,
-                size,
-                state: mod_state,
-            });
-        }
+        planned.push(PlannedDownload {
+            path: file.path.clone(),
+            dest,
+            target,
+            sha1: file.hashes.sha1.clone(),
+            downloads: file.downloads.clone(),
+            file_size: file.file_size,
+        });
     }
+
+    modlist_entries.extend(
+        run_downloads(app_handle, id, instance_name, planned, &state.http_client).await?,
+    );
 
     // After the downloads, not before: the format has overrides win over what a
     // pack lists, and download_resource replaces a file whose hash does not
