@@ -90,6 +90,21 @@ fn sort_modlist(entries: &mut [ModListEntry]) {
     entries.sort_by(|a, b| a.file_name.to_lowercase().cmp(&b.file_name.to_lowercase()));
 }
 
+/// Create the directory a new instance will live in, refusing to reuse one that
+/// already exists — installing over an existing instance would overlay its files
+/// and overwrite its record, orphaning it from the library.
+pub fn create_instance_dir(install_dir: &str, instance_name: &str) -> Result<PathBuf, Error> {
+    let folder = instance_name.to_lowercase();
+    let instance_path = Path::new(install_dir).join(&folder);
+    if instance_path.exists() {
+        return Err(Error::Invalid(format!(
+            "folder '{folder}' already exists at this location"
+        )));
+    }
+    std::fs::create_dir_all(&instance_path)?;
+    Ok(instance_path)
+}
+
 pub fn find_instance_dir(install_dir: &Path, id: &str) -> Result<PathBuf, Error> {
     install_dir.read_dir()?
         .flatten()

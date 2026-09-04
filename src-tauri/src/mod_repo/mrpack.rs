@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::commands::instance::{instance_meta_file, upsert_modlist_entries};
+use crate::commands::instance::{
+    create_instance_dir, instance_meta_file, upsert_modlist_entries,
+};
 use crate::http_utils::download_resource;
 use crate::install_task::ensure_game_and_loader;
 use crate::json::write_json;
@@ -199,14 +201,7 @@ pub async fn install_modpack_from_file(
     state: &State<'_, AppState>,
 ) -> Result<(), Error> {
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
-    let instance_path = PathBuf::from(&install_dir).join(instance_name.to_lowercase());
-    if instance_path.exists() {
-        return Err(Error::Invalid(format!(
-            "folder '{}' already exists at this location",
-            instance_name.to_lowercase()
-        )));
-    }
-    std::fs::create_dir_all(&instance_path)?;
+    let instance_path = create_instance_dir(&install_dir, instance_name)?;
 
     let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path)?)
         .map_err(|e| Error::Invalid(format!("modpack zip is invalid: {e}")))?;

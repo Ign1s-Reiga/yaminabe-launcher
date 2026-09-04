@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use crate::commands::instance::{
-    instance_meta_file, modlist_file, replace_modlist_entries_for_file_ids, upsert_modlist_entries,
+    create_instance_dir, instance_meta_file, modlist_file, replace_modlist_entries_for_file_ids,
+    upsert_modlist_entries,
 };
 use crate::http_utils::{download_resource, fetch_json, rejected_status};
 use crate::install_task::ensure_game_and_loader;
@@ -699,6 +700,59 @@ async fn prepare_from_cached_zip(
     })
 }
 
+/// What differs between installing a pack fetched by id and one read off disk:
+/// where the instance says it came from, and what seeds its description.
+struct InstallOrigin {
+    source: DownloadSource,
+    description: String,
+}
+
+/// Finish an install once the pack is prepared: resolve and download the mods
+/// its manifest lists, record them, and write the instance.
+async fn finish_install(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    instance_name: &str,
+    category: String,
+    instance_path: &Path,
+    prepared: PreparedModpack,
+    origin: InstallOrigin,
+    api_key: &str,
+    state: &State<'_, AppState>,
+) -> Result<(), Error> {
+    emit_progress(app_handle, id, instance_name, "Downloading mods", false, None);
+    let file_ids = manifest_file_ids(&prepared.manifest);
+    let files = resolve_project_files(&file_ids, api_key, &state.http_client).await?;
+    let modlist_entries =
+        super::download_project_files(files, instance_path, &state.http_client).await?;
+
+    emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
+    upsert_modlist_entries(instance_path, modlist_entries)?;
+
+    let meta = InstanceMeta {
+        id: id.to_string(),
+        name: instance_name.to_string(),
+        description: origin.description,
+        game_version: prepared.mc_version.clone(),
+        mod_loader: prepared.mod_loader.clone(),
+        mod_loader_version: prepared.loader_version,
+        version_id: prepared.version_id,
+        category,
+        origin: origin.source,
+        ..InstanceMeta::default()
+    };
+    write_json(instance_meta_file(instance_path), &meta)?;
+
+    info!(
+        "Installed '{}' (MC {}, {}) → {}",
+        instance_name,
+        prepared.mc_version,
+        prepared.mod_loader,
+        instance_path.display()
+    );
+    Ok(())
+}
+
 pub async fn install_modpack(
     app_handle: &tauri::AppHandle,
     id: &str,
@@ -714,18 +768,7 @@ pub async fn install_modpack(
         let settings = state.settings.read().unwrap();
         (settings.curseforge_api_key.clone(), settings.instance_install_dir.clone())
     };
-
-    // create_instance refuses an existing folder; do the same here, or a pack
-    // installed under a name that lowercases onto an existing instance would
-    // overlay its files and overwrite its metadata, orphaning the original.
-    let instance_path = PathBuf::from(&install_dir).join(instance_name.to_lowercase());
-    if instance_path.exists() {
-        return Err(Error::Invalid(format!(
-            "folder '{}' already exists at this location",
-            instance_name.to_lowercase()
-        )));
-    }
-    std::fs::create_dir_all(&instance_path)?;
+    let instance_path = create_instance_dir(&install_dir, instance_name)?;
 
     let prepared = prepare_modpack(
         app_handle,
@@ -736,21 +779,6 @@ pub async fn install_modpack(
         &api_key,
         state,
     ).await?;
-
-    emit_progress(
-        app_handle,
-        id,
-        instance_name,
-        "Downloading mods",
-        false,
-        None,
-    );
-    let file_ids = manifest_file_ids(&prepared.manifest);
-    let files = resolve_project_files(&file_ids, &api_key, &state.http_client).await?;
-    let modlist_entries = super::download_project_files(files, &instance_path, &state.http_client).await?;
-
-    emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
-    upsert_modlist_entries(&instance_path, modlist_entries)?;
 
     // Seed the instance description with the pack's own blurb. It is cosmetic,
     // so a failed lookup leaves it empty instead of failing the install.
@@ -765,28 +793,18 @@ pub async fn install_modpack(
         }
     };
 
-    let meta = InstanceMeta {
-        id: id.to_string(),
-        name: instance_name.to_string(),
-        description,
-        game_version: prepared.mc_version.clone(),
-        mod_loader: prepared.mod_loader.clone(),
-        mod_loader_version: prepared.loader_version,
-        version_id: prepared.version_id,
-        category,
-        origin: source,
-        ..InstanceMeta::default()
-    };
-    write_json(instance_meta_file(&instance_path), &meta)?;
-
-    info!(
-        "Installed '{}' (MC {}, {}) → {}",
+    finish_install(
+        app_handle,
+        id,
         instance_name,
-        prepared.mc_version,
-        prepared.mod_loader,
-        instance_path.display()
-    );
-    Ok(())
+        category,
+        &instance_path,
+        prepared,
+        InstallOrigin { source, description },
+        &api_key,
+        state,
+    )
+    .await
 }
 
 /// Upgrade an existing CurseForge instance to a newer modpack file: re-ensure
@@ -996,15 +1014,7 @@ pub async fn install_modpack_from_file(
         let settings = state.settings.read().unwrap();
         (settings.curseforge_api_key.clone(), settings.instance_install_dir.clone())
     };
-
-    let instance_path = PathBuf::from(&install_dir).join(instance_name.to_lowercase());
-    if instance_path.exists() {
-        return Err(Error::Invalid(format!(
-            "folder '{}' already exists at this location",
-            instance_name.to_lowercase()
-        )));
-    }
-    std::fs::create_dir_all(&instance_path)?;
+    let instance_path = create_instance_dir(&install_dir, instance_name)?;
 
     let prepared = prepare_from_cached_zip(
         app_handle,
@@ -1016,36 +1026,22 @@ pub async fn install_modpack_from_file(
     )
     .await?;
 
-    emit_progress(app_handle, id, instance_name, "Downloading mods", false, None);
-    let file_ids = manifest_file_ids(&prepared.manifest);
-    let files = resolve_project_files(&file_ids, &api_key, &state.http_client).await?;
-    let modlist_entries =
-        super::download_project_files(files, &instance_path, &state.http_client).await?;
-
-    emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
-    upsert_modlist_entries(&instance_path, modlist_entries)?;
-
-    let meta = InstanceMeta {
-        id: id.to_string(),
-        name: instance_name.to_string(),
-        description: prepared.manifest.name.clone(),
-        game_version: prepared.mc_version.clone(),
-        mod_loader: prepared.mod_loader.clone(),
-        mod_loader_version: prepared.loader_version,
-        version_id: prepared.version_id,
-        category,
-        ..InstanceMeta::default()
-    };
-    write_json(instance_meta_file(&instance_path), &meta)?;
-
-    info!(
-        "Installed '{}' from {} (MC {}, {})",
+    // A manifest carries no project id for the pack itself, so there is nothing
+    // to offer an upgrade against; the pack's own name is the best description
+    // available without an API lookup that could not identify it anyway.
+    let description = prepared.manifest.name.clone();
+    finish_install(
+        app_handle,
+        id,
         instance_name,
-        zip_path.display(),
-        prepared.mc_version,
-        prepared.mod_loader
-    );
-    Ok(())
+        category,
+        &instance_path,
+        prepared,
+        InstallOrigin { source: DownloadSource::Manual, description },
+        &api_key,
+        state,
+    )
+    .await
 }
 
 #[cfg(test)]
