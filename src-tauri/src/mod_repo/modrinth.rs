@@ -221,11 +221,16 @@ fn selected_file(version: &Version) -> Option<&VersionFile> {
         .or_else(|| version.files.first())
 }
 
-// ── .mrpack, Modrinth's modpack format ───────────────────────────────────────
-
-/// The index at the root of a `.mrpack`. Unlike a CurseForge manifest, this
-/// carries each file's download URL and hash outright, so installing needs no
-/// API and no key.
+/// The index at the root of a `.mrpack`, Modrinth's modpack format.
+///
+/// The format is handled here beside the API client rather than in a module of
+/// its own: `mod_repo` is one module per provider, and `curseforge.rs` likewise
+/// holds both its API and the manifest format it exports. Installing a pack
+/// fetched from the Modrinth API will read this from the same file rather than
+/// reaching across modules for it.
+///
+/// Unlike a CurseForge manifest, this carries each file's download URL and hash
+/// outright, so installing from it needs no API and no key.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MrpackIndex {
