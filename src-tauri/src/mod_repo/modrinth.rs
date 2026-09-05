@@ -944,18 +944,43 @@ fn relative_path(instance_path: &Path, dest: &Path) -> Option<String> {
     (!joined.is_empty()).then_some(joined)
 }
 
+/// How a path compares for "is this still shipped".
+///
+/// Windows addresses one file by either spelling, so two cases are one file
+/// there and comparing them exactly would delete the file just written. A
+/// case-sensitive filesystem is the opposite: treating them as one leaves both
+/// spellings on disk, which the loader reads as a duplicate mod. So the
+/// comparison follows the platform rather than picking a side.
+fn path_key(relative: &str) -> String {
+    if cfg!(windows) {
+        relative.to_lowercase()
+    } else {
+        relative.to_string()
+    }
+}
+
 /// Delete a file a newer version of the pack no longer ships, under whichever
 /// name it has — a disabled mod is stored with a `.disabled` suffix.
+///
+/// `shipped` is what this version installs, keyed by [`path_key`]. A pack may
+/// legitimately ship a file whose name ends in `.disabled`; that file is its
+/// own, not the disabled twin of the one being removed, so an alias the new
+/// version ships is left alone.
 ///
 /// The path came from our own record, but it is resolved through the same guard
 /// as one from an index: a record that has been edited by hand cannot direct a
 /// delete outside the instance.
-fn remove_pack_file(instance_path: &Path, relative: &str) {
+fn remove_pack_file(instance_path: &Path, relative: &str, shipped: &HashSet<String>) {
     let Some(dest) = safe_destination(instance_path, relative) else {
         warn!("refusing to remove '{relative}': not inside the instance");
         return;
     };
-    for path in [disabled_path(&dest), dest] {
+
+    let mut targets = vec![dest.clone()];
+    if !shipped.contains(&path_key(&format!("{relative}.disabled"))) {
+        targets.push(disabled_path(&dest));
+    }
+    for path in targets {
         if path.exists() {
             if let Err(e) = std::fs::remove_file(&path) {
                 warn!("failed to remove dropped file {}: {e}", path.display());
@@ -1175,21 +1200,12 @@ async fn upgrade_into(
 
     // Only now that the new files are down: a failure before this point leaves
     // the old instance intact rather than stripped of mods it still lists.
-    // Compared without case, always. Windows addresses one file by either
-    // spelling, so a version that only recapitalises a path would otherwise look
-    // like a drop and delete the file just written. Being too eager to call a
-    // file "still shipped" leaves a stale one behind; being too eager the other
-    // way deletes a live one, so the comparison errs toward keeping.
-    let shipped: HashSet<String> = synced
-        .paths
-        .iter()
-        .map(|path| path.to_lowercase())
-        .collect();
+    let shipped: HashSet<String> = synced.paths.iter().map(|path| path_key(path)).collect();
     for path in &installed_before {
-        if shipped.contains(&path.to_lowercase()) {
+        if shipped.contains(&path_key(path)) {
             continue;
         }
-        remove_pack_file(instance_path, path);
+        remove_pack_file(instance_path, path, &shipped);
     }
 
     emit_progress(app_handle, id, instance_name, "Extracting files", false, None);
@@ -1301,7 +1317,7 @@ mod mrpack_tests {
 #[cfg(test)]
 mod upgrade_tests {
     use super::{disabled_path, is_unchanged, remove_pack_file, MrpackFile, MrpackHashes};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::path::{Path, PathBuf};
     use yaminabe_launcher_shared::datamodels::{
         DownloadSource, ModListEntry, ModState, ProjectFileTarget,
@@ -1376,7 +1392,7 @@ mod upgrade_tests {
         let disabled = dir.join("mods").join("old.jar.disabled");
         std::fs::write(&disabled, b"jar").expect("write disabled jar");
 
-        remove_pack_file(&dir, "mods/old.jar");
+        remove_pack_file(&dir, "mods/old.jar", &HashSet::new());
         assert!(!disabled.exists(), "the .disabled file should be gone");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1509,9 +1525,37 @@ mod upgrade_tests {
         let jar = nested.join("a.jar");
         std::fs::write(&jar, b"jar").expect("write nested jar");
 
-        super::remove_pack_file(&dir, "mods/sub/a.jar");
+        super::remove_pack_file(&dir, "mods/sub/a.jar", &HashSet::new());
         assert!(!jar.exists(), "a nested file must be removed where it actually is");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `<name>.disabled` is a legal path for a pack to ship. When the new
+    /// version ships it and the old one shipped `<name>`, removing the old file
+    /// must not take the new one with it as though it were a disabled twin.
+    #[test]
+    fn removal_keeps_a_disabled_suffix_path_the_new_version_ships() {
+        let dir = temp_dir("alias");
+        let shipped_file = dir.join("mods").join("a.jar.disabled");
+        std::fs::write(&shipped_file, b"the new pack's own file").expect("write shipped file");
+
+        let shipped = HashSet::from([super::path_key("mods/a.jar.disabled")]);
+        super::remove_pack_file(&dir, "mods/a.jar", &shipped);
+
+        assert!(shipped_file.exists(), "a path the new version ships is not an alias to delete");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Windows reaches one file by either spelling and Linux does not, so the
+    /// comparison has to follow the platform: one way deletes the file just
+    /// written, the other leaves both spellings for the loader to trip over.
+    #[test]
+    fn path_comparison_follows_the_filesystem() {
+        if cfg!(windows) {
+            assert_eq!(super::path_key("mods/Foo.jar"), super::path_key("mods/foo.jar"));
+        } else {
+            assert_ne!(super::path_key("mods/Foo.jar"), super::path_key("mods/foo.jar"));
+        }
     }
 
     /// The record is ours, but it is a file on disk that could be edited. A path
@@ -1522,7 +1566,7 @@ mod upgrade_tests {
         let outside = dir.parent().expect("temp parent").join("yaminabe-not-mine.jar");
         std::fs::write(&outside, b"someone else's file").expect("write outside file");
 
-        super::remove_pack_file(&dir, "../yaminabe-not-mine.jar");
+        super::remove_pack_file(&dir, "../yaminabe-not-mine.jar", &HashSet::new());
         assert!(outside.exists(), "a path climbing out must not be followed");
         std::fs::remove_file(&outside).ok();
         std::fs::remove_dir_all(&dir).ok();
@@ -1534,7 +1578,7 @@ mod upgrade_tests {
         let jar = dir.join("mods").join("old.jar");
         std::fs::write(&jar, b"jar").expect("write jar");
 
-        remove_pack_file(&dir, "mods/old.jar");
+        remove_pack_file(&dir, "mods/old.jar", &HashSet::new());
         assert!(!jar.exists(), "the jar should be gone");
         std::fs::remove_dir_all(&dir).ok();
     }
