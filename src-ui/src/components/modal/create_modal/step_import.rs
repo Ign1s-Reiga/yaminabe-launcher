@@ -17,16 +17,11 @@ fn is_modpack_file(path: &str) -> bool {
     lower.ends_with(".zip") || lower.ends_with(".mrpack")
 }
 
-/// What the picker knows about the file so far. One value rather than a pile of
-/// options, so "read a pack but also hold an error" cannot be represented.
+/// A modpack file that has been read, and what it turned out to be.
 #[derive(Clone, PartialEq)]
-enum Picked {
-    Nothing,
-    Reading,
-    /// A readable CurseForge modpack, with the path to install from.
-    Pack(String, LocalModpackInfo),
-    /// The file was chosen but is not a modpack this can install.
-    Rejected(String),
+struct Pack {
+    path: String,
+    info: LocalModpackInfo,
 }
 
 /// Step 2 for the import method: choose a modpack zip already on disk, confirm
@@ -42,23 +37,22 @@ pub fn StepImport(
     /// Fired with the chosen zip's path once a name is set.
     on_install: Callback<String>,
 ) -> impl IntoView {
-    let picked: RwSignal<Picked> = RwSignal::new(Picked::Nothing);
+    // Three facts that vary on their own, rather than one value that has to
+    // stand for all of them. A file can land on the window at any moment, so
+    // "a pack is chosen", "a file is being read" and "the last one was refused"
+    // are all true together — an enum that ruled that out only moved the extra
+    // states into shadow copies that then disagreed with it.
+    let pack: RwSignal<Option<Pack>> = RwSignal::new(None);
+    let reading: RwSignal<bool> = RwSignal::new(false);
+    let error: RwSignal<Option<String>> = RwSignal::new(None);
+
     // The name this step last filled in, to tell it apart from one the user typed.
     let filled_name: StoredValue<Option<String>> = StoredValue::new(None);
     // Whether a file is currently being dragged over the window.
     let dragging: RwSignal<bool> = RwSignal::new(false);
-    // Why the last dropped file was not taken, shown beside a pack that a stray
-    // drop was not allowed to replace. Separate from `Picked` because it says
-    // nothing about which pack is selected.
-    let drop_error: RwSignal<Option<String>> = RwSignal::new(None);
     // Counts reads started, so a read that finishes after a newer one began can
     // tell that it has been superseded.
     let reads: StoredValue<u32> = StoredValue::new(0);
-    // The pack currently confirmed, held apart from `picked` so it survives the
-    // Reading state. A per-call capture cannot: with two drops in flight the
-    // second captures nothing, because by then the first has already replaced
-    // the state it would have read.
-    let confirmed: StoredValue<Option<Picked>> = StoredValue::new(None);
 
     // The drag highlight is a nested rule rather than a second class: the
     // generated bundle is ordered by class hash, so two classes setting the
@@ -116,19 +110,20 @@ pub fn StepImport(
         line-height: 1.5;
     };
 
-    let read_path = move |path: String, from_drop: bool| {
+    let read_path = move |path: String, replaces_selection: bool| {
         // Reads run concurrently — nothing stops a second file being dropped
         // while the first is still being read. Only the newest may report, or
         // a slower earlier read would land on top of it and select the file the
         // user has already replaced.
         let generation = reads.get_value() + 1;
         reads.set_value(generation);
-        picked.set(Picked::Reading);
+        reading.set(true);
         leptos::task::spawn_local(async move {
             let outcome = call_read_modpack_file(path.clone()).await;
             if reads.get_value() != generation {
                 return;
             }
+            reading.set(false);
             match outcome {
                 Ok(info) => {
                     // Default the instance name to the pack's own, so the common
@@ -143,41 +138,31 @@ pub fn StepImport(
                         state.instance_name.set(info.name.clone());
                         filled_name.set_value(Some(info.name.clone()));
                     }
-                    drop_error.set(None);
-                    let pack = Picked::Pack(path, info);
-                    confirmed.set_value(Some(pack.clone()));
-                    picked.set(pack);
+                    error.set(None);
+                    pack.set(Some(Pack { path, info }));
                 }
-                // A file the user picked replaces whatever was there, error and
-                // all — and nothing is confirmed afterwards. One that merely
-                // landed on the window must not: it can be an unrelated archive,
-                // and discarding a pack already chosen and named over it would
-                // lose work the user did on purpose.
-                Err(e) => match (from_drop, confirmed.get_value()) {
-                    (true, Some(pack)) => {
-                        drop_error.set(Some(e));
-                        picked.set(pack);
+                // The selection only goes when the user asked for it to: they
+                // chose this file through the dialog, so a failure leaves them
+                // with nothing rather than the pack they were replacing. A file
+                // that merely landed on the window says nothing about the
+                // selection, so it reports and leaves it be.
+                Err(e) => {
+                    if replaces_selection {
+                        pack.set(None);
                     }
-                    _ => {
-                        confirmed.set_value(None);
-                        picked.set(Picked::Rejected(e));
-                    }
-                },
+                    error.set(Some(e));
+                }
             }
         });
     };
 
     let choose = move |_| {
-        picked.set(Picked::Reading);
         leptos::task::spawn_local(async move {
-            let Ok(Some(path)) = call_pick_modpack_file().await else {
-                // Cancelled, or the dialog failed: put back whatever was chosen
-                // before rather than reporting a rejection the user did not
-                // cause, or clearing a selection they did not ask to drop.
-                picked.set(confirmed.get_value().unwrap_or(Picked::Nothing));
-                return;
-            };
-            read_path(path, false);
+            // Cancelling reports nothing and changes nothing: it undoes opening
+            // the dialog, not the selection behind it.
+            if let Ok(Some(path)) = call_pick_modpack_file().await {
+                read_path(path, true);
+            }
         });
     };
 
@@ -190,21 +175,12 @@ pub fn StepImport(
         // Take the first modpack among them rather than refusing the whole drop
         // over the company it arrived in.
         match payload.paths.into_iter().find(|path| is_modpack_file(path)) {
-            Some(path) => read_path(path, true),
+            Some(path) => read_path(path, false),
             // Tauri reports a drop anywhere in the window, so this fires for one
-            // aimed at nothing in particular. Say what is wanted only when there
-            // is nothing to lose: a pack already chosen and named must survive a
-            // stray file landing on the modal.
-            None => {
-                let complaint = "Drop a .zip or .mrpack modpack file.".to_string();
-                match confirmed.get_value() {
-                    Some(pack) => {
-                        drop_error.set(Some(complaint));
-                        picked.set(pack);
-                    }
-                    None => picked.set(Picked::Rejected(complaint)),
-                }
-            }
+            // aimed at nothing in particular. It is worth saying what the step
+            // wants, and worth nothing else: it disturbs neither the selection
+            // nor a read already under way.
+            None => error.set(Some("Drop a .zip or .mrpack modpack file.".to_string())),
         }
     };
     let subscriptions = StoredValue::new_local(Some((
@@ -220,30 +196,37 @@ pub fn StepImport(
     )));
     on_cleanup(move || subscriptions.update_value(|s| { s.take(); }));
 
-    let chosen_path = move || match picked.get() {
-        Picked::Pack(path, _) => Some(path),
-        _ => None,
-    };
+    let chosen_path = move || pack.get().map(|pack| pack.path);
+    // Not while a read is under way: it may be about to replace this pack, and
+    // installing the one it is replacing is not what the button appears to
+    // offer.
     let ready = Signal::derive(move || {
-        chosen_path().is_some() && !state.instance_name.get().trim().is_empty()
+        chosen_path().is_some() && !reading.get() && !state.instance_name.get().trim().is_empty()
     });
+    let prompt = move || {
+        if dragging.get() {
+            "Drop the modpack here"
+        } else if pack.get().is_some() || error.get().is_some() {
+            "Click to choose another file, or drop one here"
+        } else {
+            "Click to choose a .zip or .mrpack, or drop one here"
+        }
+    };
 
     view! {
         <ModalBody>
             <h2 style="margin: 0 0 16px 0;">"Import Modpack"</h2>
 
-            {move || match picked.get() {
-                Picked::Reading => view! {
-                    <div class=drop_zone data-dragging=dragging_attr>
-                        <p class=drop_hint>"Reading modpack…"</p>
-                    </div>
-                }.into_any(),
-                Picked::Pack(path, info) => {
-                    let hover = path.clone();
-                    view! {
+            // A pack, a read in progress and a complaint are independent, so
+            // each renders on its own terms rather than through one state that
+            // has to choose between them.
+            {move || pack.get().map(|pack| {
+                let hover = pack.path.clone();
+                let info = pack.info;
+                view! {
                     <div class=pack_card>
                         <span class=pack_name>
-                            {if info.name.is_empty() { "Modpack".to_string() } else { info.name }}
+                            {if info.name.is_empty() { "Modpack".to_string() } else { info.name.clone() }}
                         </span>
                         <span class=pack_meta>
                             {format!(
@@ -259,34 +242,35 @@ pub fn StepImport(
                                 info.file_count,
                             )}
                         </span>
-                        <span class=pack_path title=hover>{path}</span>
+                        <span class=pack_path title=hover>{pack.path}</span>
                     </div>
-                    {move || drop_error.get().map(|message| view! {
-                        <p class=error_text style="margin-top: 10px;">{message}</p>
-                    })}
-                    <div style="margin-top: 10px;">
-                        <Button
-                            variant=ButtonVariant::Secondary
-                            size=ButtonSize::Small
-                            on_click=Callback::new(choose)
-                        >
-                            "Choose a different file"
-                        </Button>
-                    </div>
-                }.into_any()
-                },
-                Picked::Rejected(message) => view! {
-                    <div class=drop_zone data-dragging=dragging_attr on:click=choose>
-                        <p class=drop_hint>{move || if dragging.get() { "Drop the modpack here" } else { "Click to choose another file, or drop one here" }}</p>
-                    </div>
-                    <p class=error_text style="margin-top: 10px;">{message}</p>
-                }.into_any(),
-                Picked::Nothing => view! {
-                    <div class=drop_zone data-dragging=dragging_attr on:click=choose>
-                        <p class=drop_hint>{move || if dragging.get() { "Drop the modpack here" } else { "Click to choose a .zip or .mrpack, or drop one here" }}</p>
-                    </div>
-                }.into_any(),
-            }}
+                }
+            })}
+
+            {move || (pack.get().is_none()).then(|| view! {
+                <div class=drop_zone data-dragging=dragging_attr on:click=choose>
+                    <p class=drop_hint>
+                        {move || if reading.get() { "Reading modpack…" } else { prompt() }}
+                    </p>
+                </div>
+            })}
+
+            {move || error.get().map(|message| view! {
+                <p class=error_text style="margin-top: 10px;">{message}</p>
+            })}
+
+            {move || pack.get().is_some().then(|| view! {
+                <div style="margin-top: 10px;">
+                    <Button
+                        variant=ButtonVariant::Secondary
+                        size=ButtonSize::Small
+                        disabled=Signal::derive(move || reading.get())
+                        on_click=Callback::new(choose)
+                    >
+                        {move || if reading.get() { "Reading modpack…" } else { "Choose a different file" }}
+                    </Button>
+                </div>
+            })}
 
             <Show when=move || chosen_path().is_some()>
                 <div style="margin-top: 20px;">
