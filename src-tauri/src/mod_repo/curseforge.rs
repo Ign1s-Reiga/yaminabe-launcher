@@ -851,6 +851,9 @@ pub async fn upgrade_modpack(
         .filter(|fid| matches!(installed.get(fid).map(|f| f.state), None | Some(ModState::DownloadFailed)))
         .collect();
 
+    // TODO: the modlist tracks mods, so a resource pack the previous version
+    // installed is invisible here and survives a version that drops it. The
+    // Modrinth path records what a pack installed to answer this.
     // Names the pack drops, taken from the modlist rather than resolved against
     // the API — an id CurseForge no longer serves would otherwise be skipped,
     // leaving its jar loading against the upgraded pack. Deleting is deferred
