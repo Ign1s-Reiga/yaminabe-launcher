@@ -827,6 +827,19 @@ async fn sync_pack_files(
             record_failure("unusable path".to_string());
             continue;
         };
+
+        // Recorded here rather than after a successful fetch, so that no branch
+        // below can drop it. A path missing from this list reads as "the new
+        // version dropped that file" and gets deleted — which for an unchanged
+        // disabled mod would mean deleting the very file being kept.
+        //
+        // A file this run could not fetch is recorded too: the user may supply
+        // it by hand later, and it is the pack's file either way. Removing one
+        // that never landed is a no-op.
+        if let Some(relative) = relative_path(instance_path, &dest) {
+            paths.push(relative);
+        }
+
         if file.downloads.is_empty() {
             record_failure("no download URL".to_string());
             continue;
@@ -880,12 +893,6 @@ async fn sync_pack_files(
                 (ModState::DownloadFailed, dest.clone())
             }
         };
-        if mod_state != ModState::DownloadFailed {
-            if let Some(relative) = relative_path(instance_path, &dest) {
-                paths.push(relative);
-            }
-        }
-
         let Some(target) = target else { continue };
         // Only mods are tracked once installed; anything else is tracked solely
         // to drive the link prompt when it could not be fetched.
@@ -1168,9 +1175,18 @@ async fn upgrade_into(
 
     // Only now that the new files are down: a failure before this point leaves
     // the old instance intact rather than stripped of mods it still lists.
-    let shipped: HashSet<&str> = synced.paths.iter().map(String::as_str).collect();
+    // Compared without case, always. Windows addresses one file by either
+    // spelling, so a version that only recapitalises a path would otherwise look
+    // like a drop and delete the file just written. Being too eager to call a
+    // file "still shipped" leaves a stale one behind; being too eager the other
+    // way deletes a live one, so the comparison errs toward keeping.
+    let shipped: HashSet<String> = synced
+        .paths
+        .iter()
+        .map(|path| path.to_lowercase())
+        .collect();
     for path in &installed_before {
-        if shipped.contains(path.as_str()) {
+        if shipped.contains(&path.to_lowercase()) {
             continue;
         }
         remove_pack_file(instance_path, path);
@@ -1395,9 +1411,9 @@ mod upgrade_tests {
         assert!(!jar.exists(), "the superseded jar must not survive a failed fetch");
         assert_eq!(synced.entries.len(), 1);
         assert_eq!(synced.entries[0].state, ModState::DownloadFailed);
-        // A file that was not fetched is not recorded as installed, so a later
-        // upgrade does not try to remove something that never landed.
-        assert!(synced.paths.is_empty());
+        // Recorded even though the fetch failed: the file is the pack's, and the
+        // user may supply it by hand before the next upgrade.
+        assert_eq!(synced.paths, vec!["mods/a.jar".to_string()]);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1431,6 +1447,38 @@ mod upgrade_tests {
         assert!(!disabled.exists(), "the superseded disabled copy must not survive");
         assert!(!dir.join("mods").join("a.jar").exists(), "and it must not come back enabled");
         assert_eq!(synced.entries.len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An unchanged disabled mod is kept without being fetched, and its path
+    /// still has to reach the record: a path missing from it reads as dropped,
+    /// so the upgrade would delete the very file it just decided to keep.
+    #[tokio::test]
+    async fn a_kept_disabled_mod_is_still_recorded_as_installed() {
+        let dir = temp_dir("kept-disabled");
+        let disabled = dir.join("mods").join("a.jar.disabled");
+        std::fs::write(&disabled, b"jar").expect("write disabled jar");
+
+        let index = index_with(MrpackFile {
+            path: "mods/a.jar".to_string(),
+            hashes: MrpackHashes { sha1: "abc123".to_string() },
+            env: None,
+            downloads: vec!["http://127.0.0.1:1/nope.jar".to_string()],
+            file_size: 0,
+        });
+        let previous = HashMap::from([(
+            "a.jar".to_string(),
+            entry("a.jar", "abc123", ModState::Disabled),
+        )]);
+
+        let synced = super::sync_pack_files(&index, &dir, &previous, &reqwest::Client::new())
+            .await
+            .expect("sync");
+
+        assert!(disabled.exists(), "the kept file must be left where it is");
+        assert_eq!(synced.entries.len(), 1);
+        assert_eq!(synced.entries[0].state, ModState::Disabled);
+        assert_eq!(synced.paths, vec!["mods/a.jar".to_string()]);
         std::fs::remove_dir_all(&dir).ok();
     }
 
