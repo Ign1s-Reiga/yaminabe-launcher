@@ -1236,15 +1236,20 @@ async fn upgrade_into(
     // had, and it is only replaced once the new files are on disk.
     let previous = installed_entries(instance_path);
 
-    // What the previous version put on disk.
-    let installed_before = match read_json_or_default(pack_files_file(instance_path)) {
-        Ok(paths) if !Vec::is_empty(&paths) => paths,
+    // What the previous version put on disk. Absence of the record is the test,
+    // not emptiness: a pack that ships nothing a client wants writes `[]`, and
+    // reading that as "no record" would fall back to the mod list and delete
+    // mods the user added themselves.
+    let record = pack_files_file(instance_path);
+    let installed_before = if record.exists() {
+        read_json_or_default(record).unwrap_or_default()
+    } else {
         // An instance installed before this record existed has none. Its mod
         // list is the only account of what the old pack put there, and this is
         // the last moment it exists — the list is replaced below. Falling back
         // to it removes the mods a new version drops; anything the list never
         // tracked stays, which is what the old behaviour did with everything.
-        _ => paths_from_modlist(&previous),
+        paths_from_modlist(&previous)
     };
 
     emit_progress(app_handle, id, instance_name, "Updating mods", false, None);
