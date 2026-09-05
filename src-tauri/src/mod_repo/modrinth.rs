@@ -799,16 +799,18 @@ fn disabled_path(dest: &Path) -> PathBuf {
 /// user disabled stays disabled through an upgrade, and is left on disk under
 /// its `.disabled` name rather than being downloaded back into place.
 ///
-/// Every file the pack installs is reported, not only mods: a resource pack the
-/// next version drops can only be deleted if this one recorded installing it.
-/// `list_instance_mods` filters the rest back out.
+/// Alongside the mod-list entries it returns the instance-relative path of every
+/// file the pack installed, which is what tells a later upgrade that a version
+/// has dropped one. The mod list cannot answer that: it holds mods, and it keys
+/// on bare file names, which two directories can share.
 async fn sync_pack_files(
     index: &MrpackIndex,
     instance_path: &Path,
     previous: &HashMap<String, ModListEntry>,
     client: &reqwest::Client,
-) -> Result<Vec<ModListEntry>, Error> {
+) -> Result<SyncedPack, Error> {
     let mut entries: Vec<ModListEntry> = Vec::new();
+    let mut paths: Vec<String> = Vec::new();
     for file in index.files.iter().filter(|file| file.wanted_by_client()) {
         let target = target_for(&file.path);
         // A file that cannot even be attempted is recorded the same way a failed
@@ -878,26 +880,81 @@ async fn sync_pack_files(
                 (ModState::DownloadFailed, dest.clone())
             }
         };
+        if mod_state != ModState::DownloadFailed {
+            if let Some(relative) = relative_path(instance_path, &dest) {
+                paths.push(relative);
+            }
+        }
+
         let Some(target) = target else { continue };
-        // The index states a size; fall back to the file itself when it does
-        // not, so a mod never lists as 0 B once it is on disk.
-        let size = match (file.file_size, mod_state) {
-            (0, ModState::DownloadFailed) => 0,
-            (0, _) => std::fs::metadata(&written).map(|m| m.len()).unwrap_or(0),
-            (size, _) => size,
-        };
-        entries.push(ModListEntry {
-            file_name: file_name_of(&dest),
-            project_name: String::new(),
-            icon_url: None,
-            sha1: file.hashes.sha1.clone(),
-            source: DownloadSource::Manual,
-            target,
-            size,
-            state: mod_state,
-        });
+        // Only mods are tracked once installed; anything else is tracked solely
+        // to drive the link prompt when it could not be fetched.
+        if target.tracks_modlist() || mod_state == ModState::DownloadFailed {
+            // The index states a size; fall back to the file itself when it does
+            // not, so a mod never lists as 0 B once it is on disk.
+            let size = match (file.file_size, mod_state) {
+                (0, ModState::DownloadFailed) => 0,
+                (0, _) => std::fs::metadata(&written).map(|m| m.len()).unwrap_or(0),
+                (size, _) => size,
+            };
+            entries.push(ModListEntry {
+                file_name: file_name_of(&dest),
+                project_name: String::new(),
+                icon_url: None,
+                sha1: file.hashes.sha1.clone(),
+                source: DownloadSource::Manual,
+                target,
+                size,
+                state: mod_state,
+            });
+        }
     }
-    Ok(entries)
+    Ok(SyncedPack { entries, paths })
+}
+
+/// What one pass over a pack's index put on disk.
+struct SyncedPack {
+    /// Mod-list rows: the mods, plus any file awaiting a hand-supplied copy.
+    entries: Vec<ModListEntry>,
+    /// Instance-relative path of every file installed, for the next upgrade.
+    paths: Vec<String>,
+}
+
+/// Where the paths a pack installed are recorded.
+fn pack_files_file(instance_path: &Path) -> PathBuf {
+    instance_path.join(".launcher").join("pack_files.json")
+}
+
+/// A file's location as the pack list records it: instance-relative, with
+/// forward slashes, so a record written on one platform reads on another.
+fn relative_path(instance_path: &Path, dest: &Path) -> Option<String> {
+    let relative = dest.strip_prefix(instance_path).ok()?;
+    let joined = relative
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/");
+    (!joined.is_empty()).then_some(joined)
+}
+
+/// Delete a file a newer version of the pack no longer ships, under whichever
+/// name it has — a disabled mod is stored with a `.disabled` suffix.
+///
+/// The path came from our own record, but it is resolved through the same guard
+/// as one from an index: a record that has been edited by hand cannot direct a
+/// delete outside the instance.
+fn remove_pack_file(instance_path: &Path, relative: &str) {
+    let Some(dest) = safe_destination(instance_path, relative) else {
+        warn!("refusing to remove '{relative}': not inside the instance");
+        return;
+    };
+    for path in [disabled_path(&dest), dest] {
+        if path.exists() {
+            if let Err(e) = std::fs::remove_file(&path) {
+                warn!("failed to remove dropped file {}: {e}", path.display());
+            }
+        }
+    }
 }
 
 /// The pack's own blurb where it ships one; its name is all a pack without a
@@ -923,13 +980,14 @@ async fn install_into(
     let mut prepared = prepare_pack(app_handle, id, instance_name, zip_path, state).await?;
 
     emit_progress(app_handle, id, instance_name, "Downloading mods", false, None);
-    let mut modlist_entries = sync_pack_files(
+    let synced = sync_pack_files(
         &prepared.index,
         instance_path,
         &HashMap::new(),
         &state.http_client,
     )
     .await?;
+    let mut modlist_entries = synced.entries;
 
     // After the downloads, not before: the format has overrides win over what a
     // pack lists, and download_resource replaces a file whose hash does not
@@ -941,6 +999,7 @@ async fn install_into(
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
     name_entries_by_project(&mut modlist_entries, &state.http_client).await;
     upsert_modlist_entries(instance_path, modlist_entries)?;
+    write_json(pack_files_file(instance_path), &synced.paths)?;
 
     let meta = InstanceMeta {
         id: id.to_string(),
@@ -1091,34 +1150,30 @@ async fn upgrade_into(
     // had, and it is only replaced once the new files are on disk.
     let previous = installed_entries(instance_path);
 
+    // What the previous version put on disk. Absent for an instance installed
+    // before this was recorded, in which case nothing is known to drop and the
+    // old files are left alone rather than guessed at.
+    let installed_before: Vec<String> =
+        read_json_or_default(pack_files_file(instance_path)).unwrap_or_default();
+
     emit_progress(app_handle, id, instance_name, "Updating mods", false, None);
-    let mut modlist_entries = sync_pack_files(
+    let synced = sync_pack_files(
         &prepared.index,
         instance_path,
         &previous,
         &state.http_client,
     )
     .await?;
+    let mut modlist_entries = synced.entries;
 
     // Only now that the new files are down: a failure before this point leaves
     // the old instance intact rather than stripped of mods it still lists.
-    //
-    // What the new pack ships is read from the index, not from the entries just
-    // returned: the mod list tracks mods, so a resource pack this upgrade
-    // successfully fetched has no entry and would look dropped.
-    let shipped: HashSet<String> = prepared
-        .index
-        .files
-        .iter()
-        .filter(|file| file.wanted_by_client())
-        .filter_map(|file| safe_destination(instance_path, &file.path))
-        .map(|dest| file_name_of(&dest))
-        .collect();
-    for (file_name, entry) in &previous {
-        if shipped.contains(file_name) {
+    let shipped: HashSet<&str> = synced.paths.iter().map(String::as_str).collect();
+    for path in &installed_before {
+        if shipped.contains(path.as_str()) {
             continue;
         }
-        remove_dropped_file(instance_path, entry);
+        remove_pack_file(instance_path, path);
     }
 
     emit_progress(app_handle, id, instance_name, "Extracting files", false, None);
@@ -1129,6 +1184,7 @@ async fn upgrade_into(
     // The new pack defines the mod set outright, so the list is replaced rather
     // than merged — a merge would keep rows for jars just deleted.
     replace_modlist_entries(instance_path, modlist_entries)?;
+    write_json(pack_files_file(instance_path), &synced.paths)?;
 
     let mut meta: InstanceMeta = read_json(instance_meta_file(instance_path))?;
     meta.description = pack_description(&prepared.index);
@@ -1144,20 +1200,6 @@ async fn upgrade_into(
         instance_name, prepared.mc_version, prepared.mod_loader
     );
     Ok(())
-}
-
-/// Delete a file the new pack no longer ships, under whichever name it is on
-/// disk — a disabled mod is stored with a `.disabled` suffix.
-fn remove_dropped_file(instance_path: &Path, entry: &ModListEntry) {
-    let dir = instance_path.join(entry.target.directory());
-    let dest = dir.join(&entry.file_name);
-    for path in [disabled_path(&dest), dest] {
-        if path.exists() {
-            if let Err(e) = std::fs::remove_file(&path) {
-                warn!("failed to remove dropped file {}: {e}", path.display());
-            }
-        }
-    }
 }
 
 /// Download a version's `.mrpack` into the instance's cache directory.
@@ -1242,7 +1284,7 @@ mod mrpack_tests {
 
 #[cfg(test)]
 mod upgrade_tests {
-    use super::{disabled_path, is_unchanged, remove_dropped_file, MrpackFile, MrpackHashes};
+    use super::{disabled_path, is_unchanged, remove_pack_file, MrpackFile, MrpackHashes};
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
     use yaminabe_launcher_shared::datamodels::{
@@ -1318,7 +1360,7 @@ mod upgrade_tests {
         let disabled = dir.join("mods").join("old.jar.disabled");
         std::fs::write(&disabled, b"jar").expect("write disabled jar");
 
-        remove_dropped_file(&dir, &entry("old.jar", "abc", ModState::Disabled));
+        remove_pack_file(&dir, "mods/old.jar");
         assert!(!disabled.exists(), "the .disabled file should be gone");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1346,13 +1388,16 @@ mod upgrade_tests {
             entry("a.jar", "aaaa", ModState::Enabled),
         )]);
 
-        let entries = super::sync_pack_files(&index, &dir, &previous, &reqwest::Client::new())
+        let synced = super::sync_pack_files(&index, &dir, &previous, &reqwest::Client::new())
             .await
             .expect("sync");
 
         assert!(!jar.exists(), "the superseded jar must not survive a failed fetch");
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].state, ModState::DownloadFailed);
+        assert_eq!(synced.entries.len(), 1);
+        assert_eq!(synced.entries[0].state, ModState::DownloadFailed);
+        // A file that was not fetched is not recorded as installed, so a later
+        // upgrade does not try to remove something that never landed.
+        assert!(synced.paths.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1377,7 +1422,7 @@ mod upgrade_tests {
             entry("a.jar", "0ld0ld", ModState::Disabled),
         )]);
 
-        let entries = super::sync_pack_files(&index, &dir, &previous, &reqwest::Client::new())
+        let synced = super::sync_pack_files(&index, &dir, &previous, &reqwest::Client::new())
             .await
             .expect("sync");
 
@@ -1385,7 +1430,53 @@ mod upgrade_tests {
         // disabled copy is gone rather than left beside a re-enabled jar.
         assert!(!disabled.exists(), "the superseded disabled copy must not survive");
         assert!(!dir.join("mods").join("a.jar").exists(), "and it must not come back enabled");
-        assert_eq!(entries.len(), 1);
+        assert_eq!(synced.entries.len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Two directories can hold the same file name — a pack shipping a matching
+    /// resource pack and data pack is the ordinary case. The record keeps the
+    /// whole path, so dropping one does not read as dropping the other.
+    #[test]
+    fn a_name_two_directories_share_is_recorded_once_per_directory() {
+        let dir = temp_dir("same-name");
+        assert_eq!(
+            super::relative_path(&dir, &dir.join("resourcepacks").join("extras.zip")),
+            Some("resourcepacks/extras.zip".to_string())
+        );
+        assert_eq!(
+            super::relative_path(&dir, &dir.join("datapacks").join("extras.zip")),
+            Some("datapacks/extras.zip".to_string())
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Removal follows the recorded path rather than rebuilding one from the
+    /// target directory, so a file the pack nests is still found.
+    #[test]
+    fn a_dropped_file_is_removed_from_where_the_pack_put_it() {
+        let dir = temp_dir("nested");
+        let nested = dir.join("mods").join("sub");
+        std::fs::create_dir_all(&nested).expect("create nested dir");
+        let jar = nested.join("a.jar");
+        std::fs::write(&jar, b"jar").expect("write nested jar");
+
+        super::remove_pack_file(&dir, "mods/sub/a.jar");
+        assert!(!jar.exists(), "a nested file must be removed where it actually is");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The record is ours, but it is a file on disk that could be edited. A path
+    /// climbing out of the instance is refused rather than followed.
+    #[test]
+    fn removal_refuses_a_path_outside_the_instance() {
+        let dir = temp_dir("escape");
+        let outside = dir.parent().expect("temp parent").join("yaminabe-not-mine.jar");
+        std::fs::write(&outside, b"someone else's file").expect("write outside file");
+
+        super::remove_pack_file(&dir, "../yaminabe-not-mine.jar");
+        assert!(outside.exists(), "a path climbing out must not be followed");
+        std::fs::remove_file(&outside).ok();
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1395,7 +1486,7 @@ mod upgrade_tests {
         let jar = dir.join("mods").join("old.jar");
         std::fs::write(&jar, b"jar").expect("write jar");
 
-        remove_dropped_file(&dir, &entry("old.jar", "abc", ModState::Enabled));
+        remove_pack_file(&dir, "mods/old.jar");
         assert!(!jar.exists(), "the jar should be gone");
         std::fs::remove_dir_all(&dir).ok();
     }
