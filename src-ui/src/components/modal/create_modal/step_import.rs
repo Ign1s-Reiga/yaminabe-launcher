@@ -54,6 +54,11 @@ pub fn StepImport(
     // Counts reads started, so a read that finishes after a newer one began can
     // tell that it has been superseded.
     let reads: StoredValue<u32> = StoredValue::new(0);
+    // The pack currently confirmed, held apart from `picked` so it survives the
+    // Reading state. A per-call capture cannot: with two drops in flight the
+    // second captures nothing, because by then the first has already replaced
+    // the state it would have read.
+    let confirmed: StoredValue<Option<Picked>> = StoredValue::new(None);
 
     // The drag highlight is a nested rule rather than a second class: the
     // generated bundle is ordered by class hash, so two classes setting the
@@ -112,13 +117,6 @@ pub fn StepImport(
     };
 
     let read_path = move |path: String, from_drop: bool| {
-        // Taken before `picked` is overwritten: reading it back afterwards would
-        // find `Reading`, with the pack it is meant to restore already gone.
-        // Only a drop restores — a file chosen through the dialog is meant to
-        // replace what is there.
-        let restore = from_drop
-            .then(|| picked.get_untracked())
-            .filter(|current| matches!(current, Picked::Pack(..)));
         // Reads run concurrently — nothing stops a second file being dropped
         // while the first is still being read. Only the newest may report, or
         // a slower earlier read would land on top of it and select the file the
@@ -146,18 +144,24 @@ pub fn StepImport(
                         filled_name.set_value(Some(info.name.clone()));
                     }
                     drop_error.set(None);
-                    picked.set(Picked::Pack(path, info));
+                    let pack = Picked::Pack(path, info);
+                    confirmed.set_value(Some(pack.clone()));
+                    picked.set(pack);
                 }
                 // A file the user picked replaces whatever was there, error and
-                // all. One that merely landed on the window must not: it can be
-                // an unrelated archive, and discarding a pack already chosen and
-                // named over it would lose work the user did on purpose.
-                Err(e) => match restore {
-                    Some(pack) => {
+                // all — and nothing is confirmed afterwards. One that merely
+                // landed on the window must not: it can be an unrelated archive,
+                // and discarding a pack already chosen and named over it would
+                // lose work the user did on purpose.
+                Err(e) => match (from_drop, confirmed.get_value()) {
+                    (true, Some(pack)) => {
                         drop_error.set(Some(e));
                         picked.set(pack);
                     }
-                    None => picked.set(Picked::Rejected(e)),
+                    _ => {
+                        confirmed.set_value(None);
+                        picked.set(Picked::Rejected(e));
+                    }
                 },
             }
         });
@@ -192,10 +196,12 @@ pub fn StepImport(
             // stray file landing on the modal.
             None => {
                 let complaint = "Drop a .zip or .mrpack modpack file.".to_string();
-                if matches!(picked.get_untracked(), Picked::Pack(..)) {
-                    drop_error.set(Some(complaint));
-                } else {
-                    picked.set(Picked::Rejected(complaint));
+                match confirmed.get_value() {
+                    Some(pack) => {
+                        drop_error.set(Some(complaint));
+                        picked.set(pack);
+                    }
+                    None => picked.set(Picked::Rejected(complaint)),
                 }
             }
         }
