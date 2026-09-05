@@ -51,6 +51,9 @@ pub fn StepImport(
     // drop was not allowed to replace. Separate from `Picked` because it says
     // nothing about which pack is selected.
     let drop_error: RwSignal<Option<String>> = RwSignal::new(None);
+    // Counts reads started, so a read that finishes after a newer one began can
+    // tell that it has been superseded.
+    let reads: StoredValue<u32> = StoredValue::new(0);
 
     // The drag highlight is a nested rule rather than a second class: the
     // generated bundle is ordered by class hash, so two classes setting the
@@ -116,9 +119,19 @@ pub fn StepImport(
         let restore = from_drop
             .then(|| picked.get_untracked())
             .filter(|current| matches!(current, Picked::Pack(..)));
+        // Reads run concurrently — nothing stops a second file being dropped
+        // while the first is still being read. Only the newest may report, or
+        // a slower earlier read would land on top of it and select the file the
+        // user has already replaced.
+        let generation = reads.get_value() + 1;
+        reads.set_value(generation);
         picked.set(Picked::Reading);
         leptos::task::spawn_local(async move {
-            match call_read_modpack_file(path.clone()).await {
+            let outcome = call_read_modpack_file(path.clone()).await;
+            if reads.get_value() != generation {
+                return;
+            }
+            match outcome {
                 Ok(info) => {
                     // Default the instance name to the pack's own, so the common
                     // case needs no typing. A name this step filled in itself is
