@@ -791,6 +791,30 @@ fn disabled_path(dest: &Path) -> PathBuf {
     dest.with_file_name(format!("{}.disabled", file_name_of(dest)))
 }
 
+/// The names a pack owns at `dest`: the file itself, and — only for a mod —
+/// the `.disabled` spelling the launcher toggles it with. Elsewhere that suffix
+/// is the user's own name for their own file and none of the pack's business.
+fn owned_names(dest: &Path, target: Option<ProjectFileTarget>) -> Vec<PathBuf> {
+    let mut names = vec![dest.to_path_buf()];
+    if target == Some(ProjectFileTarget::Mod) {
+        names.push(disabled_path(dest));
+    }
+    names
+}
+
+/// Remove what the previous version left at a path this run claims but could
+/// not write. Left there it loads against the upgraded pack while the mod list
+/// reports the file missing, so disk and record would disagree.
+fn clear_stale(dest: &Path, target: Option<ProjectFileTarget>) {
+    for path in owned_names(dest, target) {
+        if path.exists() {
+            if let Err(e) = std::fs::remove_file(&path) {
+                warn!("cannot remove stale {}: {e}", path.display());
+            }
+        }
+    }
+}
+
 /// Put the files the index lists into the instance, and report what a mod list
 /// should say about them.
 ///
@@ -841,12 +865,19 @@ async fn sync_pack_files(
         }
 
         if file.downloads.is_empty() {
+            clear_stale(&dest, target);
             record_failure("no download URL".to_string());
             continue;
         }
 
         let disabled = disabled_path(&dest);
-        let installed = previous.get(&file_name_of(&dest));
+        // The mod list keys on bare names, so this lookup is only meaningful
+        // where a bare name is unique and the state exists at all: under mods/.
+        // Without that, a `config/common.jar` would inherit the disabled state
+        // of `mods/common.jar` and be renamed out of the way.
+        let installed = previous
+            .get(&file_name_of(&dest))
+            .filter(|_| target == Some(ProjectFileTarget::Mod));
         let was_disabled = installed.is_some_and(|entry| entry.state == ModState::Disabled);
 
         // A disabled mod lives under another name, so downloading `dest` would
@@ -878,18 +909,7 @@ async fn sync_pack_files(
             Ok(()) => (ModState::Enabled, dest.clone()),
             Err(e) => {
                 warn!("download failed for {}: {e}; marking for manual install", file.path);
-                // Whatever sits at this name is the old pack's copy, and it is
-                // not what this one ships — `download_resource` leaves a file
-                // whose hash did not match in place. Left there it would load
-                // against the upgraded pack while the mod list reports the file
-                // as missing, so the two would disagree about what is installed.
-                for stale in [&dest, &disabled] {
-                    if stale.exists() {
-                        if let Err(e) = std::fs::remove_file(stale) {
-                            warn!("cannot remove stale {}: {e}", stale.display());
-                        }
-                    }
-                }
+                clear_stale(&dest, target);
                 (ModState::DownloadFailed, dest.clone())
             }
         };
@@ -957,13 +977,17 @@ fn relative_path(instance_path: &Path, dest: &Path) -> Option<String> {
 
 /// How a path compares for "is this still shipped".
 ///
-/// Windows addresses one file by either spelling, so two cases are one file
-/// there and comparing them exactly would delete the file just written. A
-/// case-sensitive filesystem is the opposite: treating them as one leaves both
-/// spellings on disk, which the loader reads as a duplicate mod. So the
-/// comparison follows the platform rather than picking a side.
+/// Windows and macOS both reach one file by either spelling by default, so two
+/// cases are one file there and comparing them exactly would delete the file
+/// just written. A case-sensitive filesystem is the opposite: treating them as
+/// one leaves both spellings on disk, which the loader reads as a duplicate
+/// mod. So the comparison follows the platform rather than picking a side.
+///
+/// The platform is a stand-in for the filesystem, which is what actually
+/// decides; a case-sensitive volume on macOS, or a case-insensitive one on
+/// Linux, is judged by its host's usual behaviour rather than its own.
 fn path_key(relative: &str) -> String {
-    if cfg!(windows) {
+    if cfg!(any(windows, target_os = "macos")) {
         relative.to_lowercase()
     } else {
         relative.to_string()
@@ -981,21 +1005,35 @@ fn path_key(relative: &str) -> String {
 /// The path came from our own record, but it is resolved through the same guard
 /// as one from an index: a record that has been edited by hand cannot direct a
 /// delete outside the instance.
+/// The record-relative spelling of `path`, given that `dest` is `relative`.
+/// Only the file name can differ between them, which is what the `.disabled`
+/// alias changes.
+fn relative_path_of(dest: &Path, path: &Path, relative: &str) -> Option<String> {
+    let dir = relative.rsplit_once('/').map(|(dir, _)| dir);
+    let name = path.file_name()?.to_string_lossy();
+    if path == dest {
+        return Some(relative.to_string());
+    }
+    Some(match dir {
+        Some(dir) => format!("{dir}/{name}"),
+        None => name.into_owned(),
+    })
+}
+
 fn remove_pack_file(instance_path: &Path, relative: &str, shipped: &HashSet<String>) {
     let Some(dest) = safe_destination(instance_path, relative) else {
         warn!("refusing to remove '{relative}': not inside the instance");
         return;
     };
 
-    let mut targets = vec![dest.clone()];
-    // `.disabled` is how the launcher turns a mod off, and it does that only
-    // under `mods/`. Elsewhere the suffix means nothing to us — a
-    // `config/options.txt.disabled` is the user's own backup, not a file this
-    // pack owns.
-    let toggles = target_for(relative) == Some(ProjectFileTarget::Mod);
-    if toggles && !shipped.contains(&path_key(&format!("{relative}.disabled"))) {
-        targets.push(disabled_path(&dest));
-    }
+    // A path the new version ships is its own file, not the disabled twin of
+    // the one being dropped, so it is never taken as an alias.
+    let targets = owned_names(&dest, target_for(relative))
+        .into_iter()
+        .filter(|path| match relative_path_of(&dest, path, relative) {
+            Some(candidate) => !shipped.contains(&path_key(&candidate)),
+            None => true,
+        });
     for path in targets {
         if path.exists() {
             if let Err(e) = std::fs::remove_file(&path) {
@@ -1567,6 +1605,32 @@ mod upgrade_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A pack listing a file it supplies no URL for is the same situation as one
+    /// whose every mirror failed: the name is claimed, nothing was written, and
+    /// the previous version's copy must not be left to load in its place.
+    #[tokio::test]
+    async fn a_file_with_no_url_does_not_leave_the_old_one_behind() {
+        let dir = temp_dir("no-url");
+        let jar = dir.join("mods").join("a.jar");
+        std::fs::write(&jar, b"the previous version").expect("write old jar");
+
+        let index = index_with(MrpackFile {
+            path: "mods/a.jar".to_string(),
+            hashes: MrpackHashes { sha1: String::new() },
+            env: None,
+            downloads: vec![],
+            file_size: 0,
+        });
+
+        let synced = super::sync_pack_files(&index, &dir, &HashMap::new(), &reqwest::Client::new())
+            .await
+            .expect("sync");
+
+        assert!(!jar.exists(), "the superseded jar must not survive");
+        assert_eq!(synced.paths, vec!["mods/a.jar".to_string()]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// The launcher only toggles mods, so only there does `.disabled` name a
     /// file the pack owns. A backup the user made beside a config file is
     /// theirs, whatever it is called.
@@ -1601,7 +1665,7 @@ mod upgrade_tests {
     /// written, the other leaves both spellings for the loader to trip over.
     #[test]
     fn path_comparison_follows_the_filesystem() {
-        if cfg!(windows) {
+        if cfg!(any(windows, target_os = "macos")) {
             assert_eq!(super::path_key("mods/Foo.jar"), super::path_key("mods/foo.jar"));
         } else {
             assert_ne!(super::path_key("mods/Foo.jar"), super::path_key("mods/foo.jar"));
