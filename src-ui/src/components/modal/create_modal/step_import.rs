@@ -171,9 +171,10 @@ pub fn StepImport(
         picked.set(Picked::Reading);
         leptos::task::spawn_local(async move {
             let Ok(Some(path)) = call_pick_modpack_file().await else {
-                // Cancelled, or the dialog failed: fall back to the idle prompt
-                // rather than reporting a rejection the user did not cause.
-                picked.set(Picked::Nothing);
+                // Cancelled, or the dialog failed: put back whatever was chosen
+                // before rather than reporting a rejection the user did not
+                // cause, or clearing a selection they did not ask to drop.
+                picked.set(confirmed.get_value().unwrap_or(Picked::Nothing));
                 return;
             };
             read_path(path, false);
