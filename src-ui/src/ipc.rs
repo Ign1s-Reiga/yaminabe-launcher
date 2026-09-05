@@ -45,6 +45,23 @@ pub fn form_data_from_submit(ev: &leptos::ev::SubmitEvent) -> Option<web_sys::Fo
     web_sys::FormData::new_with_form(&form).ok()
 }
 
+/// Payload of Tauri's drag events. `drag-enter` and `drag-drop` carry paths;
+/// `drag-over` carries only a position, which `#[serde(default)]` covers.
+///
+/// `drag-leave` carries nothing at all — Tauri emits it as `&()`, which reaches
+/// JS as `null`. A struct cannot deserialize from `null`, so subscribe to that
+/// one as `Option<DragDropPayload>`; a field default does not help, because the
+/// failure is at the struct level.
+///
+/// Tauri intercepts OS file drops itself, so the webview never sees an HTML
+/// `drop` event — these carry real filesystem paths instead, which is what the
+/// backend commands take anyway.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct DragDropPayload {
+    #[serde(default)]
+    pub paths: Vec<String>,
+}
+
 /// Subscribe to a Tauri backend event for the lifetime of the app.
 /// The handler receives the deserialized payload of each event.
 pub fn on_event<T, F>(event: &'static str, handler: F)
