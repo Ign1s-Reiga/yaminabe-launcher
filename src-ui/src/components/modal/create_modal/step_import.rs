@@ -51,11 +51,6 @@ pub fn StepImport(
     // drop was not allowed to replace. Separate from `Picked` because it says
     // nothing about which pack is selected.
     let drop_error: RwSignal<Option<String>> = RwSignal::new(None);
-    // The confirmed pack, if there is one, so a rejected drop can put it back.
-    let previous_pack = Memo::new(move |_| match picked.get() {
-        pack @ Picked::Pack(..) => Some(pack),
-        _ => None,
-    });
 
     // The drag highlight is a nested rule rather than a second class: the
     // generated bundle is ordered by class hash, so two classes setting the
@@ -114,6 +109,13 @@ pub fn StepImport(
     };
 
     let read_path = move |path: String, from_drop: bool| {
+        // Taken before `picked` is overwritten: reading it back afterwards would
+        // find `Reading`, with the pack it is meant to restore already gone.
+        // Only a drop restores — a file chosen through the dialog is meant to
+        // replace what is there.
+        let restore = from_drop
+            .then(|| picked.get_untracked())
+            .filter(|current| matches!(current, Picked::Pack(..)));
         picked.set(Picked::Reading);
         leptos::task::spawn_local(async move {
             match call_read_modpack_file(path.clone()).await {
@@ -137,12 +139,12 @@ pub fn StepImport(
                 // all. One that merely landed on the window must not: it can be
                 // an unrelated archive, and discarding a pack already chosen and
                 // named over it would lose work the user did on purpose.
-                Err(e) => match (from_drop, previous_pack.get_untracked()) {
-                    (true, Some(pack)) => {
+                Err(e) => match restore {
+                    Some(pack) => {
                         drop_error.set(Some(e));
                         picked.set(pack);
                     }
-                    _ => picked.set(Picked::Rejected(e)),
+                    None => picked.set(Picked::Rejected(e)),
                 },
             }
         });
@@ -177,9 +179,10 @@ pub fn StepImport(
             // stray file landing on the modal.
             None => {
                 let complaint = "Drop a .zip or .mrpack modpack file.".to_string();
-                match previous_pack.get_untracked() {
-                    Some(_) => drop_error.set(Some(complaint)),
-                    None => picked.set(Picked::Rejected(complaint)),
+                if matches!(picked.get_untracked(), Picked::Pack(..)) {
+                    drop_error.set(Some(complaint));
+                } else {
+                    picked.set(Picked::Rejected(complaint));
                 }
             }
         }
