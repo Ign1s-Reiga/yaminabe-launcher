@@ -927,6 +927,17 @@ struct SyncedPack {
     paths: Vec<String>,
 }
 
+/// The mod list read as pack paths, for an instance predating `pack_files.json`.
+///
+/// A mod list holds bare file names, so the directory is the one its target
+/// names. That is exact for the mods it tracks, which live flat under `mods/`.
+fn paths_from_modlist(previous: &HashMap<String, ModListEntry>) -> Vec<String> {
+    previous
+        .values()
+        .map(|entry| format!("{}/{}", entry.target.directory(), entry.file_name))
+        .collect()
+}
+
 /// Where the paths a pack installed are recorded.
 fn pack_files_file(instance_path: &Path) -> PathBuf {
     instance_path.join(".launcher").join("pack_files.json")
@@ -977,7 +988,12 @@ fn remove_pack_file(instance_path: &Path, relative: &str, shipped: &HashSet<Stri
     };
 
     let mut targets = vec![dest.clone()];
-    if !shipped.contains(&path_key(&format!("{relative}.disabled"))) {
+    // `.disabled` is how the launcher turns a mod off, and it does that only
+    // under `mods/`. Elsewhere the suffix means nothing to us — a
+    // `config/options.txt.disabled` is the user's own backup, not a file this
+    // pack owns.
+    let toggles = target_for(relative) == Some(ProjectFileTarget::Mod);
+    if toggles && !shipped.contains(&path_key(&format!("{relative}.disabled"))) {
         targets.push(disabled_path(&dest));
     }
     for path in targets {
@@ -1182,11 +1198,16 @@ async fn upgrade_into(
     // had, and it is only replaced once the new files are on disk.
     let previous = installed_entries(instance_path);
 
-    // What the previous version put on disk. Absent for an instance installed
-    // before this was recorded, in which case nothing is known to drop and the
-    // old files are left alone rather than guessed at.
-    let installed_before: Vec<String> =
-        read_json_or_default(pack_files_file(instance_path)).unwrap_or_default();
+    // What the previous version put on disk.
+    let installed_before = match read_json_or_default(pack_files_file(instance_path)) {
+        Ok(paths) if !Vec::is_empty(&paths) => paths,
+        // An instance installed before this record existed has none. Its mod
+        // list is the only account of what the old pack put there, and this is
+        // the last moment it exists — the list is replaced below. Falling back
+        // to it removes the mods a new version drops; anything the list never
+        // tracked stays, which is what the old behaviour did with everything.
+        _ => paths_from_modlist(&previous),
+    };
 
     emit_progress(app_handle, id, instance_name, "Updating mods", false, None);
     let synced = sync_pack_files(
@@ -1544,6 +1565,35 @@ mod upgrade_tests {
 
         assert!(shipped_file.exists(), "a path the new version ships is not an alias to delete");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The launcher only toggles mods, so only there does `.disabled` name a
+    /// file the pack owns. A backup the user made beside a config file is
+    /// theirs, whatever it is called.
+    #[test]
+    fn removal_leaves_a_disabled_suffix_outside_mods_alone() {
+        let dir = temp_dir("alias-nonmod");
+        std::fs::create_dir_all(dir.join("resourcepacks")).expect("create dir");
+        let backup = dir.join("resourcepacks").join("theme.zip.disabled");
+        std::fs::write(&backup, b"the user's own copy").expect("write backup");
+
+        super::remove_pack_file(&dir, "resourcepacks/theme.zip", &HashSet::new());
+        assert!(backup.exists(), "only mods use the .disabled suffix");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An instance from before the record exists still has a mod list, and
+    /// dropping back to it beats never removing anything again — the list is
+    /// overwritten moments later, so this is the last chance to read it.
+    #[test]
+    fn a_legacy_instance_falls_back_to_its_mod_list() {
+        let previous = HashMap::from([
+            ("a.jar".to_string(), entry("a.jar", "aaa", ModState::Enabled)),
+        ]);
+        assert_eq!(
+            super::paths_from_modlist(&previous),
+            vec!["mods/a.jar".to_string()]
+        );
     }
 
     /// Windows reaches one file by either spelling and Linux does not, so the
