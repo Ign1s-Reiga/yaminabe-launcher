@@ -805,14 +805,23 @@ fn owned_names(dest: &Path, target: Option<ProjectFileTarget>) -> Vec<PathBuf> {
 /// Remove what the previous version left at a path this run claims but could
 /// not write. Left there it loads against the upgraded pack while the mod list
 /// reports the file missing, so disk and record would disagree.
-fn clear_stale(dest: &Path, target: Option<ProjectFileTarget>) {
+///
+/// A failure here stops the upgrade. Reporting the file missing while it is
+/// still on disk and still loading is the mismatch this exists to prevent, so
+/// there is nothing useful to do but leave the instance as it was and let the
+/// user retry once whatever holds the file has let go.
+fn clear_stale(dest: &Path, target: Option<ProjectFileTarget>) -> Result<(), Error> {
     for path in owned_names(dest, target) {
         if path.exists() {
-            if let Err(e) = std::fs::remove_file(&path) {
-                warn!("cannot remove stale {}: {e}", path.display());
-            }
+            std::fs::remove_file(&path).map_err(|e| {
+                Error::Invalid(format!(
+                    "cannot remove the superseded {}: {e}",
+                    path.display()
+                ))
+            })?;
         }
     }
+    Ok(())
 }
 
 /// Put the files the index lists into the instance, and report what a mod list
@@ -867,7 +876,7 @@ async fn sync_pack_files(
         paths.push(relative.clone());
 
         if file.downloads.is_empty() {
-            clear_stale(&dest, target);
+            clear_stale(&dest, target)?;
             record_failure("no download URL".to_string());
             continue;
         }
@@ -912,7 +921,7 @@ async fn sync_pack_files(
             Ok(()) => (ModState::Enabled, dest.clone()),
             Err(e) => {
                 warn!("download failed for {}: {e}; marking for manual install", file.path);
-                clear_stale(&dest, target);
+                clear_stale(&dest, target)?;
                 (ModState::DownloadFailed, dest.clone())
             }
         };
