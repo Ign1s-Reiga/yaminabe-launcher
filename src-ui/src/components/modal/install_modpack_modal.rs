@@ -108,12 +108,7 @@ pub fn InstallModpackModal(
         }
         list.into_iter()
             .map(|file| {
-                let value = file
-                    .source
-                    .curseforge_ids()
-                    .map(|(_, id)| id)
-                    .unwrap_or(0)
-                    .to_string();
+                let value = file.source.version_key().unwrap_or_default();
                 let picked = value.clone();
                 view! {
                     <VersionRow
