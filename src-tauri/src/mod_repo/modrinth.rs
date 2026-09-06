@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::commands::instance::{
     create_instance_dir, discard_unfinished_instance_dir, instance_meta_file, is_bare_file_name,
@@ -13,6 +14,7 @@ use crate::AppState;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use tauri::State;
+use tokio::sync::Semaphore;
 use yaminabe_launcher_shared::datamodels::{
     DownloadSource, InstanceMeta, LocalModpackInfo, ModListEntry, ModLoader, ModProjectInfo,
     ModProjectSearchResults, ModState, ModpackFormat, ProjectFileInfo,
@@ -505,21 +507,79 @@ fn unfetched_entry(file: &MrpackFile, target: ProjectFileTarget) -> ModListEntry
 /// Try each URL the index lists in turn. They are mirrors of one file, so the
 /// first that works wins and only the last error is worth reporting.
 async fn download_from_mirrors(
-    file: &MrpackFile,
-    dest: &Path,
+    planned: &PlannedDownload,
     client: &reqwest::Client,
 ) -> Result<(), Error> {
-    let mut last = Error::Invalid(format!("no download URL for {}", file.path));
-    for url in &file.downloads {
-        match download_resource(client, url, &file.hashes.sha1, dest.to_path_buf()).await {
+    let mut last = Error::Invalid(format!("no download URL for {}", planned.path));
+    for url in &planned.downloads {
+        match download_resource(client, url, &planned.sha1, planned.dest.clone()).await {
             Ok(()) => return Ok(()),
             Err(e) => {
-                warn!("mirror {url} failed for {}: {e}", file.path);
+                warn!("mirror {url} failed for {}: {e}", planned.path);
                 last = e;
             }
         }
     }
     Err(last)
+}
+
+/// One file's worth of work, owned so it can be handed to a task of its own.
+struct PlannedDownload {
+    /// The index's own path, for logging.
+    path: String,
+    dest: PathBuf,
+    /// `None` when the mod list does not model where this file goes.
+    target: Option<ProjectFileTarget>,
+    sha1: String,
+    downloads: Vec<String>,
+    file_size: u64,
+    /// Whether the instance had this mod turned off before the upgrade.
+    was_disabled: bool,
+}
+
+/// How many files to fetch at once. Matches what the CurseForge path allows, so
+/// neither install is markedly harder on a connection than the other.
+const DOWNLOAD_CONCURRENCY: usize = 3;
+
+/// Fetch the planned files a few at a time, in the order planned.
+///
+/// Only the network work is concurrent. What each result then does to the
+/// instance — renaming a mod back to disabled, clearing what a failure
+/// superseded — stays with the caller, in order, so two files never race over
+/// the same directory and a failure still stops the run.
+async fn run_downloads(
+    planned: Vec<PlannedDownload>,
+    client: &reqwest::Client,
+    report: impl Fn(usize, usize),
+) -> Result<Vec<(PlannedDownload, Result<(), Error>)>, Error> {
+    let total = planned.len();
+    let semaphore = Arc::new(Semaphore::new(DOWNLOAD_CONCURRENCY));
+    let mut handles = Vec::with_capacity(total);
+
+    for file in planned {
+        let client = client.clone();
+        let semaphore = Arc::clone(&semaphore);
+        handles.push(tokio::spawn(async move {
+            let permit = semaphore
+                .acquire_owned()
+                .await
+                .map_err(|e| Error::ChildProcess(format!("semaphore acquire: {e}")))?;
+            let outcome = download_from_mirrors(&file, &client).await;
+            drop(permit);
+            Ok::<_, Error>((file, outcome))
+        }));
+    }
+
+    let mut finished = Vec::with_capacity(total);
+    for handle in handles {
+        finished.push(
+            handle
+                .await
+                .map_err(|e| Error::ChildProcess(format!("download task panicked: {e}")))??,
+        );
+        report(finished.len(), total);
+    }
+    Ok(finished)
 }
 
 /// Extract every `overrides/` tree the pack ships. `client-overrides/` is
@@ -841,9 +901,14 @@ async fn sync_pack_files(
     instance_path: &Path,
     previous: &HashMap<String, ModListEntry>,
     client: &reqwest::Client,
+    report: impl Fn(usize, usize),
 ) -> Result<SyncedPack, Error> {
     let mut entries: Vec<ModListEntry> = Vec::new();
     let mut paths: Vec<String> = Vec::new();
+    let mut planned: Vec<PlannedDownload> = Vec::new();
+
+    // Planned first, so every file that will not be fetched is settled before
+    // any is, and each task owns what it needs.
     for file in index.files.iter().filter(|file| file.wanted_by_client()) {
         let target = target_for(&file.path);
         // A file that cannot even be attempted is recorded the same way a failed
@@ -881,7 +946,6 @@ async fn sync_pack_files(
             continue;
         }
 
-        let disabled = disabled_path(&dest);
         // The mod list keys on bare names, so an entry can only stand for a file
         // sitting directly in its own target's directory. Anything else sharing
         // that name — `config/common.jar` beside `mods/common.jar`, or a nested
@@ -896,7 +960,9 @@ async fn sync_pack_files(
         // reinstate the jar the user turned off and leave both copies on disk.
         // Only when the file has not changed: a new version of it still has to
         // be fetched, and is disabled again below.
-        if was_disabled && installed.is_some_and(|entry| is_unchanged(entry, file)) && disabled.exists()
+        if was_disabled
+            && installed.is_some_and(|entry| is_unchanged(entry, file))
+            && disabled_path(&dest).exists()
         {
             entries.push(installed.expect("checked above").clone());
             continue;
@@ -905,27 +971,40 @@ async fn sync_pack_files(
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let (mod_state, written) = match download_from_mirrors(file, &dest, client).await {
+        planned.push(PlannedDownload {
+            path: file.path.clone(),
+            dest,
+            target,
+            sha1: file.hashes.sha1.clone(),
+            downloads: file.downloads.clone(),
+            file_size: file.file_size,
+            was_disabled,
+        });
+    }
+
+    for (file, outcome) in run_downloads(planned, client, report).await? {
+        let disabled = disabled_path(&file.dest);
+        let (mod_state, written) = match outcome {
             // The user turned this mod off, so the version replacing it is off
             // too — the choice was about the mod, not about that build of it.
-            Ok(()) if was_disabled => {
+            Ok(()) if file.was_disabled => {
                 std::fs::remove_file(&disabled).ok();
-                match std::fs::rename(&dest, &disabled) {
+                match std::fs::rename(&file.dest, &disabled) {
                     Ok(()) => (ModState::Disabled, disabled.clone()),
                     Err(e) => {
                         warn!("cannot disable {}: {e}; leaving it enabled", file.path);
-                        (ModState::Enabled, dest.clone())
+                        (ModState::Enabled, file.dest.clone())
                     }
                 }
             }
-            Ok(()) => (ModState::Enabled, dest.clone()),
+            Ok(()) => (ModState::Enabled, file.dest.clone()),
             Err(e) => {
                 warn!("download failed for {}: {e}; marking for manual install", file.path);
-                clear_stale(&dest, target)?;
-                (ModState::DownloadFailed, dest.clone())
+                clear_stale(&file.dest, file.target)?;
+                (ModState::DownloadFailed, file.dest.clone())
             }
         };
-        let Some(target) = target else { continue };
+        let Some(target) = file.target else { continue };
         // Only mods are tracked once installed; anything else is tracked solely
         // to drive the link prompt when it could not be fetched.
         if target.tracks_modlist() || mod_state == ModState::DownloadFailed {
@@ -937,10 +1016,10 @@ async fn sync_pack_files(
                 (size, _) => size,
             };
             entries.push(ModListEntry {
-                file_name: file_name_of(&dest),
+                file_name: file_name_of(&file.dest),
                 project_name: String::new(),
                 icon_url: None,
-                sha1: file.hashes.sha1.clone(),
+                sha1: file.sha1,
                 source: DownloadSource::Manual,
                 target,
                 size,
@@ -1090,6 +1169,16 @@ async fn install_into(
         instance_path,
         &HashMap::new(),
         &state.http_client,
+        |done, total| {
+            emit_progress(
+                app_handle,
+                id,
+                instance_name,
+                &format!("Downloading mods ({done}/{total})"),
+                false,
+                None,
+            );
+        },
     )
     .await?;
     let mut modlist_entries = synced.entries;
@@ -1280,6 +1369,16 @@ async fn upgrade_into(
         instance_path,
         &previous,
         &state.http_client,
+        |done, total| {
+            emit_progress(
+                app_handle,
+                id,
+                instance_name,
+                &format!("Updating mods ({done}/{total})"),
+                false,
+                None,
+            );
+        },
     )
     .await?;
     let mut modlist_entries = synced.entries;
@@ -1513,7 +1612,7 @@ mod upgrade_tests {
             entry("a.jar", "aaaa", ModState::Enabled),
         )]);
 
-        let synced = super::sync_pack_files(&index, &dir, &previous, &reqwest::Client::new())
+        let synced = super::sync_pack_files(&index, &dir, &previous, &reqwest::Client::new(), |_, _| {})
             .await
             .expect("sync");
 
@@ -1547,7 +1646,7 @@ mod upgrade_tests {
             entry("a.jar", "0ld0ld", ModState::Disabled),
         )]);
 
-        let synced = super::sync_pack_files(&index, &dir, &previous, &reqwest::Client::new())
+        let synced = super::sync_pack_files(&index, &dir, &previous, &reqwest::Client::new(), |_, _| {})
             .await
             .expect("sync");
 
@@ -1580,7 +1679,7 @@ mod upgrade_tests {
             entry("a.jar", "abc123", ModState::Disabled),
         )]);
 
-        let synced = super::sync_pack_files(&index, &dir, &previous, &reqwest::Client::new())
+        let synced = super::sync_pack_files(&index, &dir, &previous, &reqwest::Client::new(), |_, _| {})
             .await
             .expect("sync");
 
@@ -1656,7 +1755,7 @@ mod upgrade_tests {
             file_size: 0,
         });
 
-        let synced = super::sync_pack_files(&index, &dir, &HashMap::new(), &reqwest::Client::new())
+        let synced = super::sync_pack_files(&index, &dir, &HashMap::new(), &reqwest::Client::new(), |_, _| {})
             .await
             .expect("sync");
 
@@ -1698,7 +1797,7 @@ mod upgrade_tests {
             entry("a.jar", "aaa", ModState::Disabled),
         )]);
 
-        let synced = super::sync_pack_files(&index, &dir, &previous, &reqwest::Client::new())
+        let synced = super::sync_pack_files(&index, &dir, &previous, &reqwest::Client::new(), |_, _| {})
             .await
             .expect("sync");
 
