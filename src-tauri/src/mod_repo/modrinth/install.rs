@@ -426,7 +426,12 @@ async fn sync_pack_files(
         let installed = previous.get(&file_name_of(&dest)).filter(|entry| {
             relative == format!("{}/{}", entry.target.directory(), file_name_of(&dest))
         });
-        let was_disabled = installed.is_some_and(|entry| entry.state == ModState::Disabled);
+        // The toggle writes the `.disabled` name whether or not the mod has a
+        // row in the list, so the file is the record for both. Asking only the
+        // list loses the choice for a mod that arrived as an override and is
+        // now named in the index: it would come back switched on, with the
+        // disabled copy orphaned beside it.
+        let was_disabled = disabled_path(&dest).exists();
 
         // A disabled mod lives under another name, so downloading `dest` would
         // reinstate the jar the user turned off and leave both copies on disk.
@@ -908,6 +913,13 @@ async fn upgrade_into(
     // what says the user turned this mod off — read it, rather than a list that
     // was never asked.
     for path in shipped_overrides.iter().filter(|path| target_for(path) == Some(ProjectFileTarget::Mod)) {
+        // A pack may ship `foo.jar` and `foo.jar.disabled` side by side, as one
+        // does to offer an alternate build. That second file is the pack's own,
+        // not a record of the user turning the first off, and renaming over it
+        // would destroy it and switch off a mod meant to be on.
+        if shipped.contains(&path_key(&format!("{path}.disabled"))) {
+            continue;
+        }
         let Some(dest) = safe_destination(instance_path, path) else { continue };
         let disabled = disabled_path(&dest);
         if !disabled.exists() {

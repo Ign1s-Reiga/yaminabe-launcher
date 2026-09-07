@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::commands::instance::LAUNCHER_DIR;
+use crate::commands::instance::is_launcher_dir;
 use serde::Deserialize;
 use yaminabe_launcher_shared::datamodels::{
     LocalModpackInfo, ModLoader, ModpackFormat, ProjectFileTarget,
@@ -119,7 +119,7 @@ pub fn safe_destination(instance_path: &Path, relative: &str) -> Option<PathBuf>
     // `.launcher/` is the launcher's own record of the instance, not part of
     // the pack. Nothing needs `..` to reach it, and a modlist planted there
     // survives the install and renders whatever it likes in the Mods tab.
-    if components[0] == LAUNCHER_DIR {
+    if is_launcher_dir(components[0]) {
         return None;
     }
     Some(
@@ -215,6 +215,25 @@ mod mrpack_tests {
         assert_eq!(safe_destination(root, ".."), None);
         // An ordinary path still resolves, including a nested one.
         assert_eq!(safe_destination(root, "mods/sub/a.jar"), Some(root.join("mods").join("sub").join("a.jar")));
+    }
+
+    /// The launcher's own directory is refused however the pack spells it.
+    /// Windows and macOS reach one directory by either case, and Windows drops
+    /// trailing dots and spaces — so an exact match refuses `.launcher` and
+    /// admits three spellings that land in the very same place.
+    #[test]
+    fn refuses_every_spelling_of_the_launcher_directory() {
+        let root = Path::new("/instances/pack");
+
+        for spelling in [".launcher", ".Launcher", ".LAUNCHER", ".launcher.", ".launcher "] {
+            assert_eq!(
+                safe_destination(root, &format!("{spelling}/instance.json")),
+                None,
+                "{spelling} reaches the launcher's own directory"
+            );
+        }
+        // A directory that merely starts the same is the pack's to write.
+        assert!(safe_destination(root, ".launcherpack/a.json").is_some());
     }
 
     #[test]
