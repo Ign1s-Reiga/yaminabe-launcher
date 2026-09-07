@@ -3,18 +3,21 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
-## 0.4.0 — 2026-09-07
+## 0.5.0 — 2026-09-07
 
 - Keep a pack's own files and the record of them in step, so an upgrade removes
   what the new version drops and nothing else. A world, a config or an
   `options.txt` that arrived with a pack is yours once you have it, and is left
   alone even when a later version stops shipping it.
-- Refuse a pack file that carries no checksum instead of accepting whatever
+- Fetch a pack file that carries no checksum rather than keeping whatever
   already sits at that name, which could leave the previous version installed
-  and report it as the new one. A file that cannot be checked is reported for
-  you to supply by hand, never deleted.
-- Refuse a pack path that tries to climb out of the instance, on both
-  CurseForge and Modrinth, rather than quietly rewriting it into one that stays.
+  and report it as the new one. A file that cannot be fetched at all is reported
+  for you to supply by hand.
+- Keep a mod you turned off turned off through an upgrade, whether the pack
+  lists it or ships it outright, and whether or not it carries a checksum.
+- Refuse a pack path that tries to climb out of the instance or into the
+  launcher's own records, on both CurseForge and Modrinth, rather than quietly
+  rewriting it into one that stays.
 - Offer a usable instance name when importing a pack whose own name cannot be a
   folder, and open the activity dock when an install fails immediately instead
   of appearing to do nothing.

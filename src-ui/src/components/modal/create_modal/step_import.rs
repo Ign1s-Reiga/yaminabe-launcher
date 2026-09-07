@@ -133,8 +133,12 @@ pub fn StepImport(
                     let current = state.instance_name.get_untracked();
                     let ours = filled_name.get_value();
                     let offered = usable_instance_name(&info.name);
+                    // A pack with no name of its own gets no offer. Filling the
+                    // field with the fallback would put a placeholder there and
+                    // record it as ours, so a later pack would silently replace
+                    // what by then looks like a name the user chose.
                     if (current.trim().is_empty() || Some(&current) == ours.as_ref())
-                        && !offered.is_empty()
+                        && !info.name.trim().is_empty()
                     {
                         state.instance_name.set(offered.clone());
                         filled_name.set_value(Some(offered));

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::commands::instance::is_launcher_dir;
+use crate::commands::instance::{is_current_dir, is_launcher_dir, is_parent_dir};
 use serde::Deserialize;
 use yaminabe_launcher_shared::datamodels::{
     LocalModpackInfo, ModLoader, ModpackFormat, ProjectFileTarget,
@@ -106,10 +106,10 @@ pub fn safe_destination(instance_path: &Path, relative: &str) -> Option<PathBuf>
         // Refused, not filtered out. Dropping a `..` silently turns
         // `mods/../evil.jar` into `mods/evil.jar` and writes it — a path that
         // tries to leave is not one to rewrite into a path that stays.
-        if part == ".." || part.contains(':') {
+        if is_parent_dir(part) || part.contains(':') {
             return None;
         }
-        if !part.is_empty() && part != "." {
+        if !is_current_dir(part) {
             components.push(part);
         }
     }
@@ -136,7 +136,7 @@ pub fn target_for(relative: &str) -> Option<ProjectFileTarget> {
     // read as a different directory from `mods/x.jar` and left untracked.
     let first = relative
         .split(['/', '\\'])
-        .find(|part| !part.is_empty() && *part != "." && *part != ".." && !part.contains(':'))?;
+        .find(|part| !is_current_dir(part) && !is_parent_dir(part) && !part.contains(':'))?;
     match first {
         "mods" => Some(ProjectFileTarget::Mod),
         "resourcepacks" => Some(ProjectFileTarget::ResourcePack),
@@ -234,6 +234,30 @@ mod mrpack_tests {
         }
         // A directory that merely starts the same is the pack's to write.
         assert!(safe_destination(root, ".launcherpack/a.json").is_some());
+    }
+
+    /// The same trailing dots and spaces Windows drops before reaching
+    /// `.launcher` also turn `.. ` into a climb, so the two guards have to read
+    /// a component the same way. An exact `..` comparison refuses `../evil.jar`
+    /// and admits `.. /evil.jar`, which lands in the very same place.
+    #[test]
+    fn refuses_every_spelling_of_a_climb() {
+        let root = Path::new("/instances/pack");
+
+        for spelling in ["..", ".. ", "...", ".. ."] {
+            assert_eq!(
+                safe_destination(root, &format!("mods/{spelling}/evil.jar")),
+                None,
+                "{spelling} climbs out of the instance"
+            );
+        }
+        // A single dot names the directory it sits in, and descends nowhere.
+        assert_eq!(
+            safe_destination(root, "./mods/./a.jar"),
+            Some(root.join("mods").join("a.jar"))
+        );
+        // Dots inside a name are part of it, not a climb.
+        assert!(safe_destination(root, "mods/a..b.jar").is_some());
     }
 
     #[test]

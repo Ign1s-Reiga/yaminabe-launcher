@@ -27,6 +27,26 @@ pub fn is_launcher_dir(component: &str) -> bool {
         .eq_ignore_ascii_case(LAUNCHER_DIR)
 }
 
+/// Whether a path component climbs to a parent directory.
+///
+/// `..` is the plain spelling. Windows drops trailing dots and spaces before
+/// resolving a component, so `.. ` arrives at the same place — the very
+/// normalisation [`is_launcher_dir`] is written against, and the reason an
+/// exact comparison is not enough here either. A component of nothing but dots
+/// and spaces is never a name a pack meant to ship, so any holding two or more
+/// dots is treated as a climb rather than reasoned about further.
+pub fn is_parent_dir(component: &str) -> bool {
+    component.chars().filter(|c| *c == '.').count() >= 2
+        && component.chars().all(|c| c == '.' || c == ' ')
+}
+
+/// Whether a path component names the directory it sits in, and so descends
+/// nowhere. Empty comes from a doubled separator; `.` and `. ` both resolve to
+/// the current directory once Windows has trimmed the component.
+pub fn is_current_dir(component: &str) -> bool {
+    component.trim_end_matches(['.', ' ']).is_empty()
+}
+
 pub fn instance_meta_file(instance_dir: &Path) -> PathBuf {
     instance_dir.join(LAUNCHER_DIR).join("instance.json")
 }
