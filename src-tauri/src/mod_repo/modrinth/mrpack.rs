@@ -99,10 +99,18 @@ pub fn resolve_loader(dependencies: &HashMap<String, String>) -> (ModLoader, Opt
 /// zip's entry names are: `..` climbs out, and a drive prefix discards the base
 /// entirely on Windows.
 pub fn safe_destination(instance_path: &Path, relative: &str) -> Option<PathBuf> {
-    let components: Vec<&str> = relative
-        .split(['/', '\\'])
-        .filter(|part| !part.is_empty() && *part != "." && *part != ".." && !part.contains(':'))
-        .collect();
+    let mut components: Vec<&str> = Vec::new();
+    for part in relative.split(['/', '\\']) {
+        // Refused, not filtered out. Dropping a `..` silently turns
+        // `mods/../evil.jar` into `mods/evil.jar` and writes it — a path that
+        // tries to leave is not one to rewrite into a path that stays.
+        if part == ".." || part.contains(':') {
+            return None;
+        }
+        if !part.is_empty() && part != "." {
+            components.push(part);
+        }
+    }
     if components.is_empty() {
         return None;
     }
@@ -189,11 +197,16 @@ mod mrpack_tests {
     fn refuses_a_path_that_climbs_out_of_the_instance() {
         let root = Path::new("/instances/pack");
 
-        assert_eq!(safe_destination(root, "mods/../../evil.jar"), Some(root.join("mods/evil.jar")));
-        assert_eq!(safe_destination(root, "../evil.jar"), Some(root.join("evil.jar")));
+        // Refused outright rather than filtered down to a path that stays: a
+        // `..` dropped silently turns `mods/../evil.jar` into a write the pack
+        // never described.
+        assert_eq!(safe_destination(root, "mods/../../evil.jar"), None);
+        assert_eq!(safe_destination(root, "../evil.jar"), None);
         // A drive prefix would otherwise replace the base outright on Windows.
-        assert_eq!(safe_destination(root, "C:/evil.jar"), Some(root.join("evil.jar")));
+        assert_eq!(safe_destination(root, "C:/evil.jar"), None);
         assert_eq!(safe_destination(root, ".."), None);
+        // An ordinary path still resolves, including a nested one.
+        assert_eq!(safe_destination(root, "mods/sub/a.jar"), Some(root.join("mods").join("sub").join("a.jar")));
     }
 
     #[test]

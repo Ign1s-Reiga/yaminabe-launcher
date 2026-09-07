@@ -3,6 +3,19 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 0.3.0 — 2026-09-07
+
+- Remove a file the new version of a pack drops even when it arrived as an
+  override, rather than leaving it in place and still loading.
+- Refuse a pack file that carries no checksum instead of accepting whatever
+  already sits at that name, which could leave the previous version installed
+  and report it as the new one.
+- Refuse a pack path that tries to climb out of the instance, rather than
+  quietly rewriting it into one that stays.
+- Offer a usable instance name when importing a pack whose own name cannot be a
+  folder, and open the activity dock when an install fails immediately instead
+  of appearing to do nothing.
+
 ## 0.2.0 — 2026-09-07
 
 - Install a modpack from a `.zip` or `.mrpack` you already have, by choosing the
