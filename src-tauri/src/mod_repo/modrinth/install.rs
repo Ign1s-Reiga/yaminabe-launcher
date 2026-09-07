@@ -399,6 +399,17 @@ async fn sync_pack_files(
         };
         paths.push(relative.clone());
 
+        // The toggle writes the `.disabled` name whether or not the mod has a
+        // row in the list, so the file is the record for both. Asking only the
+        // list loses the choice for a mod that arrived as an override and is
+        // now named in the index: it would come back switched on, with the
+        // disabled copy orphaned beside it.
+        //
+        // Read before anything below clears the path. `clear_stale` removes the
+        // `.disabled` copy along with the plain one, and reading after it would
+        // find the file gone and call the mod enabled.
+        let was_disabled = disabled_path(&dest).exists();
+
         if file.downloads.is_empty() {
             clear_stale(&dest, target)?;
             record_failure("no download URL".to_string());
@@ -426,22 +437,19 @@ async fn sync_pack_files(
         let installed = previous.get(&file_name_of(&dest)).filter(|entry| {
             relative == format!("{}/{}", entry.target.directory(), file_name_of(&dest))
         });
-        // The toggle writes the `.disabled` name whether or not the mod has a
-        // row in the list, so the file is the record for both. Asking only the
-        // list loses the choice for a mod that arrived as an override and is
-        // now named in the index: it would come back switched on, with the
-        // disabled copy orphaned beside it.
-        let was_disabled = disabled_path(&dest).exists();
-
         // A disabled mod lives under another name, so downloading `dest` would
         // reinstate the jar the user turned off and leave both copies on disk.
         // Only when the file has not changed: a new version of it still has to
         // be fetched, and is disabled again below.
-        if was_disabled
-            && installed.is_some_and(|entry| is_unchanged(entry, file))
-            && disabled_path(&dest).exists()
-        {
-            entries.push(installed.expect("checked above").clone());
+        if was_disabled && installed.is_some_and(|entry| is_unchanged(entry, file)) {
+            // The row is carried over, but its state is not: disk is what the
+            // game loads, and the two can disagree if a toggle was interrupted
+            // between its rename and its write. Recording `Enabled` for a file
+            // sitting under the `.disabled` name shows the mod as on while it
+            // is off, and the next toggle click then appears to do nothing.
+            let mut kept = installed.expect("checked above").clone();
+            kept.state = ModState::Disabled;
+            entries.push(kept);
             continue;
         }
 
@@ -1316,6 +1324,28 @@ mod upgrade_tests {
 
         assert_eq!(synced.paths, vec!["mods/sub/a.jar".to_string()]);
         assert_ne!(synced.entries[0].state, ModState::Disabled);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Clearing a mod's path takes the `.disabled` copy with it, since both
+    /// names are the pack's file under the launcher's own rule. That is why the
+    /// disable has to be read before any clear: read afterwards, the disk says
+    /// nothing and a mod the user turned off is planned as enabled.
+    #[test]
+    fn clearing_a_mod_takes_its_disabled_copy_too() {
+        let dir = temp_dir("clear-takes-disabled");
+        let dest = dir.join("mods").join("a.jar");
+        let disabled = super::disabled_path(&dest);
+        std::fs::write(&dest, b"the version on disk").expect("write dest");
+        std::fs::write(&disabled, b"the version the user turned off").expect("write disabled");
+
+        super::clear_stale(&dest, Some(ProjectFileTarget::Mod)).expect("clear");
+
+        assert!(!dest.exists());
+        assert!(
+            !disabled.exists(),
+            "the disabled copy survives, so reading the disable after a clear would still work"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

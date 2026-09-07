@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 use super::api::{fetch_project_summaries, resolve_project_files};
 use super::manifest::{manifest_file_ids, read_manifest, resolve_loader, ModpackManifest};
 use crate::commands::instance::{
-    create_instance_dir, is_launcher_dir, discard_unfinished_instance_dir, instance_meta_file, is_bare_file_name,
-    modlist_file, replace_modlist_entries_for_file_ids, upsert_modlist_entries,
+    create_instance_dir, discard_unfinished_instance_dir, instance_meta_file, is_bare_file_name,
+    is_current_dir, is_launcher_dir, is_parent_dir, modlist_file,
+    replace_modlist_entries_for_file_ids, upsert_modlist_entries,
 };
 use crate::emit_progress;
 use crate::http_utils::download_resource;
@@ -77,11 +78,11 @@ fn extract_overrides<R: std::io::Read + std::io::Seek>(
         let mut components: Vec<&str> = Vec::new();
         let mut escapes = false;
         for part in rel.split(['/', '\\']) {
-            if part == ".." || part.contains(':') {
+            if is_parent_dir(part) || part.contains(':') {
                 escapes = true;
                 break;
             }
-            if !part.is_empty() && part != "." {
+            if !is_current_dir(part) {
                 components.push(part);
             }
         }
