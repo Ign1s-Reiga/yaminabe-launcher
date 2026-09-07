@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use super::api::{fetch_project_summaries, resolve_project_files};
 use super::manifest::{manifest_file_ids, read_manifest, resolve_loader, ModpackManifest};
 use crate::commands::instance::{
-    create_instance_dir, discard_unfinished_instance_dir, instance_meta_file, is_bare_file_name,
+    create_instance_dir, LAUNCHER_DIR, discard_unfinished_instance_dir, instance_meta_file, is_bare_file_name,
     modlist_file, replace_modlist_entries_for_file_ids, upsert_modlist_entries,
 };
 use crate::emit_progress;
@@ -90,6 +90,14 @@ fn extract_overrides<R: std::io::Read + std::io::Seek>(
             continue;
         }
         if components.is_empty() {
+            continue;
+        }
+        // `.launcher/` is the launcher's own record of the instance, not part
+        // of the pack. Nothing needs `..` to reach it, and a modlist planted
+        // there is merged into the instance's own and renders whatever it
+        // likes in the Mods tab.
+        if components[0] == LAUNCHER_DIR {
+            warn!("skipping override writing into the launcher's own directory: {entry_name}");
             continue;
         }
         let dest = components
