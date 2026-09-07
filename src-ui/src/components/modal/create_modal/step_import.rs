@@ -9,6 +9,20 @@ use crate::components::ui::*;
 use crate::curseforge::{call_pick_modpack_file, call_read_modpack_file};
 use crate::ipc;
 
+/// A pack's own name, reduced to something that can also be a directory.
+///
+/// The backend refuses an instance name carrying a separator, a drive prefix or
+/// `..`, and a pack calling itself "RLCraft: Dregora" is entirely ordinary — so
+/// the offered name is trimmed rather than handed over to be rejected.
+fn usable_instance_name(name: &str) -> String {
+    name.replace("..", "")
+        .chars()
+        .filter(|c| !matches!(c, '/' | '\\' | ':'))
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 /// Whether a dropped path looks like a modpack this step can read. The file
 /// itself is still checked by the backend; this only decides which of several
 /// dropped paths is worth offering it.
@@ -132,11 +146,12 @@ pub fn StepImport(
                     // left alone.
                     let current = state.instance_name.get_untracked();
                     let ours = filled_name.get_value();
+                    let offered = usable_instance_name(&info.name);
                     if (current.trim().is_empty() || Some(&current) == ours.as_ref())
-                        && !info.name.is_empty()
+                        && !offered.is_empty()
                     {
-                        state.instance_name.set(info.name.clone());
-                        filled_name.set_value(Some(info.name.clone()));
+                        state.instance_name.set(offered.clone());
+                        filled_name.set_value(Some(offered));
                     }
                     error.set(None);
                     pack.set(Some(Pack { path, info }));

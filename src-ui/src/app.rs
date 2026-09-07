@@ -98,7 +98,9 @@ pub fn App() -> impl IntoView {
     ipc::on_event::<InstallJob, _>("instance-install-progress", move |job| {
         let job_succeeded = job.done && job.error.is_none();
         let is_new = install_jobs.with_untracked(|list| !list.iter().any(|j| j.id == job.id));
-        if is_new && !job.done && job.error.is_none() {
+        // A job that arrives already failed still has something to say. Without
+        // this the dock stays shut and the install looks like it did nothing.
+        if is_new && (!job.done || job.error.is_some()) {
             dock_expanded.set(true);
         }
         install_jobs.update(|list| {

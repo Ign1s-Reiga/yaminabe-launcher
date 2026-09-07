@@ -123,6 +123,43 @@ async fn run_downloads(
     Ok(finished)
 }
 
+/// The instance-relative paths an override tree would write, read without
+/// writing any of them.
+///
+/// An upgrade needs these before it deletes anything: a file the new version
+/// ships as an override is not a file it dropped, and one the old version
+/// shipped that way can only be removed if it was recorded.
+fn override_paths<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    instance_path: &Path,
+) -> Result<Vec<String>, Error> {
+    let mut paths = Vec::new();
+    for prefix in ["overrides/", "client-overrides/"] {
+        for i in 0..archive.len() {
+            let entry = archive
+                .by_index(i)
+                .map_err(|e| Error::Invalid(format!("reading zip entry at index {i}: {e}")))?;
+            let name = entry.name().to_string();
+            if name.ends_with('/') {
+                continue;
+            }
+            let Some(relative) = name.strip_prefix(prefix) else {
+                continue;
+            };
+            if relative.is_empty() {
+                continue;
+            }
+            let Some(dest) = safe_destination(instance_path, relative) else {
+                continue;
+            };
+            if let Some(path) = relative_path(instance_path, &dest) {
+                paths.push(path);
+            }
+        }
+    }
+    Ok(paths)
+}
+
 /// Extract every `overrides/` tree the pack ships. `client-overrides/` is
 /// applied after `overrides/`, since it exists precisely to win on a client.
 fn extract_overrides<R: std::io::Read + std::io::Seek>(
@@ -193,10 +230,6 @@ pub async fn install_modpack_from_file(
     result
 }
 
-/// Install a `.mrpack` already on disk into `instance_path`. `origin` is what
-/// the instance records as its provenance: `Manual` for a zip the user picked,
-/// or the Modrinth version it was fetched from.
-#[allow(clippy::too_many_arguments)]
 /// A staged `.mrpack` with its game and loader already installed. Shared by
 /// install and upgrade, which differ only in what they do with the files.
 struct PreparedPack {
@@ -360,6 +393,17 @@ async fn sync_pack_files(
         if file.downloads.is_empty() {
             clear_stale(&dest, target)?;
             record_failure("no download URL".to_string());
+            continue;
+        }
+
+        // Without a hash there is nothing to check the bytes against, and
+        // `download_resource` treats an absent hash as "whatever is there is
+        // fine" — so a previous version's jar sitting at this name would pass
+        // and be reported as the new one. Recorded as unfetchable instead,
+        // which is what the CurseForge path does with the same gap.
+        if file.hashes.sha1.is_empty() {
+            clear_stale(&dest, target)?;
+            record_failure("no SHA-1 hash".to_string());
             continue;
         }
 
@@ -568,6 +612,10 @@ fn pack_description(index: &MrpackIndex) -> String {
     }
 }
 
+/// Install a `.mrpack` already on disk into `instance_path`. `origin` is what
+/// the instance records as its provenance: `Manual` for a zip the user picked,
+/// or the Modrinth version it was fetched from.
+#[allow(clippy::too_many_arguments)]
 async fn install_into(
     app_handle: &tauri::AppHandle,
     id: &str,
@@ -605,12 +653,14 @@ async fn install_into(
     // match — so extracting first would let the stock jar overwrite a patched
     // one the pack deliberately ships.
     emit_progress(app_handle, id, instance_name, "Extracting files", false, None);
+    let mut installed_paths = synced.paths;
+    installed_paths.extend(override_paths(&mut prepared.archive, instance_path)?);
     extract_overrides(&mut prepared.archive, instance_path)?;
 
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
     name_entries_by_project(&mut modlist_entries, &state.http_client).await;
     upsert_modlist_entries(instance_path, modlist_entries)?;
-    write_json(pack_files_file(instance_path), &synced.paths)?;
+    write_json(pack_files_file(instance_path), &installed_paths)?;
 
     let meta = InstanceMeta {
         id: id.to_string(),
@@ -802,12 +852,18 @@ async fn upgrade_into(
 
     // Only now that the new files are down: a failure before this point leaves
     // the old instance intact rather than stripped of mods it still lists.
-    let shipped: HashSet<String> = synced.paths.iter().map(|path| path_key(path)).collect();
+    // Read before the deletion pass: a file this version ships as an override
+    // is one it still ships, so it must not read as dropped and be removed
+    // only to be written again moments later.
+    let mut installed_paths = synced.paths.clone();
+    installed_paths.extend(override_paths(&mut prepared.archive, instance_path)?);
+
+    let shipped: HashSet<String> = installed_paths.iter().map(|path| path_key(path)).collect();
     // A file that could not be deleted — locked by another process, say — is
     // still there, so its path stays in the record. Dropping it would leave the
     // file loading against the upgraded pack with nothing left that knows to
     // try again.
-    let mut kept_paths = synced.paths.clone();
+    let mut kept_paths = installed_paths.clone();
     for path in &installed_before {
         if shipped.contains(&path_key(path)) {
             continue;
@@ -1101,6 +1157,34 @@ mod upgrade_tests {
         assert!(!super::remove_pack_file(&dir, "mods/a.jar", &shipped));
 
         assert!(shipped_file.exists(), "a path the new version ships is not an alias to delete");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Without a hash there is nothing to check bytes against, and
+    /// `download_resource` reads an absent hash as "whatever is there will do"
+    /// — so the previous version's jar would pass and be reported as the new
+    /// one. It has to be refused before it gets that far.
+    #[tokio::test]
+    async fn a_file_with_no_hash_is_not_taken_on_trust() {
+        let dir = temp_dir("no-hash");
+        let jar = dir.join("mods").join("a.jar");
+        std::fs::write(&jar, b"the previous version").expect("write old jar");
+
+        let index = index_with(MrpackFile {
+            path: "mods/a.jar".to_string(),
+            hashes: MrpackHashes { sha1: String::new() },
+            env: None,
+            downloads: vec!["http://127.0.0.1:1/nope.jar".to_string()],
+            file_size: 0,
+        });
+
+        let synced = super::sync_pack_files(&index, &dir, &HashMap::new(), &reqwest::Client::new(), |_, _| {})
+            .await
+            .expect("sync");
+
+        assert!(!jar.exists(), "an unverifiable file must not be left standing");
+        assert_eq!(synced.entries.len(), 1);
+        assert_eq!(synced.entries[0].state, ModState::DownloadFailed);
         std::fs::remove_dir_all(&dir).ok();
     }
 
