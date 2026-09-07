@@ -15,6 +15,18 @@ use crate::install_task::{ensure_game_and_loader, version_manifest_path};
 /// launcher's record of the instance, and no modpack may write there.
 pub const LAUNCHER_DIR: &str = ".launcher";
 
+/// Whether a path component names [`LAUNCHER_DIR`], read the way the
+/// filesystem will read it.
+///
+/// An exact comparison refuses `.launcher` and admits `.Launcher`, which lands
+/// in the very same directory on Windows and macOS. Windows also drops trailing
+/// dots and spaces, so `.launcher.` and `.launcher ` arrive there too.
+pub fn is_launcher_dir(component: &str) -> bool {
+    component
+        .trim_end_matches(['.', ' '])
+        .eq_ignore_ascii_case(LAUNCHER_DIR)
+}
+
 pub fn instance_meta_file(instance_dir: &Path) -> PathBuf {
     instance_dir.join(LAUNCHER_DIR).join("instance.json")
 }
