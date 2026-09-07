@@ -12,7 +12,7 @@ use crate::http_utils::download_resource;
 use crate::install_task::ensure_game_and_loader;
 use crate::json::{read_json, read_json_or_default, write_json};
 use crate::AppState;
-use log::info;
+use log::{info, warn};
 use tauri::State;
 use yaminabe_launcher_shared::datamodels::{
     DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModState, ProjectFileInfo,
@@ -67,13 +67,28 @@ fn extract_overrides<R: std::io::Read + std::io::Seek>(
         }
 
         // Entry names come from an untrusted zip. Split on both separators —
-        // Windows treats `\` as one — and drop every component that could climb
-        // out: `..`, and anything holding a drive prefix like `C:`, which `join`
+        // Windows treats `\` as one — and refuse any that could climb out:
+        // `..`, and anything holding a drive prefix like `C:`, which `join`
         // would take as an absolute path replacing everything before it.
-        let components: Vec<&str> = rel
-            .split(['/', '\\'])
-            .filter(|c| !c.is_empty() && *c != "." && *c != ".." && !c.contains(':'))
-            .collect();
+        //
+        // Refused rather than filtered: dropping the `..` from
+        // `overrides/../.launcher/instance.json` writes the instance's own
+        // record instead, which is not what the pack described either.
+        let mut components: Vec<&str> = Vec::new();
+        let mut escapes = false;
+        for part in rel.split(['/', '\\']) {
+            if part == ".." || part.contains(':') {
+                escapes = true;
+                break;
+            }
+            if !part.is_empty() && part != "." {
+                components.push(part);
+            }
+        }
+        if escapes {
+            warn!("skipping override with an unusable path: {entry_name}");
+            continue;
+        }
         if components.is_empty() {
             continue;
         }
