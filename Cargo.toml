@@ -5,7 +5,7 @@ members = ["src-shared", "src-tauri", "src-ui"]
 [workspace.package]
 edition = "2024"
 authors = ["Ign1s-Reiga"]
-version = "0.1.0"
+version = "0.2.0"
 license = "MIT"
 license-file = "LICENSE"
 

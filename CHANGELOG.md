@@ -3,6 +3,17 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 0.2.0 — 2026-09-07
+
+- Install a modpack from a `.zip` or `.mrpack` you already have, by choosing the
+  file or dropping it onto the import step.
+- Search and install modpacks from Modrinth, alongside CurseForge.
+- Upgrade a Modrinth modpack in place. Saves and configs are kept, a mod you
+  turned off stays off, and files the new version drops are removed.
+- Fetch a pack's files a few at a time, counting them off as they land.
+- Name a pack's mods after the projects they come from, so the Mods tab shows
+  what a mod is rather than the name of its jar.
+
 ## 0.1.0 — 2026-09-03
 
 - Track where every downloaded file came from, and record the mods of an
