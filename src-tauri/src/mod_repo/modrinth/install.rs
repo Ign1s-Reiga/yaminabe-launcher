@@ -138,6 +138,7 @@ fn override_paths<R: std::io::Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
     instance_path: &Path,
 ) -> Result<Vec<String>, Error> {
+    let mut seen: HashSet<String> = HashSet::new();
     let mut paths: Vec<String> = Vec::new();
     for i in 0..archive.len() {
         let entry = archive
@@ -160,7 +161,7 @@ fn override_paths<R: std::io::Read + std::io::Seek>(
             continue;
         };
         if let Some(path) = relative_path(instance_path, &dest) {
-            if !paths.contains(&path) {
+            if seen.insert(path.clone()) {
                 paths.push(path);
             }
         }
@@ -404,18 +405,18 @@ async fn sync_pack_files(
             continue;
         }
 
-        // Without a hash there is nothing to check the bytes against, and
         // `download_resource` treats an absent hash as "whatever is there is
-        // fine" — so a previous version's jar sitting at this name would pass
-        // and be reported as the new one. Recorded as unfetchable instead,
-        // which is what the CurseForge path does with the same gap.
+        // fine", so with nothing to check against, a previous version's jar
+        // sitting at this name would pass and be reported as the new one.
         //
-        // Nothing is deleted here. The index format carries a hash for every
-        // file, so an index without one is malformed rather than a statement
-        // that the file is gone — and a pack listing no hashes at all would
-        // otherwise empty the instance of every mod it has.
-        if file.hashes.sha1.is_empty() {
-            record_failure("no SHA-1 hash".to_string());
+        // Only when something is already there, though. On a fresh install
+        // there is nothing to mistake for the new file, and refusing outright
+        // would leave an instance with no mods at all for any pack whose index
+        // omits `sha1` — worse than the unverified download it avoids. Nothing
+        // is deleted either way: an index without a hash is malformed, not a
+        // statement that the file is gone.
+        if file.hashes.sha1.is_empty() && dest.exists() {
+            record_failure("no SHA-1 hash to tell it from what is already here".to_string());
             continue;
         }
 
@@ -666,7 +667,11 @@ async fn install_into(
     // one the pack deliberately ships.
     emit_progress(app_handle, id, instance_name, "Extracting files", false, None);
     let mut installed_paths = synced.paths;
-    installed_paths.extend(override_paths(&mut prepared.archive, instance_path)?);
+    for path in override_paths(&mut prepared.archive, instance_path)? {
+        if !installed_paths.contains(&path) {
+            installed_paths.push(path);
+        }
+    }
     extract_overrides(&mut prepared.archive, instance_path)?;
 
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
@@ -866,9 +871,15 @@ async fn upgrade_into(
     // the old instance intact rather than stripped of mods it still lists.
     // Read before the deletion pass: a file this version ships as an override
     // is one it still ships, so it must not read as dropped and be removed
-    // only to be written again moments later.
+    // only to be written again moments later. Kept for the pass after the
+    // extraction too, rather than walking the archive again.
+    let shipped_overrides = override_paths(&mut prepared.archive, instance_path)?;
     let mut installed_paths = synced.paths.clone();
-    installed_paths.extend(override_paths(&mut prepared.archive, instance_path)?);
+    for path in &shipped_overrides {
+        if !installed_paths.contains(path) {
+            installed_paths.push(path.clone());
+        }
+    }
 
     let shipped: HashSet<String> = installed_paths.iter().map(|path| path_key(path)).collect();
     // A file that could not be deleted — locked by another process, say — is
@@ -886,20 +897,36 @@ async fn upgrade_into(
     }
 
     emit_progress(app_handle, id, instance_name, "Extracting files", false, None);
-    // A mod the new version ships as an override is about to be written under
-    // its plain name. Any `.disabled` twin left from when it came through the
-    // index is the old copy, and leaving it means the same mod twice.
-    for path in &override_paths(&mut prepared.archive, instance_path)? {
-        if let Some(dest) = safe_destination(instance_path, path) {
-            let disabled = disabled_path(&dest);
-            if disabled.exists() {
-                if let Err(e) = std::fs::remove_file(&disabled) {
-                    warn!("cannot remove superseded {}: {e}", disabled.display());
-                }
+    extract_overrides(&mut prepared.archive, instance_path)?;
+
+    // An override is written under its plain name, so a mod that arrives this
+    // way arrives switched on. Only mods: `.disabled` is how the launcher
+    // toggles those and nothing else, and a `theme.zip.disabled` beside a
+    // resource pack is the user's own backup.
+    for path in shipped_overrides.iter().filter(|path| target_for(path) == Some(ProjectFileTarget::Mod)) {
+        let Some(dest) = safe_destination(instance_path, path) else { continue };
+        let disabled = disabled_path(&dest);
+        let name = file_name_of(&dest);
+        let was_disabled = previous
+            .get(&name)
+            .filter(|entry| **path == format!("{}/{}", entry.target.directory(), name))
+            .is_some_and(|entry| entry.state == ModState::Disabled);
+
+        if was_disabled {
+            // The choice was about the mod, not about where the pack decided
+            // to ship it this time. Put it back off.
+            std::fs::remove_file(&disabled).ok();
+            if let Err(e) = std::fs::rename(&dest, &disabled) {
+                warn!("cannot disable {}: {e}; leaving it enabled", dest.display());
+            }
+        } else if disabled.exists() {
+            // A twin left from when this mod came through the index, now
+            // superseded by the copy just extracted.
+            if let Err(e) = std::fs::remove_file(&disabled) {
+                warn!("cannot remove superseded {}: {e}", disabled.display());
             }
         }
     }
-    extract_overrides(&mut prepared.archive, instance_path)?;
 
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
     name_entries_by_project(&mut modlist_entries, &state.http_client).await;

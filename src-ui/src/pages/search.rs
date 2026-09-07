@@ -1,6 +1,8 @@
 use crate::components::modal::install_modpack_modal::{InstallModpackModal, InstallState};
 use crate::components::project_search::ProjectSearch;
-use crate::curseforge::{InstallModpackArgs, call_install_modpack, call_list_project_files};
+use crate::curseforge::{
+    InstallModpackArgs, call_install_modpack, call_list_project_files, usable_instance_name,
+};
 use crate::ipc;
 use bamboo_css_macro::css;
 use leptos::control_flow::Show;
@@ -32,7 +34,7 @@ pub fn SearchPage() -> impl IntoView {
     });
 
     let open_install = move |pack: ModProjectInfo| {
-        install_name.set(pack.name.clone());
+        install_name.set(usable_instance_name(&pack.name));
         let project_id = pack.id.clone();
         install.set(Some(InstallState {
             pack,

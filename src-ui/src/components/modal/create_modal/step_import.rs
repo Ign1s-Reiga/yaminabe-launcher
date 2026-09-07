@@ -6,28 +6,8 @@ use yaminabe_launcher_shared::datamodels::LocalModpackInfo;
 
 use super::WizardState;
 use crate::components::ui::*;
-use crate::curseforge::{call_pick_modpack_file, call_read_modpack_file};
+use crate::curseforge::{call_pick_modpack_file, call_read_modpack_file, usable_instance_name};
 use crate::ipc;
-
-/// A pack's own name, reduced to something that can also be a directory.
-///
-/// The backend refuses an instance name carrying a separator, a drive prefix or
-/// `..`, and a pack calling itself "RLCraft: Dregora" is entirely ordinary — so
-/// the offered name is trimmed rather than handed over to be rejected.
-fn usable_instance_name(name: &str) -> String {
-    // Separators go first. Stripping `..` before them lets what is left close
-    // back up into a fresh `..` — `./../.` becomes exactly that.
-    let without_separators: String = name
-        .chars()
-        .filter(|c| !matches!(c, '/' | '\\' | ':' | '?' | '*' | '"' | '<' | '>' | '|'))
-        .collect();
-    without_separators
-        .replace("..", "")
-        .trim()
-        .trim_matches('.')
-        .trim()
-        .to_string()
-}
 
 /// Whether a dropped path looks like a modpack this step can read. The file
 /// itself is still checked by the backend; this only decides which of several
