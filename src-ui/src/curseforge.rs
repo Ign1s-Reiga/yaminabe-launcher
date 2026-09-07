@@ -248,6 +248,27 @@ pub async fn call_get_modloader_versions(
     .await
 }
 
+/// A pack's own name, reduced to something that can also be a directory.
+///
+/// The backend refuses an instance name carrying a separator, a drive prefix or
+/// `..`, and a pack calling itself "RLCraft: Dregora" is entirely ordinary — so
+/// every place that offers a pack's name as the instance name trims it first
+/// rather than handing it over to be rejected.
+pub fn usable_instance_name(name: &str) -> String {
+    // Separators go first. Stripping `..` before them lets what is left close
+    // back up into a fresh `..` — `./../.` becomes exactly that.
+    let without_separators: String = name
+        .chars()
+        .filter(|c| !matches!(c, '/' | '\\' | ':' | '?' | '*' | '"' | '<' | '>' | '|'))
+        .collect();
+    without_separators
+        .replace("..", "")
+        .trim()
+        .trim_matches('.')
+        .trim()
+        .to_string()
+}
+
 pub fn fmt_downloads(n: u64) -> String {
     if n >= 1_000_000_000 {
         format!("{:.1}B", n as f64 / 1_000_000_000.0)
