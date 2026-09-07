@@ -15,10 +15,16 @@ use crate::ipc;
 /// `..`, and a pack calling itself "RLCraft: Dregora" is entirely ordinary — so
 /// the offered name is trimmed rather than handed over to be rejected.
 fn usable_instance_name(name: &str) -> String {
-    name.replace("..", "")
+    // Separators go first. Stripping `..` before them lets what is left close
+    // back up into a fresh `..` — `./../.` becomes exactly that.
+    let without_separators: String = name
         .chars()
-        .filter(|c| !matches!(c, '/' | '\\' | ':'))
-        .collect::<String>()
+        .filter(|c| !matches!(c, '/' | '\\' | ':' | '?' | '*' | '"' | '<' | '>' | '|'))
+        .collect();
+    without_separators
+        .replace("..", "")
+        .trim()
+        .trim_matches('.')
         .trim()
         .to_string()
 }

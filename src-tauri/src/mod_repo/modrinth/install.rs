@@ -123,36 +123,44 @@ async fn run_downloads(
     Ok(finished)
 }
 
-/// The instance-relative paths an override tree would write, read without
-/// writing any of them.
+/// The instance-relative paths an override tree would write **into a directory
+/// the pack owns**, read without writing any of them.
 ///
 /// An upgrade needs these before it deletes anything: a file the new version
 /// ships as an override is not a file it dropped, and one the old version
 /// shipped that way can only be removed if it was recorded.
+///
+/// Only `mods/`, `resourcepacks/`, `shaderpacks/` and `datapacks/` are recorded.
+/// A pack may ship a world or a config as an override, but the moment the user
+/// plays or edits it, it is theirs — recording it would let a later version
+/// that stops shipping it delete a month of someone's saves.
 fn override_paths<R: std::io::Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
     instance_path: &Path,
 ) -> Result<Vec<String>, Error> {
-    let mut paths = Vec::new();
-    for prefix in ["overrides/", "client-overrides/"] {
-        for i in 0..archive.len() {
-            let entry = archive
-                .by_index(i)
-                .map_err(|e| Error::Invalid(format!("reading zip entry at index {i}: {e}")))?;
-            let name = entry.name().to_string();
-            if name.ends_with('/') {
-                continue;
-            }
-            let Some(relative) = name.strip_prefix(prefix) else {
-                continue;
-            };
-            if relative.is_empty() {
-                continue;
-            }
-            let Some(dest) = safe_destination(instance_path, relative) else {
-                continue;
-            };
-            if let Some(path) = relative_path(instance_path, &dest) {
+    let mut paths: Vec<String> = Vec::new();
+    for i in 0..archive.len() {
+        let entry = archive
+            .by_index(i)
+            .map_err(|e| Error::Invalid(format!("reading zip entry at index {i}: {e}")))?;
+        let name = entry.name().to_string();
+        if name.ends_with('/') {
+            continue;
+        }
+        // One walk for both trees: a file shipped in each is still one file.
+        let relative = ["overrides/", "client-overrides/"]
+            .iter()
+            .find_map(|prefix| name.strip_prefix(prefix))
+            .filter(|relative| !relative.is_empty());
+        let Some(relative) = relative else { continue };
+        if target_for(relative).is_none() {
+            continue;
+        }
+        let Some(dest) = safe_destination(instance_path, relative) else {
+            continue;
+        };
+        if let Some(path) = relative_path(instance_path, &dest) {
+            if !paths.contains(&path) {
                 paths.push(path);
             }
         }
@@ -401,8 +409,12 @@ async fn sync_pack_files(
         // fine" — so a previous version's jar sitting at this name would pass
         // and be reported as the new one. Recorded as unfetchable instead,
         // which is what the CurseForge path does with the same gap.
+        //
+        // Nothing is deleted here. The index format carries a hash for every
+        // file, so an index without one is malformed rather than a statement
+        // that the file is gone — and a pack listing no hashes at all would
+        // otherwise empty the instance of every mod it has.
         if file.hashes.sha1.is_empty() {
-            clear_stale(&dest, target)?;
             record_failure("no SHA-1 hash".to_string());
             continue;
         }
@@ -874,6 +886,19 @@ async fn upgrade_into(
     }
 
     emit_progress(app_handle, id, instance_name, "Extracting files", false, None);
+    // A mod the new version ships as an override is about to be written under
+    // its plain name. Any `.disabled` twin left from when it came through the
+    // index is the old copy, and leaving it means the same mod twice.
+    for path in &override_paths(&mut prepared.archive, instance_path)? {
+        if let Some(dest) = safe_destination(instance_path, path) {
+            let disabled = disabled_path(&dest);
+            if disabled.exists() {
+                if let Err(e) = std::fs::remove_file(&disabled) {
+                    warn!("cannot remove superseded {}: {e}", disabled.display());
+                }
+            }
+        }
+    }
     extract_overrides(&mut prepared.archive, instance_path)?;
 
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
@@ -1057,7 +1082,7 @@ mod upgrade_tests {
 
         let index = index_with(MrpackFile {
             path: "mods/a.jar".to_string(),
-            hashes: MrpackHashes { sha1: String::new() },
+            hashes: MrpackHashes { sha1: "a1b2c3".to_string() },
             env: None,
             downloads: vec![String::new()],
             file_size: 0,
@@ -1182,9 +1207,12 @@ mod upgrade_tests {
             .await
             .expect("sync");
 
-        assert!(!jar.exists(), "an unverifiable file must not be left standing");
+        // Refused, not adopted: the old jar is never reported as the new one.
         assert_eq!(synced.entries.len(), 1);
         assert_eq!(synced.entries[0].state, ModState::DownloadFailed);
+        // And not deleted either. A pack listing no hashes is malformed, not a
+        // statement that every one of its files is gone.
+        assert!(jar.exists(), "a file we are not replacing must be left alone");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1199,7 +1227,7 @@ mod upgrade_tests {
 
         let index = index_with(MrpackFile {
             path: "mods/a.jar".to_string(),
-            hashes: MrpackHashes { sha1: String::new() },
+            hashes: MrpackHashes { sha1: "a1b2c3".to_string() },
             env: None,
             downloads: vec![],
             file_size: 0,
@@ -1237,7 +1265,7 @@ mod upgrade_tests {
         let dir = temp_dir("nested-state");
         let index = index_with(MrpackFile {
             path: "mods/sub/a.jar".to_string(),
-            hashes: MrpackHashes { sha1: String::new() },
+            hashes: MrpackHashes { sha1: "a1b2c3".to_string() },
             env: None,
             downloads: vec!["http://127.0.0.1:1/nope.jar".to_string()],
             file_size: 0,
