@@ -406,18 +406,16 @@ async fn sync_pack_files(
         }
 
         // `download_resource` treats an absent hash as "whatever is there is
-        // fine", so with nothing to check against, a previous version's jar
-        // sitting at this name would pass and be reported as the new one.
+        // fine" and skips the fetch, so a previous version's jar sitting at
+        // this name would be kept and reported as the new one.
         //
-        // Only when something is already there, though. On a fresh install
-        // there is nothing to mistake for the new file, and refusing outright
-        // would leave an instance with no mods at all for any pack whose index
-        // omits `sha1` — worse than the unverified download it avoids. Nothing
-        // is deleted either way: an index without a hash is malformed, not a
-        // statement that the file is gone.
-        if file.hashes.sha1.is_empty() && dest.exists() {
-            record_failure("no SHA-1 hash to tell it from what is already here".to_string());
-            continue;
+        // Clearing it first is what makes the fetch happen. Refusing the file
+        // instead leaves it on disk and missing from the mod list at once —
+        // still loading, and impossible to remove or toggle, since the tab has
+        // it recorded as absent. With no hash to compare, fetching what the
+        // index names is the only answer that keeps disk and record agreeing.
+        if file.hashes.sha1.is_empty() {
+            clear_stale(&dest, target)?;
         }
 
         // The mod list keys on bare names, so an entry can only stand for a file
@@ -903,28 +901,23 @@ async fn upgrade_into(
     // way arrives switched on. Only mods: `.disabled` is how the launcher
     // toggles those and nothing else, and a `theme.zip.disabled` beside a
     // resource pack is the user's own backup.
+    //
+    // The `.disabled` name is the whole record of the choice, not the mod list:
+    // a mod that only ever arrived as an override has no row there, and
+    // `toggle_state_instance_mod` does not add one. So the file's existence is
+    // what says the user turned this mod off — read it, rather than a list that
+    // was never asked.
     for path in shipped_overrides.iter().filter(|path| target_for(path) == Some(ProjectFileTarget::Mod)) {
         let Some(dest) = safe_destination(instance_path, path) else { continue };
         let disabled = disabled_path(&dest);
-        let name = file_name_of(&dest);
-        let was_disabled = previous
-            .get(&name)
-            .filter(|entry| **path == format!("{}/{}", entry.target.directory(), name))
-            .is_some_and(|entry| entry.state == ModState::Disabled);
-
-        if was_disabled {
-            // The choice was about the mod, not about where the pack decided
-            // to ship it this time. Put it back off.
-            std::fs::remove_file(&disabled).ok();
-            if let Err(e) = std::fs::rename(&dest, &disabled) {
-                warn!("cannot disable {}: {e}; leaving it enabled", dest.display());
-            }
-        } else if disabled.exists() {
-            // A twin left from when this mod came through the index, now
-            // superseded by the copy just extracted.
-            if let Err(e) = std::fs::remove_file(&disabled) {
-                warn!("cannot remove superseded {}: {e}", disabled.display());
-            }
+        if !disabled.exists() {
+            continue;
+        }
+        // The choice was about the mod, not about how the pack decided to ship
+        // it this time. The copy just extracted takes the disabled name.
+        std::fs::remove_file(&disabled).ok();
+        if let Err(e) = std::fs::rename(&dest, &disabled) {
+            warn!("cannot disable {}: {e}; leaving it enabled", dest.display());
         }
     }
 
@@ -1234,12 +1227,15 @@ mod upgrade_tests {
             .await
             .expect("sync");
 
-        // Refused, not adopted: the old jar is never reported as the new one.
+        // Never adopted: whatever the outcome, the previous version's jar is
+        // not reported as the new one.
         assert_eq!(synced.entries.len(), 1);
         assert_eq!(synced.entries[0].state, ModState::DownloadFailed);
-        // And not deleted either. A pack listing no hashes is malformed, not a
-        // statement that every one of its files is gone.
-        assert!(jar.exists(), "a file we are not replacing must be left alone");
+        // Cleared before the fetch, because `download_resource` skips a file
+        // that is already there when it has no hash to judge it by. The fetch
+        // then fails here, so nothing replaces it — and disk agrees with the
+        // mod list, which says the file is missing.
+        assert!(!jar.exists(), "the superseded jar must not be left behind");
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::commands::instance::LAUNCHER_DIR;
 use serde::Deserialize;
 use yaminabe_launcher_shared::datamodels::{
     LocalModpackInfo, ModLoader, ModpackFormat, ProjectFileTarget,
@@ -69,6 +70,7 @@ impl MrpackFile {
 
 pub const INDEX_NAME: &str = "modrinth.index.json";
 
+
 pub fn read_index<R: std::io::Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
 ) -> Result<MrpackIndex, Error> {
@@ -112,6 +114,12 @@ pub fn safe_destination(instance_path: &Path, relative: &str) -> Option<PathBuf>
         }
     }
     if components.is_empty() {
+        return None;
+    }
+    // `.launcher/` is the launcher's own record of the instance, not part of
+    // the pack. Nothing needs `..` to reach it, and a modlist planted there
+    // survives the install and renders whatever it likes in the Mods tab.
+    if components[0] == LAUNCHER_DIR {
         return None;
     }
     Some(

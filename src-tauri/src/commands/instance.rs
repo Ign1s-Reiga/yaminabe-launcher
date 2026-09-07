@@ -11,8 +11,12 @@ use crate::commands::java::download_java_runtime;
 use crate::json::{read_json, read_json_or_default, write_json};
 use crate::install_task::{ensure_game_and_loader, version_manifest_path};
 
+/// The launcher's own directory inside an instance. Its contents are the
+/// launcher's record of the instance, and no modpack may write there.
+pub const LAUNCHER_DIR: &str = ".launcher";
+
 pub fn instance_meta_file(instance_dir: &Path) -> PathBuf {
-    instance_dir.join(".launcher").join("instance.json")
+    instance_dir.join(LAUNCHER_DIR).join("instance.json")
 }
 
 /// Instance metadata used to live at `<instance>/instance.json`. Move a file
@@ -38,7 +42,7 @@ fn migrate_legacy_meta(instance_dir: &Path) {
 }
 
 pub fn modlist_file(instance_dir: &Path) -> PathBuf {
-    instance_dir.join(".launcher").join("modlist.json")
+    instance_dir.join(LAUNCHER_DIR).join("modlist.json")
 }
 
 pub fn upsert_modlist_entries(instance_dir: &Path, entries: Vec<ModListEntry>) -> Result<(), Error> {

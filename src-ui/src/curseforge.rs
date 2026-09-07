@@ -261,12 +261,18 @@ pub fn usable_instance_name(name: &str) -> String {
         .chars()
         .filter(|c| !matches!(c, '/' | '\\' | ':' | '?' | '*' | '"' | '<' | '>' | '|'))
         .collect();
-    without_separators
+    let trimmed = without_separators
         .replace("..", "")
         .trim()
         .trim_matches('.')
         .trim()
-        .to_string()
+        .to_string();
+    // A name made entirely of what gets stripped leaves nothing, and an empty
+    // instance name is refused just as firmly as the original was.
+    if trimmed.is_empty() {
+        return "Modpack".to_string();
+    }
+    trimmed
 }
 
 pub fn fmt_downloads(n: u64) -> String {
