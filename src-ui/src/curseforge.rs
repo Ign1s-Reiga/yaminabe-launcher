@@ -269,7 +269,12 @@ pub fn usable_instance_name(name: &str) -> String {
         .to_string();
     // A name made entirely of what gets stripped leaves nothing, and an empty
     // instance name is refused just as firmly as the original was.
-    if trimmed.is_empty() {
+    //
+    // Dots and spaces are the same case one trim later: ". . ." reduces to ".",
+    // which the backend accepts and then resolves to the install directory
+    // itself, so the user is told the folder already exists rather than being
+    // offered the fallback this exists to give them.
+    if trimmed.chars().all(|c| c == '.' || c == ' ') {
         return "Modpack".to_string();
     }
     trimmed
