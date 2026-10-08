@@ -350,9 +350,9 @@ const BULK_CHUNK: usize = 100;
 /// pack would otherwise show jar file names with no icons. Two bulk lookups close
 /// that gap: hashes to versions, then those versions' projects to names and icons.
 ///
-/// This is cosmetic. A failed lookup logs and yields nothing for the files it
-/// covered, leaving them named by their file — never failing an install whose
-/// files are already on disk.
+/// A failed lookup logs and yields nothing for the files it covered, leaving
+/// them named by their file and matched across an upgrade by path alone —
+/// never failing an install whose files are already on disk.
 async fn resolve_by_hash(
     hashes: Vec<String>,
     client: &reqwest::Client,
@@ -415,32 +415,57 @@ async fn resolve_by_hash(
         .collect()
 }
 
-/// Name the pack's files after the projects they come from, so the Mods tab
-/// shows "Sodium" with its icon rather than `sodium-fabric-0.5.8.jar`. Also
-/// records where each file came from, which the index alone cannot say — a
-/// failed entry can then link to its project page.
-pub async fn name_entries_by_project(entries: &mut [ModListEntry], client: &reqwest::Client) {
-    let hashes: Vec<String> = entries
-        .iter()
-        .filter(|entry| !entry.sha1.is_empty())
-        .map(|entry| entry.sha1.to_ascii_lowercase())
-        .collect();
-    if hashes.is_empty() {
-        return;
+/// What Modrinth knows about a set of a pack's files, keyed by lowercase SHA-1.
+pub struct ResolvedFiles(HashMap<String, ResolvedFile>);
+
+impl ResolvedFiles {
+    /// Look the entries' files up by hash, in one pass of bulk requests.
+    pub async fn of<'a>(
+        entries: impl IntoIterator<Item = &'a ModListEntry>,
+        client: &reqwest::Client,
+    ) -> Self {
+        let hashes: Vec<String> = entries
+            .into_iter()
+            .filter(|entry| !entry.sha1.is_empty())
+            .map(|entry| entry.sha1.to_ascii_lowercase())
+            .collect();
+        if hashes.is_empty() {
+            return Self(HashMap::new());
+        }
+        Self(resolve_by_hash(hashes, client).await)
     }
 
-    let resolved = resolve_by_hash(hashes, client).await;
-    for entry in entries.iter_mut() {
-        let Some(found) = resolved.get(&entry.sha1.to_ascii_lowercase()) else {
-            continue;
-        };
-        entry.project_name = found.project_name.clone();
-        entry.icon_url = found.icon_url.clone();
-        entry.source = DownloadSource::Modrinth {
-            project_id: found.project_id.clone(),
-            version_id: found.version_id.clone(),
-        };
+    /// The project the file with this hash belongs to.
+    pub fn project_id(&self, sha1: &str) -> Option<&str> {
+        self.0
+            .get(&sha1.to_ascii_lowercase())
+            .map(|found| found.project_id.as_str())
     }
+
+    /// Name the pack's files after the projects they come from, so the Mods tab
+    /// shows "Sodium" with its icon rather than `sodium-fabric-0.5.8.jar`. Also
+    /// records where each file came from, which the index alone cannot say — a
+    /// failed entry can then link to its project page, and an upgrade can match
+    /// a mod's new version to its old one.
+    pub fn name(&self, entries: &mut [ModListEntry]) {
+        for entry in entries.iter_mut() {
+            let Some(found) = self.0.get(&entry.sha1.to_ascii_lowercase()) else {
+                continue;
+            };
+            entry.project_name = found.project_name.clone();
+            entry.icon_url = found.icon_url.clone();
+            entry.source = DownloadSource::Modrinth {
+                project_id: found.project_id.clone(),
+                version_id: found.version_id.clone(),
+            };
+        }
+    }
+}
+
+/// Look `entries` up and name them, for an install with no other use for the
+/// lookup.
+pub async fn name_entries_by_project(entries: &mut [ModListEntry], client: &reqwest::Client) {
+    ResolvedFiles::of(entries.iter(), client).await.name(entries);
 }
 
 #[cfg(test)]
