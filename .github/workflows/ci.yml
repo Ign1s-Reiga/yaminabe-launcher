@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: windows-latest
+    steps:
+      # Into a subdirectory, so bamboo-css can sit beside it where the UI's path
+      # dependency expects it.
+      - uses: actions/checkout@v7
+        with:
+          path: yaminabe-launcher
+
+      - uses: ./yaminabe-launcher/.github/actions/setup
+
+      # The backend embeds the built UI, so it has to exist before the tests
+      # compile.
+      - name: Build the UI
+        shell: bash
+        working-directory: yaminabe-launcher/src-ui
+        run: trunk build
+
+      - name: Check the stylesheet was bundled
+        shell: bash
+        working-directory: yaminabe-launcher/src-ui
+        run: |
+          if [ ! -s assets/bundle.css ]; then
+            echo "::error::assets/bundle.css is empty, so the UI would ship unstyled"
+            exit 1
+          fi
+
+      - name: Test
+        shell: bash
+        working-directory: yaminabe-launcher
+        run: cargo test --locked -p yaminabe-launcher -p yaminabe-launcher-shared

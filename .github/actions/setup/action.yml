@@ -1,0 +1,49 @@
+name: Set up the build
+description: >-
+  Check out bamboo-css beside the launcher, install the pinned Rust toolchain
+  and Trunk, and compile the UI once so its CSS fragments exist before Trunk's
+  collector hook bundles them. Expects the launcher checked out into
+  `yaminabe-launcher/`.
+
+runs:
+  using: composite
+  steps:
+    # The UI depends on bamboo-css by path (`../../bamboo-css` from src-ui), and
+    # Trunk's pre_build hook runs its collector from there. Pinned so a build
+    # uses the same macro Cargo.lock was resolved against.
+    - uses: actions/checkout@v7
+      with:
+        repository: Ign1s-Reiga/bamboo-css
+        ref: e51b81619bc4b7a5ded360ba73e5eec94d5e2a5a
+        path: bamboo-css
+
+    - uses: dtolnay/rust-toolchain@1.96.0
+      with:
+        targets: wasm32-unknown-unknown
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: |
+          yaminabe-launcher
+          bamboo-css
+
+    - name: Install Trunk
+      shell: pwsh
+      run: |
+        $base = "https://github.com/trunk-rs/trunk/releases/download/v0.21.14"
+        $dir = Join-Path $env:RUNNER_TEMP "trunk"
+        Invoke-WebRequest "$base/trunk-x86_64-pc-windows-msvc.zip" -OutFile "$dir.zip"
+        Invoke-WebRequest "$base/trunk-x86_64-pc-windows-msvc.zip.sha256" -OutFile "$dir.zip.sha256"
+        $expected = (Get-Content "$dir.zip.sha256" -Raw).Trim().Split(" ")[0]
+        $actual = (Get-FileHash "$dir.zip" -Algorithm SHA256).Hash
+        if ($actual -ne $expected) { throw "trunk download is $actual, expected $expected" }
+        Expand-Archive "$dir.zip" -DestinationPath $dir
+        $dir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+    # The collector bundles only fragments that already exist, and the macro
+    # writes them while the UI compiles, after the hook has run. On a clean
+    # runner a plain `trunk build` would ship an empty stylesheet.
+    - name: Write the UI's CSS fragments
+      shell: bash
+      working-directory: yaminabe-launcher
+      run: cargo check --locked -p yaminabe-launcher-ui --target wasm32-unknown-unknown
