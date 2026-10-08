@@ -54,11 +54,12 @@ jobs:
           fi
 
       # `cargo test` compiles and links every target before running anything,
-      # so it covers what `cargo check` would and then some.
+      # so it covers what `cargo check` would and then some. The UI's tests run
+      # natively: they cover its parsing, which needs no browser.
       - name: cargo test
         shell: bash
         working-directory: yaminabe-launcher
-        run: cargo test --locked -p yaminabe-launcher -p yaminabe-launcher-shared
+        run: cargo test --locked -p yaminabe-launcher -p yaminabe-launcher-shared -p yaminabe-launcher-ui
 
   # `paths:` exists only on the workflow trigger, not per job, so filtering
   # there would skip the tests too. This computes the answer for the one
