@@ -68,6 +68,8 @@ async fn download_from_mirrors(
 struct PlannedDownload {
     /// The index's own path, for logging.
     path: String,
+    /// Where it goes, spelled as `shipped` spells it.
+    relative: String,
     dest: PathBuf,
     /// `None` when the mod list does not model where this file goes.
     target: Option<ProjectFileTarget>,
@@ -310,15 +312,62 @@ fn disabled_path(dest: &Path) -> PathBuf {
     dest.with_file_name(format!("{}.disabled", file_name_of(dest)))
 }
 
-/// The names a pack owns at `dest`: the file itself, and — only for a mod —
-/// the `.disabled` spelling the launcher toggles it with. Elsewhere that suffix
-/// is the user's own name for their own file and none of the pack's business.
-fn owned_names(dest: &Path, target: Option<ProjectFileTarget>) -> Vec<PathBuf> {
-    let mut names = vec![dest.to_path_buf()];
-    if target == Some(ProjectFileTarget::Mod) {
-        names.push(disabled_path(dest));
-    }
-    names
+/// Whether this kind of file is the launcher's to toggle with a `.disabled`
+/// name.
+///
+/// Only mods are. Elsewhere that suffix is the user's own name for their own
+/// file and none of the pack's business: `theme.zip.disabled` beside a resource
+/// pack is a backup, and treating it as a toggle deletes it and moves the pack's
+/// own file out of the way.
+fn uses_disabled_suffix(target: Option<ProjectFileTarget>) -> bool {
+    target == Some(ProjectFileTarget::Mod)
+}
+
+/// The `.disabled` name the launcher toggles the file at `relative` with, when
+/// that name is the launcher's to use: only for a mod, and only while the pack
+/// does not claim the name itself.
+///
+/// A pack may ship `foo.jar` and `foo.jar.disabled` side by side, as one does
+/// to offer an alternate build. That second file is the pack's own, and taking
+/// it for the first one's twin — reading it as a choice, renaming over it,
+/// clearing it — destroys it and can switch off a mod meant to be on.
+///
+/// `shipped` is what this version installs, keyed by [`path_key`].
+fn toggle_twin(
+    dest: &Path,
+    relative: &str,
+    target: Option<ProjectFileTarget>,
+    shipped: &HashSet<String>,
+) -> Option<PathBuf> {
+    let claimed = shipped.contains(&path_key(&format!("{relative}.disabled")));
+    (uses_disabled_suffix(target) && !claimed).then(|| disabled_path(dest))
+}
+
+/// Whether the user has turned the mod at `dest` off.
+///
+/// The name is the whole record of the choice: a mod that only ever arrived as
+/// an override has no mod-list row, and the toggle does not add one, so the
+/// twin's existence is what says the user turned it off.
+fn records_user_disable(
+    dest: &Path,
+    relative: &str,
+    target: Option<ProjectFileTarget>,
+    shipped: &HashSet<String>,
+) -> bool {
+    toggle_twin(dest, relative, target, shipped).is_some_and(|twin| twin.exists())
+}
+
+/// The names a pack owns at `dest`: the file itself, and the twin it is
+/// toggled with where it has one.
+fn owned_names(
+    dest: &Path,
+    relative: &str,
+    target: Option<ProjectFileTarget>,
+    shipped: &HashSet<String>,
+) -> Vec<PathBuf> {
+    std::iter::once(dest.to_path_buf())
+        .chain(toggle_twin(dest, relative, target, shipped))
+        .collect()
 }
 
 /// Remove what the previous version left at a path this run claims but could
@@ -329,8 +378,13 @@ fn owned_names(dest: &Path, target: Option<ProjectFileTarget>) -> Vec<PathBuf> {
 /// still on disk and still loading is the mismatch this exists to prevent, so
 /// there is nothing useful to do but leave the instance as it was and let the
 /// user retry once whatever holds the file has let go.
-fn clear_stale(dest: &Path, target: Option<ProjectFileTarget>) -> Result<(), Error> {
-    for path in owned_names(dest, target) {
+fn clear_stale(
+    dest: &Path,
+    relative: &str,
+    target: Option<ProjectFileTarget>,
+    shipped: &HashSet<String>,
+) -> Result<(), Error> {
+    for path in owned_names(dest, relative, target, shipped) {
         if path.exists() {
             std::fs::remove_file(&path).map_err(|e| {
                 Error::Invalid(format!(
@@ -359,12 +413,27 @@ async fn sync_pack_files(
     index: &MrpackIndex,
     instance_path: &Path,
     previous: &HashMap<String, ModListEntry>,
+    shipped_overrides: &[String],
     client: &reqwest::Client,
     report: impl Fn(usize, usize),
 ) -> Result<SyncedPack, Error> {
     let mut entries: Vec<ModListEntry> = Vec::new();
     let mut paths: Vec<String> = Vec::new();
     let mut planned: Vec<PlannedDownload> = Vec::new();
+
+    // Everything this version installs, for [`toggle_twin`]: a pack can
+    // claim a `.disabled` name through its index or through its overrides, and
+    // either way the file is its own. Resolved the same way the loop below
+    // resolves each path, so the two spellings compare.
+    let shipped: HashSet<String> = index
+        .files
+        .iter()
+        .filter(|file| file.wanted_by_client())
+        .filter_map(|file| safe_destination(instance_path, &file.path))
+        .filter_map(|dest| relative_path(instance_path, &dest))
+        .chain(shipped_overrides.iter().cloned())
+        .map(|relative| path_key(&relative))
+        .collect();
 
     // Planned first, so every file that will not be fetched is settled before
     // any is, and each task owns what it needs.
@@ -399,19 +468,13 @@ async fn sync_pack_files(
         };
         paths.push(relative.clone());
 
-        // The toggle writes the `.disabled` name whether or not the mod has a
-        // row in the list, so the file is the record for both. Asking only the
-        // list loses the choice for a mod that arrived as an override and is
-        // now named in the index: it would come back switched on, with the
-        // disabled copy orphaned beside it.
-        //
         // Read before anything below clears the path. `clear_stale` removes the
         // `.disabled` copy along with the plain one, and reading after it would
         // find the file gone and call the mod enabled.
-        let was_disabled = disabled_path(&dest).exists();
+        let was_disabled = records_user_disable(&dest, &relative, target, &shipped);
 
         if file.downloads.is_empty() {
-            clear_stale(&dest, target)?;
+            clear_stale(&dest, &relative, target, &shipped)?;
             record_failure("no download URL".to_string());
             continue;
         }
@@ -426,7 +489,7 @@ async fn sync_pack_files(
         // it recorded as absent. With no hash to compare, fetching what the
         // index names is the only answer that keeps disk and record agreeing.
         if file.hashes.sha1.is_empty() {
-            clear_stale(&dest, target)?;
+            clear_stale(&dest, &relative, target, &shipped)?;
         }
 
         // The mod list keys on bare names, so an entry can only stand for a file
@@ -458,6 +521,7 @@ async fn sync_pack_files(
         }
         planned.push(PlannedDownload {
             path: file.path.clone(),
+            relative,
             dest,
             target,
             sha1: file.hashes.sha1.clone(),
@@ -485,7 +549,7 @@ async fn sync_pack_files(
             Ok(()) => (ModState::Enabled, file.dest.clone()),
             Err(e) => {
                 warn!("download failed for {}: {e}; marking for manual install", file.path);
-                clear_stale(&file.dest, file.target)?;
+                clear_stale(&file.dest, &file.relative, file.target, &shipped)?;
                 (ModState::DownloadFailed, file.dest.clone())
             }
         };
@@ -571,51 +635,23 @@ fn path_key(relative: &str) -> String {
 }
 
 /// Delete a file a newer version of the pack no longer ships, under whichever
-/// name it has — a disabled mod is stored with a `.disabled` suffix.
-///
-/// `shipped` is what this version installs, keyed by [`path_key`]. A pack may
-/// legitimately ship a file whose name ends in `.disabled`; that file is its
-/// own, not the disabled twin of the one being removed, so an alias the new
-/// version ships is left alone.
+/// of its [`owned_names`] it has — a disabled mod sits under its twin, unless
+/// `shipped` says the new version claims that name for a file of its own.
 ///
 /// The path came from our own record, but it is resolved through the same guard
 /// as one from an index: a record that has been edited by hand cannot direct a
 /// delete outside the instance.
-/// The record-relative spelling of `path`, given that `dest` is `relative`.
-/// Only the file name can differ between them, which is what the `.disabled`
-/// alias changes.
-fn relative_path_of(dest: &Path, path: &Path, relative: &str) -> Option<String> {
-    let dir = relative.rsplit_once('/').map(|(dir, _)| dir);
-    let name = path.file_name()?.to_string_lossy();
-    if path == dest {
-        return Some(relative.to_string());
-    }
-    Some(match dir {
-        Some(dir) => format!("{dir}/{name}"),
-        None => name.into_owned(),
-    })
-}
-
-/// Returns whether the path should stay in the record — true when the file may
-/// still be there and a later upgrade ought to try again. A path pointing
-/// outside the instance is not the pack's to begin with, so it is dropped
-/// rather than retried forever.
+///
+/// Returns whether the path stays in the record: true when the file may still
+/// be there for a later upgrade to retry, false for one outside the instance.
 fn remove_pack_file(instance_path: &Path, relative: &str, shipped: &HashSet<String>) -> bool {
     let Some(dest) = safe_destination(instance_path, relative) else {
         warn!("refusing to remove '{relative}': not inside the instance");
         return false;
     };
 
-    // A path the new version ships is its own file, not the disabled twin of
-    // the one being dropped, so it is never taken as an alias.
-    let targets = owned_names(&dest, target_for(relative))
-        .into_iter()
-        .filter(|path| match relative_path_of(&dest, path, relative) {
-            Some(candidate) => !shipped.contains(&path_key(&candidate)),
-            None => true,
-        });
     let mut retry = false;
-    for path in targets {
+    for path in owned_names(&dest, relative, target_for(relative), shipped) {
         if path.exists() {
             if let Err(e) = std::fs::remove_file(&path) {
                 warn!("failed to remove dropped file {}: {e}", path.display());
@@ -652,11 +688,17 @@ async fn install_into(
 ) -> Result<(), Error> {
     let mut prepared = prepare_pack(app_handle, id, instance_name, zip_path, state).await?;
 
+    // Read before the downloads, though extracted well after them: what the
+    // overrides ship is part of what this version claims, which is what tells a
+    // `.disabled` file of the pack's own from a mod the user turned off.
+    let shipped_overrides = override_paths(&mut prepared.archive, instance_path)?;
+
     emit_progress(app_handle, id, instance_name, "Downloading mods", false, None);
     let synced = sync_pack_files(
         &prepared.index,
         instance_path,
         &HashMap::new(),
+        &shipped_overrides,
         &state.http_client,
         |done, total| {
             emit_progress(
@@ -678,7 +720,7 @@ async fn install_into(
     // one the pack deliberately ships.
     emit_progress(app_handle, id, instance_name, "Extracting files", false, None);
     let mut installed_paths = synced.paths;
-    for path in override_paths(&mut prepared.archive, instance_path)? {
+    for path in shipped_overrides {
         if !installed_paths.contains(&path) {
             installed_paths.push(path);
         }
@@ -858,11 +900,19 @@ async fn upgrade_into(
         paths_from_modlist(&previous)
     };
 
+    // Read before everything that consults it: the deletion pass must not read
+    // a file this version ships as an override as one it has dropped, and
+    // `sync_pack_files` needs it to tell a `.disabled` file of the pack's own
+    // from a mod the user turned off. Kept for the pass after the extraction
+    // too, rather than walking the archive again.
+    let shipped_overrides = override_paths(&mut prepared.archive, instance_path)?;
+
     emit_progress(app_handle, id, instance_name, "Updating mods", false, None);
     let synced = sync_pack_files(
         &prepared.index,
         instance_path,
         &previous,
+        &shipped_overrides,
         &state.http_client,
         |done, total| {
             emit_progress(
@@ -880,11 +930,6 @@ async fn upgrade_into(
 
     // Only now that the new files are down: a failure before this point leaves
     // the old instance intact rather than stripped of mods it still lists.
-    // Read before the deletion pass: a file this version ships as an override
-    // is one it still ships, so it must not read as dropped and be removed
-    // only to be written again moments later. Kept for the pass after the
-    // extraction too, rather than walking the archive again.
-    let shipped_overrides = override_paths(&mut prepared.archive, instance_path)?;
     let mut installed_paths = synced.paths.clone();
     for path in &shipped_overrides {
         if !installed_paths.contains(path) {
@@ -911,30 +956,15 @@ async fn upgrade_into(
     extract_overrides(&mut prepared.archive, instance_path)?;
 
     // An override is written under its plain name, so a mod that arrives this
-    // way arrives switched on. Only mods: `.disabled` is how the launcher
-    // toggles those and nothing else, and a `theme.zip.disabled` beside a
-    // resource pack is the user's own backup.
-    //
-    // The `.disabled` name is the whole record of the choice, not the mod list:
-    // a mod that only ever arrived as an override has no row there, and
-    // `toggle_state_instance_mod` does not add one. So the file's existence is
-    // what says the user turned this mod off — read it, rather than a list that
-    // was never asked.
-    for path in shipped_overrides.iter().filter(|path| target_for(path) == Some(ProjectFileTarget::Mod)) {
-        // A pack may ship `foo.jar` and `foo.jar.disabled` side by side, as one
-        // does to offer an alternate build. That second file is the pack's own,
-        // not a record of the user turning the first off, and renaming over it
-        // would destroy it and switch off a mod meant to be on.
-        if shipped.contains(&path_key(&format!("{path}.disabled"))) {
-            continue;
-        }
+    // way arrives switched on.
+    for path in &shipped_overrides {
         let Some(dest) = safe_destination(instance_path, path) else { continue };
-        let disabled = disabled_path(&dest);
-        if !disabled.exists() {
+        if !records_user_disable(&dest, path, target_for(path), &shipped) {
             continue;
         }
         // The choice was about the mod, not about how the pack decided to ship
         // it this time. The copy just extracted takes the disabled name.
+        let disabled = disabled_path(&dest);
         std::fs::remove_file(&disabled).ok();
         if let Err(e) = std::fs::rename(&dest, &disabled) {
             warn!("cannot disable {}: {e}; leaving it enabled", dest.display());
@@ -995,7 +1025,7 @@ async fn stage_version(
 #[cfg(test)]
 mod upgrade_tests {
     use super::super::mrpack::{MrpackFile, MrpackHashes};
-    use super::{disabled_path, is_unchanged, remove_pack_file};
+    use super::{disabled_path, is_unchanged, records_user_disable, remove_pack_file};
     use std::collections::{HashMap, HashSet};
     use std::path::{Path, PathBuf};
     use yaminabe_launcher_shared::datamodels::{
@@ -1099,7 +1129,7 @@ mod upgrade_tests {
             entry("a.jar", "aaaa", ModState::Enabled),
         )]);
 
-        let synced = super::sync_pack_files(&index, &dir, &previous, &reqwest::Client::new(), |_, _| {})
+        let synced = super::sync_pack_files(&index, &dir, &previous, &[], &reqwest::Client::new(), |_, _| {})
             .await
             .expect("sync");
 
@@ -1133,7 +1163,7 @@ mod upgrade_tests {
             entry("a.jar", "0ld0ld", ModState::Disabled),
         )]);
 
-        let synced = super::sync_pack_files(&index, &dir, &previous, &reqwest::Client::new(), |_, _| {})
+        let synced = super::sync_pack_files(&index, &dir, &previous, &[], &reqwest::Client::new(), |_, _| {})
             .await
             .expect("sync");
 
@@ -1166,7 +1196,7 @@ mod upgrade_tests {
             entry("a.jar", "abc123", ModState::Disabled),
         )]);
 
-        let synced = super::sync_pack_files(&index, &dir, &previous, &reqwest::Client::new(), |_, _| {})
+        let synced = super::sync_pack_files(&index, &dir, &previous, &[], &reqwest::Client::new(), |_, _| {})
             .await
             .expect("sync");
 
@@ -1243,7 +1273,7 @@ mod upgrade_tests {
             file_size: 0,
         });
 
-        let synced = super::sync_pack_files(&index, &dir, &HashMap::new(), &reqwest::Client::new(), |_, _| {})
+        let synced = super::sync_pack_files(&index, &dir, &HashMap::new(), &[], &reqwest::Client::new(), |_, _| {})
             .await
             .expect("sync");
 
@@ -1276,7 +1306,7 @@ mod upgrade_tests {
             file_size: 0,
         });
 
-        let synced = super::sync_pack_files(&index, &dir, &HashMap::new(), &reqwest::Client::new(), |_, _| {})
+        let synced = super::sync_pack_files(&index, &dir, &HashMap::new(), &[], &reqwest::Client::new(), |_, _| {})
             .await
             .expect("sync");
 
@@ -1318,7 +1348,7 @@ mod upgrade_tests {
             entry("a.jar", "aaa", ModState::Disabled),
         )]);
 
-        let synced = super::sync_pack_files(&index, &dir, &previous, &reqwest::Client::new(), |_, _| {})
+        let synced = super::sync_pack_files(&index, &dir, &previous, &[], &reqwest::Client::new(), |_, _| {})
             .await
             .expect("sync");
 
@@ -1339,13 +1369,99 @@ mod upgrade_tests {
         std::fs::write(&dest, b"the version on disk").expect("write dest");
         std::fs::write(&disabled, b"the version the user turned off").expect("write disabled");
 
-        super::clear_stale(&dest, Some(ProjectFileTarget::Mod)).expect("clear");
+        super::clear_stale(&dest, "mods/a.jar", Some(ProjectFileTarget::Mod), &HashSet::new())
+            .expect("clear");
 
         assert!(!dest.exists());
         assert!(
             !disabled.exists(),
             "the disabled copy survives, so reading the disable after a clear would still work"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The three things that have to hold for a `.disabled` file to be the
+    /// user's toggle. Each has been got wrong on its own, in a different place
+    /// that was asking the question for itself.
+    #[test]
+    fn only_a_mod_s_own_untaken_disabled_twin_records_a_choice() {
+        let dir = temp_dir("twin-ownership");
+        std::fs::create_dir_all(dir.join("resourcepacks")).expect("create dir");
+        let mod_dest = dir.join("mods").join("a.jar");
+        let pack_dest = dir.join("resourcepacks").join("theme.zip");
+        std::fs::write(disabled_path(&mod_dest), b"turned off").expect("write");
+        std::fs::write(disabled_path(&pack_dest), b"the user's backup").expect("write");
+        let none = HashSet::new();
+
+        assert!(
+            records_user_disable(&mod_dest, "mods/a.jar", Some(ProjectFileTarget::Mod), &none),
+            "a mod's disabled twin is the user's toggle"
+        );
+        // Elsewhere the suffix is the user's own name for their own file.
+        assert!(
+            !records_user_disable(
+                &pack_dest,
+                "resourcepacks/theme.zip",
+                Some(ProjectFileTarget::ResourcePack),
+                &none
+            ),
+            "a backup beside a resource pack would be deleted and the pack renamed away"
+        );
+        // A twin the pack ships is the pack's own file, not a record of a choice.
+        let shipped = HashSet::from([super::path_key("mods/a.jar.disabled")]);
+        assert!(
+            !records_user_disable(&mod_dest, "mods/a.jar", Some(ProjectFileTarget::Mod), &shipped),
+            "the pack ships this twin itself"
+        );
+        // And with nothing on disk there is no choice to read.
+        std::fs::remove_file(disabled_path(&mod_dest)).expect("remove");
+        assert!(!records_user_disable(
+            &mod_dest,
+            "mods/a.jar",
+            Some(ProjectFileTarget::Mod),
+            &none
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A pack may ship `a.jar` and `a.jar.disabled` side by side. When only
+    /// `a.jar` fails to arrive, clearing what stood at its name must not take
+    /// the other with it: that file is the pack's own, just verified, and the
+    /// mod list records it as installed.
+    #[tokio::test]
+    async fn a_failed_mod_does_not_clear_a_twin_the_pack_ships() {
+        let dir = temp_dir("shipped-twin");
+        let twin = dir.join("mods").join("a.jar.disabled");
+        std::fs::write(&twin, b"the pack's alternate build").expect("write twin");
+        let unreachable = vec!["http://127.0.0.1:1/nope.jar".to_string()];
+        let mut index = index_with(MrpackFile {
+            path: "mods/a.jar".to_string(),
+            hashes: MrpackHashes { sha1: "a1b2c3".to_string() },
+            env: None,
+            downloads: unreachable.clone(),
+            file_size: 0,
+        });
+        // Already on disk under the hash the index names, so it arrives without
+        // a fetch while `a.jar` cannot.
+        index.files.push(MrpackFile {
+            path: "mods/a.jar.disabled".to_string(),
+            hashes: MrpackHashes { sha1: crate::http_utils::sha1_hex(b"the pack's alternate build") },
+            env: None,
+            downloads: unreachable,
+            file_size: 0,
+        });
+
+        let synced = super::sync_pack_files(&index, &dir, &HashMap::new(), &[], &reqwest::Client::new(), |_, _| {})
+            .await
+            .expect("sync");
+
+        assert!(twin.exists(), "the pack's own file is not a.jar's toggle to clear");
+        let twin_state = synced
+            .entries
+            .iter()
+            .find(|entry| entry.file_name == "a.jar.disabled")
+            .map(|entry| entry.state);
+        assert_eq!(twin_state, Some(ModState::Enabled));
         std::fs::remove_dir_all(&dir).ok();
     }
 
