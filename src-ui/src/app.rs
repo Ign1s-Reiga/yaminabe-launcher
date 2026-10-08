@@ -12,6 +12,7 @@ use crate::pages::{
 };
 use crate::ipc;
 use crate::signal_ext::VecSignalExt;
+use crate::update::Updates;
 use bamboo_css_macro::{css, cx, styled};
 use leptos::prelude::*;
 use leptos::{component, IntoView, view, web_sys};
@@ -83,6 +84,11 @@ pub fn App() -> impl IntoView {
     });
 
     let install_jobs: RwSignal<Vec<InstallJob>> = RwSignal::new(vec![]);
+    // Also read by Settings, which holds an update back while a pack installs.
+    provide_context(install_jobs);
+
+    let updates = Updates::provide();
+    let update_offered = Signal::derive(move || updates.0.with(|state| state.offered().is_some()));
 
     // Global registry of launched instances so several can run at once and a
     // launch survives navigating away from its play page. App-level listeners
@@ -158,7 +164,7 @@ pub fn App() -> impl IntoView {
                     <NavigationButton href="/" icon=HOUSE label="Home"/>
                     <InstantPlayButton last_played=last_played instances=instances />
                     <NavigationButton href="/search" icon=MAGNIFYING_GLASS label="Search"/>
-                    <NavigationButton href="/settings" icon=GEAR_SIX label="Settings"/>
+                    <NavigationButton href="/settings" icon=GEAR_SIX label="Settings" badge=update_offered/>
                 </MainViewNavbar>
                 <ActivityDock jobs=install_jobs registry=running_registry expanded=dock_expanded />
             </MainViewWrapper>
@@ -171,12 +177,15 @@ pub fn NavigationButton(
     href: &'static str,
     icon: IconData,
     label: &'static str,
+    /// Marks the button with a dot, for something waiting behind it.
+    #[prop(optional, into)] badge: Signal<bool>,
 ) -> impl IntoView {
     let location = use_location();
     let navigate = use_navigate();
     let is_active = move || location.pathname.get() == href;
 
     let container_class = css! {
+        position: relative;
         padding: 8px 6px 12px;
         border-radius: 6px;
         width: 96px;
@@ -188,6 +197,17 @@ pub fn NavigationButton(
         &:hover { background-color: var(--secondary-color); }
     };
 
+    let badge_class = css! {
+        position: absolute;
+        top: 8px;
+        right: 26px;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background-color: #3a9e5f;
+        box-shadow: 0 0 0 2px var(--primary-color);
+    };
+
     view! {
         <div class=container_class on:click=move |_| { navigate(href, Default::default()); }>
             <Show
@@ -197,6 +217,9 @@ pub fn NavigationButton(
                 <Icon icon=icon size="32px" weight=IconWeight::Fill />
             </Show>
             <p class=css! { margin: 0; font-weight: 300; }>{label}</p>
+            <Show when=move || badge.get() fallback=|| ()>
+                <span class=badge_class></span>
+            </Show>
         </div>
     }
 }

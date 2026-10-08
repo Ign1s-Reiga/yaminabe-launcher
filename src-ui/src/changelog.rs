@@ -17,6 +17,18 @@ pub fn releases() -> Vec<Release> {
     parse(CHANGELOG)
 }
 
+/// The changes in one release's notes: its section of the changelog without
+/// the heading, as an update offers it. Folded by the same rules as the file,
+/// under a heading supplied so the parser has a release to fold them into; it
+/// needs text, since a bare `##` trims to the shape of the file's title.
+pub fn changes(notes: &str) -> Vec<String> {
+    parse(&format!("## notes\n{notes}"))
+        .into_iter()
+        .next()
+        .map(|release| release.changes)
+        .unwrap_or_default()
+}
+
 /// Split a `## <version> <sep> <date>` heading. An em dash is what the file
 /// uses, but an en dash or a spaced hyphen is what a future editor is likely to
 /// type, and a bare hyphen can't be the separator because dates contain them.
@@ -77,7 +89,17 @@ fn parse(text: &str) -> Vec<Release> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, releases};
+    use super::{changes, parse, releases};
+
+    /// An update carries its section of the changelog without the heading, and
+    /// it has to read the same as that section does on the Home page.
+    #[test]
+    fn reads_an_update_s_notes_as_its_changes() {
+        let notes = "\n- one\n  wrapped\n- two\n";
+
+        assert_eq!(changes(notes), vec!["one wrapped", "two"]);
+        assert!(changes("").is_empty());
+    }
 
     #[test]
     fn parses_the_bundled_changelog() {
