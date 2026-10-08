@@ -29,6 +29,9 @@ use crate::commands::settings::{
     get_instance_subfolders, get_settings, open_instance_subfolder, pick_folder, pick_mod_files, pick_modpack_file,
     save_settings,
 };
+use crate::commands::update::{
+    PendingUpdate, check_for_update, checks_updates_on_launch, install_update,
+};
 use log::warn;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -205,6 +208,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(PendingUpdate::default())
         .plugin(tauri_plugin_log::Builder::new()
             // Filter out Trace; the builder's default is LevelFilter::Trace,
             // which surfaces every hyper/h2/reqwest trace call on stdout.
@@ -316,6 +321,9 @@ pub fn run() {
             get_selected_account,
             set_selected_account,
             remove_account,
+            checks_updates_on_launch,
+            check_for_update,
+            install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
