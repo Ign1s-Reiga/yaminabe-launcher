@@ -118,8 +118,8 @@ updater artifacts, so they need no key.
 
 `.github/workflows/ci.yml` runs on every pull request and on pushes to `main`:
 
-- **Test Rust backend:** builds the UI with Trunk and runs the backend and shared
-  tests.
+- **Test Rust backend:** builds the UI with Trunk and runs the backend, shared
+  and UI tests.
 - **Build installer:** only when a change can reach packaging (the bundle
   config, icons, capabilities, the dependency set, or the workflows), keeping the
   installer as an artifact for 7 days.
