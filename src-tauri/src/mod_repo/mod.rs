@@ -16,6 +16,7 @@ use yaminabe_launcher_shared::error::Error;
 
 mod curseforge;
 mod modrinth;
+mod pack_files;
 
 pub async fn search_projects(
     option: &SearchOptions,
