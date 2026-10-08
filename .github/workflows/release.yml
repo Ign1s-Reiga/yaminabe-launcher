@@ -1,0 +1,193 @@
+name: Release
+
+# Push a version tag (e.g. `v0.6.0`) to build the Windows installer, sign it
+# for the in-app updater, and attach it with a `latest.json` manifest to a draft
+# GitHub Release. Installed launchers read `releases/latest/download/latest.json`,
+# so an update reaches them only once the draft is published. Can also be run by
+# hand from the Actions tab, which builds an unsigned installer as an artifact
+# and drafts nothing.
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Windows installer
+    runs-on: windows-latest
+    env:
+      YAMINABE_AZURE_CLIENT_ID: ${{ secrets.YAMINABE_AZURE_CLIENT_ID }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          path: yaminabe-launcher
+
+      - name: Set up the build
+        uses: ./yaminabe-launcher/.github/actions/setup
+
+      - name: Read the version
+        id: version
+        shell: bash
+        working-directory: yaminabe-launcher
+        run: |
+          crate=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          app=$(sed -n 's/^  "version": "\(.*\)",$/\1/p' src-tauri/tauri.conf.json)
+          if [ "$crate" != "$app" ]; then
+            echo "::error::Cargo.toml says $crate but tauri.conf.json says $app"
+            exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$crate" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match version $crate"
+            exit 1
+          fi
+          echo "version=$crate" >> "$GITHUB_OUTPUT"
+
+      # The changelog, written once and used twice: the launcher shows
+      # CHANGELOG.md itself, so this version's section there is the release
+      # notes, and a version without one would be missing them in the app too.
+      - name: Take the release notes from CHANGELOG.md
+        shell: bash
+        working-directory: yaminabe-launcher
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          awk -v heading="## $VERSION " '
+            index($0, heading) == 1 { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            echo "::error::CHANGELOG.md has no section for $VERSION"
+            exit 1
+          fi
+
+      # Without the client id the build succeeds and Microsoft sign-in fails at
+      # runtime; without the signing key no installed launcher could verify the
+      # update, so it would never be offered.
+      - name: Check the release secrets are set
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          missing=0
+          for name in YAMINABE_AZURE_CLIENT_ID TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::the $name secret is not set"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      # `tauri build` runs `beforeBuildCommand` (`trunk build`) itself. Only a
+      # tag signs for the updater, writing a `.sig` beside the installer: the
+      # config leaves that off, so a build without the key still works.
+      - name: Build installer
+        shell: bash
+        working-directory: yaminabe-launcher
+        run: |
+          args=()
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            args=(--config '{"bundle":{"createUpdaterArtifacts":true}}')
+          fi
+          npx --yes @tauri-apps/cli@2.12.1 build "${args[@]}" -- --locked
+
+      - name: Check the stylesheet was bundled
+        shell: bash
+        working-directory: yaminabe-launcher/src-ui
+        run: |
+          if [ ! -s assets/bundle.css ]; then
+            echo "::error::assets/bundle.css is empty, so the UI would ship unstyled"
+            exit 1
+          fi
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: yaminabe-launcher-${{ steps.version.outputs.version }}-msi
+          path: yaminabe-launcher/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 7
+
+      # What an installed launcher reads to find this release: the version, the
+      # notes it shows before installing, and the installer with the signature
+      # it checks against the public key in tauri.conf.json.
+      #
+      # A signature from any other key builds and uploads without complaint,
+      # and then every installed launcher refuses the update. The key id sits in
+      # plain text in both, so a mismatch stops the release here instead.
+      - name: Write latest.json
+        if: github.ref_type == 'tag'
+        shell: bash
+        working-directory: yaminabe-launcher
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          shopt -s nullglob
+          msis=(target/release/bundle/msi/*.msi)
+          if [ "${#msis[@]}" -ne 1 ] || [ ! -f "${msis[0]}.sig" ]; then
+            echo "::error::expected one signed installer, found: ${msis[*]}"
+            exit 1
+          fi
+          export SIG_FILE="${msis[0]}.sig"
+          export URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$(basename "${msis[0]}")"
+          export NOTES_FILE="$RUNNER_TEMP/notes.md"
+          node -e '
+            const fs = require("fs");
+            const env = process.env;
+            // Bytes 2..10 of the second line of a minisign key or signature,
+            // shown as minisign itself shows them.
+            const keyId = (stored) => {
+              const line = Buffer.from(stored.trim(), "base64").toString("utf8").split("\n")[1];
+              const blob = Buffer.from(line.trim(), "base64");
+              return Buffer.from(blob.subarray(2, 10)).reverse().toString("hex").toUpperCase();
+            };
+            const signature = fs.readFileSync(env.SIG_FILE, "utf8").trim();
+            const config = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"));
+            const signedWith = keyId(signature);
+            const trusted = keyId(config.plugins.updater.pubkey);
+            if (signedWith !== trusted) {
+              console.log(`::error::signed by key ${signedWith}, but tauri.conf.json trusts ${trusted}; TAURI_SIGNING_PRIVATE_KEY is not the key its pubkey belongs to`);
+              process.exit(1);
+            }
+            const manifest = {
+              version: env.VERSION,
+              notes: fs.readFileSync(env.NOTES_FILE, "utf8").trim(),
+              pub_date: new Date().toISOString(),
+              platforms: {
+                "windows-x86_64": {
+                  signature,
+                  url: env.URL,
+                },
+              },
+            };
+            fs.writeFileSync("target/release/bundle/latest.json", JSON.stringify(manifest, null, 2));
+          '
+          cat target/release/bundle/latest.json
+
+      # A draft, so the release is looked over before anyone can download it,
+      # and before any installed launcher is offered it.
+      - name: Draft the release
+        if: github.ref_type == 'tag'
+        shell: bash
+        working-directory: yaminabe-launcher
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            target/release/bundle/msi/*.msi \
+            target/release/bundle/msi/*.msi.sig \
+            target/release/bundle/latest.json \
+            --draft --verify-tag \
+            --title "Yaminabe Launcher $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md"

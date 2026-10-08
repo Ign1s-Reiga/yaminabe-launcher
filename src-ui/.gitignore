@@ -1,2 +1,4 @@
 dist/
-assets/
+assets/*
+!assets/curse-logo.svg
+!assets/Modrinth_icon_light.svg

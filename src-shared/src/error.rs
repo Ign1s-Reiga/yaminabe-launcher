@@ -53,6 +53,9 @@ pub enum Error {
     /// mislabelled as an authentication error.
     #[error("Credential storage failed: {0}")]
     Keyring(String),
+    /// Checking for, downloading or installing a launcher update.
+    #[error("Update failed: {0}")]
+    Update(String),
 }
 
 impl Serialize for Error {

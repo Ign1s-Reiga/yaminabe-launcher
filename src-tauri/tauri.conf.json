@@ -40,5 +40,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/Ign1s-Reiga/yaminabe-launcher/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc0NjU5NkE5RTY0MDY5QTAKUldTZ2FVRG1xWlpsZFBodS9UNEJMZ2RmMDVSOXl3ZDdLcy9RcVdiZjYwK0ZUWENkRE1sMHh0blgK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

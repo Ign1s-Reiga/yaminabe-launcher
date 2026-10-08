@@ -1,0 +1,147 @@
+name: CI
+
+# Checks on pull requests and pushes to main, so broken code never reaches a
+# release tag.
+#
+# Pull requests are deliberately not filtered by base branch. A stacked PR
+# opened against a feature branch would otherwise get no checks at all, and
+# retargeting it to main does not fix that: the base change fires `edited`,
+# which is not one of `pull_request`'s default types. Results attach per
+# commit, so a stacked PR is checked when it opens and keeps them through the
+# retarget.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Test Rust backend
+    runs-on: windows-latest
+    steps:
+      # Into a subdirectory, so bamboo-css can sit beside it where the UI's
+      # path dependency expects it.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          path: yaminabe-launcher
+
+      - name: Set up the build
+        uses: ./yaminabe-launcher/.github/actions/setup
+
+      # `tauri::generate_context!` embeds src-ui/dist at compile time, so the
+      # UI must be built before the backend is.
+      - name: Build the UI
+        shell: bash
+        working-directory: yaminabe-launcher/src-ui
+        run: trunk build
+
+      - name: Check the stylesheet was bundled
+        shell: bash
+        working-directory: yaminabe-launcher/src-ui
+        run: |
+          if [ ! -s assets/bundle.css ]; then
+            echo "::error::assets/bundle.css is empty, so the UI would ship unstyled"
+            exit 1
+          fi
+
+      # `cargo test` compiles and links every target before running anything,
+      # so it covers what `cargo check` would and then some. The UI's tests run
+      # natively: they cover its parsing, which needs no browser.
+      - name: cargo test
+        shell: bash
+        working-directory: yaminabe-launcher
+        run: cargo test --locked -p yaminabe-launcher -p yaminabe-launcher-shared -p yaminabe-launcher-ui
+
+  # `paths:` exists only on the workflow trigger, not per job, so filtering
+  # there would skip the tests too. This computes the answer for the one
+  # expensive job instead.
+  detect:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      bundle: ${{ steps.filter.outputs.bundle }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Does this change reach the installer?
+        id: filter
+        shell: bash
+        run: |
+          # A manual run has no base to diff against, so it builds.
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "bundle=true" >> "$GITHUB_OUTPUT"
+            echo "Not a pull request, so building."
+            exit 0
+          fi
+
+          changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}...HEAD")
+          echo "Changed files:"
+          echo "$changed" | sed 's/^/  /'
+
+          # What this job alone proves is MSI packaging under the release
+          # profile: the bundle config, icons and capabilities, the dependency
+          # set and the profile itself, and the setup both workflows share.
+          # Source under src-tauri/src and src-ui is left to `Test Rust
+          # backend`, which builds both; a failure only the release profile
+          # shows is still caught at the tag.
+          if echo "$changed" | grep -qE '^(src-tauri/((tauri\.conf\.json|Cargo\.toml|build\.rs)$|(icons|capabilities)/)|Cargo\.(toml|lock)$|\.github/(workflows/(ci|release)\.yml$|actions/))'; then
+            echo "bundle=true" >> "$GITHUB_OUTPUT"
+            echo "-> the installer is affected; building."
+          else
+            echo "bundle=false" >> "$GITHUB_OUTPUT"
+            echo "-> nothing the installer depends on changed; skipping."
+          fi
+
+  bundle:
+    name: Build installer
+    runs-on: windows-latest
+    needs: detect
+    # Packaging would otherwise first run at a tag, so a change that broke the
+    # installer would surface during a release. Skipped on pushes to main,
+    # which are squash-merges of pull requests already built, and on changes
+    # that cannot reach the installer (see `detect`).
+    if: github.event_name != 'push' && needs.detect.outputs.bundle == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          path: yaminabe-launcher
+
+      - name: Set up the build
+        uses: ./yaminabe-launcher/.github/actions/setup
+
+      # `tauri build` runs `beforeBuildCommand` (`trunk build`) itself.
+      - name: Build installer
+        shell: bash
+        working-directory: yaminabe-launcher
+        run: npx --yes @tauri-apps/cli@2.12.1 build -- --locked
+
+      - name: Check the stylesheet was bundled
+        shell: bash
+        working-directory: yaminabe-launcher/src-ui
+        run: |
+          if [ ! -s assets/bundle.css ]; then
+            echo "::error::assets/bundle.css is empty, so the UI would ship unstyled"
+            exit 1
+          fi
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: installer
+          path: yaminabe-launcher/target/release/bundle/msi/*.msi
+          # Fail rather than upload nothing if the bundle layout moves.
+          if-no-files-found: error
+          retention-days: 7

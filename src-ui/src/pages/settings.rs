@@ -5,10 +5,12 @@ use phosphor_leptos::{Icon, IconWeight, CHECK_CIRCLE, PLUS, TRASH};
 use serde::Serialize;
 use yaminabe_launcher_shared::datamodels::{AccountSummary, AppSettings};
 
+use crate::components::activity_dock::{InstallJob, RunningRegistry};
 use crate::components::modal::login_modal::LoginModal;
 use crate::components::settings::{SaveState, SettingsSection, SettingsProp};
 use crate::components::ui::*;
 use crate::ipc;
+use crate::update::{UpdateState, Updates};
 
 #[derive(Serialize)]
 struct SaveArgs {
@@ -170,6 +172,9 @@ pub fn SettingsPage() -> impl IntoView {
                 <SettingsSection id="accounts" heading="Accounts">
                     <AccountsSection />
                 </SettingsSection>
+                <SettingsSection id="updates" heading="Software Update">
+                    <SoftwareUpdateSection />
+                </SettingsSection>
             </div>
 
             <Sidebar>
@@ -178,6 +183,7 @@ pub fn SettingsPage() -> impl IntoView {
                 <SidebarLink attr:href="#instance">"Instance Defaults"</SidebarLink>
                 <SidebarLink attr:href="#api-keys">"API Keys"</SidebarLink>
                 <SidebarLink attr:href="#accounts">"Accounts"</SidebarLink>
+                <SidebarLink attr:href="#updates">"Software Update"</SidebarLink>
             </Sidebar>
         </div>
     }
@@ -371,6 +377,125 @@ fn AccountsSection() -> impl IntoView {
                 })
             />
         </Show>
+    }
+}
+
+/// The running version and the way to a newer one: a check, then the release's
+/// notes and an install that restarts the launcher into it.
+///
+/// The install is held back while a game runs or a pack installs: the installer
+/// closes the launcher, which would cut either off part-way.
+#[component]
+fn SoftwareUpdateSection() -> impl IntoView {
+    let updates = use_context::<Updates>().expect("update state");
+    let registry = use_context::<RunningRegistry>().expect("running registry");
+    let jobs = use_context::<RwSignal<Vec<InstallJob>>>().expect("install jobs");
+    let state = updates.0;
+
+    let blocked = Signal::derive(move || {
+        if registry.with(|list| list.iter().any(|r| r.status.is_active())) {
+            Some("Close the running instances first: installing restarts the launcher.")
+        } else if jobs.with(|list| list.iter().any(|job| !job.done)) {
+            Some("Wait for the installs in progress to finish: installing restarts the launcher.")
+        } else {
+            None
+        }
+    });
+
+    let status = move || match state.get() {
+        UpdateState::Unchecked => "Not checked for updates yet.".to_string(),
+        UpdateState::Checking => "Checking for updates…".to_string(),
+        UpdateState::UpToDate => "You are on the latest version.".to_string(),
+        UpdateState::CheckFailed(e) => format!("Could not check for updates: {e}"),
+        UpdateState::Available(release) => match release.date {
+            Some(date) => format!("Version {} is available, released {date}.", release.version),
+            None => format!("Version {} is available.", release.version),
+        },
+        UpdateState::Installing(release, progress) => match progress {
+            Some(p) if p.total.is_some_and(|total| p.downloaded >= total) => {
+                "Starting the installer…".to_string()
+            }
+            Some(p) => match p.total {
+                Some(total) => format!(
+                    "Downloading version {}… {}%",
+                    release.version,
+                    p.downloaded * 100 / total.max(1)
+                ),
+                None => format!(
+                    "Downloading version {}… {:.1} MB",
+                    release.version,
+                    p.downloaded as f64 / 1_048_576.0
+                ),
+            },
+            None => format!("Downloading version {}…", release.version),
+        },
+        UpdateState::InstallFailed(release, e) => {
+            format!("Could not install version {}: {e}", release.version)
+        }
+    };
+    let notes = move || {
+        state.with(|s| s.offered().map(|release| crate::changelog::changes(&release.notes)))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|change| view! { <li>{change}</li> })
+            .collect_view()
+    };
+    let has_notes = move || state.with(|s| s.offered().is_some_and(|r| !r.notes.trim().is_empty()));
+    let offered_version = move || state.with(|s| s.offered().map(|r| r.version.clone()));
+    let install = Callback::new(move |_| {
+        let Some(release) = state.with_untracked(|s| s.offered().cloned()) else { return };
+        leptos::task::spawn_local(updates.install(release));
+    });
+    let check = Callback::new(move |_| leptos::task::spawn_local(updates.check()));
+
+    let intro = css! {
+        font-size: 0.8rem;
+        opacity: 0.55;
+        margin: 0 0 16px 0;
+    };
+    let status_line = css! {
+        font-size: 0.9rem;
+        margin: 0 0 12px 0;
+    };
+    let notes_list = css! {
+        font-size: 0.85rem;
+        margin: 0 0 16px 0;
+        padding-left: 20px;
+        line-height: 1.5;
+    };
+    let hint = css! {
+        font-size: 0.8rem;
+        opacity: 0.55;
+        margin: 8px 0 0 0;
+    };
+
+    view! {
+        <p class=intro>{format!("Yaminabe Launcher {}", env!("CARGO_PKG_VERSION"))}</p>
+        <p class=status_line>{status}</p>
+        <Show when=has_notes fallback=|| ()>
+            <ul class=notes_list>{notes}</ul>
+        </Show>
+        {move || match offered_version() {
+            Some(version) => view! {
+                <Button
+                    variant=ButtonVariant::Primary
+                    disabled=Signal::derive(move || blocked.get().is_some() || state.with(UpdateState::is_busy))
+                    on_click=install
+                >
+                    {format!("Install {version} and restart")}
+                </Button>
+                {move || blocked.get().map(|reason| view! { <p class=hint>{reason}</p> })}
+            }.into_any(),
+            None => view! {
+                <Button
+                    variant=ButtonVariant::Secondary
+                    disabled=Signal::derive(move || state.with(UpdateState::is_busy))
+                    on_click=check
+                >
+                    "Check for updates"
+                </Button>
+            }.into_any(),
+        }}
     }
 }
 

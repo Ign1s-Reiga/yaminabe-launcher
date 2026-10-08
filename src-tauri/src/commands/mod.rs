@@ -5,3 +5,4 @@ pub mod launch;
 pub mod minecraft;
 pub mod modfile;
 pub mod settings;
+pub mod update;

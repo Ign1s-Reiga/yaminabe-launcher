@@ -6,6 +6,7 @@ pub mod changelog;
 pub mod curseforge;
 pub mod signal_ext;
 pub mod trivia;
+pub mod update;
 
 use leptos::prelude::*;
 use crate::app::App;

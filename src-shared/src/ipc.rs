@@ -55,3 +55,31 @@ pub struct MsLoginResult {
     pub message: String,
     pub account: Option<crate::datamodels::AccountSummary>,
 }
+/// A launcher release offered as an update.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReleaseInfo {
+    pub version: String,
+    /// The day it was published, as `YYYY-MM-DD`.
+    pub date: Option<String>,
+    /// Its section of `CHANGELOG.md`, as Markdown bullets.
+    pub notes: String,
+}
+
+/// What a check for a newer launcher release found.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum UpdateCheck {
+    /// Nothing newer is published, or nothing yet with an updater manifest.
+    UpToDate,
+    Available(ReleaseInfo),
+}
+
+/// How far an update's download has got. `total` is absent when the server
+/// sends no length.
+///
+/// Emitted as `update-download-progress`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct UpdateProgress {
+    pub downloaded: u64,
+    pub total: Option<u64>,
+}
