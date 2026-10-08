@@ -27,10 +27,13 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
+      # Full history and tags, so the release notes can be generated from the
+      # previous version's tag.
       - name: Checkout
         uses: actions/checkout@v7
         with:
           path: yaminabe-launcher
+          fetch-depth: 0
 
       - name: Set up the build
         uses: ./yaminabe-launcher/.github/actions/setup
@@ -52,10 +55,10 @@ jobs:
           fi
           echo "version=$crate" >> "$GITHUB_OUTPUT"
 
-      # The changelog, written once and used twice: the launcher shows
-      # CHANGELOG.md itself, so this version's section there is the release
-      # notes, and a version without one would be missing them in the app too.
-      - name: Take the release notes from CHANGELOG.md
+      # What the launcher shows: this version's section of CHANGELOG.md, read
+      # as bullets by both the Home page and Software Update, so it goes into
+      # `latest.json`. A version without one would show no notes in the app.
+      - name: Take the in-app notes from CHANGELOG.md
         shell: bash
         working-directory: yaminabe-launcher
         env:
@@ -175,6 +178,10 @@ jobs:
 
       # A draft, so the release is looked over before anyone can download it,
       # and before any installed launcher is offered it.
+      #
+      # Its body is GitHub's generated notes, the pull requests merged since the
+      # previous version's tag. Given no start, GitHub counts from the previous
+      # release instead, and with none published it would list every one.
       - name: Draft the release
         if: github.ref_type == 'tag'
         shell: bash
@@ -184,10 +191,14 @@ jobs:
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          since=()
+          if previous=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null); then
+            since=(--notes-start-tag "$previous")
+          fi
           gh release create "$GITHUB_REF_NAME" \
             target/release/bundle/msi/*.msi \
             target/release/bundle/msi/*.msi.sig \
             target/release/bundle/latest.json \
             --draft --verify-tag \
             --title "Yaminabe Launcher $VERSION" \
-            --notes-file "$RUNNER_TEMP/notes.md"
+            --generate-notes "${since[@]}"

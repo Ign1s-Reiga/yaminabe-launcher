@@ -76,9 +76,10 @@ The launcher updates itself from this repository's **GitHub Releases**.
 **How it works.** Pushing a version tag such as `v0.6.0` runs
 `.github/workflows/release.yml`, which builds the Windows installer, signs it for
 the updater, and attaches it to a **draft** release together with a
-`latest.json` manifest. The release notes are that version's section of
-`CHANGELOG.md`, the same text the Home page shows, and they go into both the
-release and `latest.json`. The workflow refuses a tag that does not match the
+`latest.json` manifest. The release's body is GitHub's generated notes: the pull
+requests merged since the previous version's tag. What the launcher itself shows
+is that version's section of `CHANGELOG.md`, the same text the Home page shows,
+which goes into `latest.json`. The workflow refuses a tag that does not match the
 version in `Cargo.toml` and `tauri.conf.json`, or a version with no section in
 `CHANGELOG.md`.
 
