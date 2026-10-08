@@ -1,6 +1,5 @@
 .idea/
 .claude/
 target/
-Cargo.lock
 .env
 .env.*
