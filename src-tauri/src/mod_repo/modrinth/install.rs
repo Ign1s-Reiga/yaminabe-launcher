@@ -68,6 +68,8 @@ async fn download_from_mirrors(
 struct PlannedDownload {
     /// The index's own path, for logging.
     path: String,
+    /// Where it goes, spelled as `shipped` spells it.
+    relative: String,
     dest: PathBuf,
     /// `None` when the mod list does not model where this file goes.
     target: Option<ProjectFileTarget>,
@@ -321,38 +323,51 @@ fn uses_disabled_suffix(target: Option<ProjectFileTarget>) -> bool {
     target == Some(ProjectFileTarget::Mod)
 }
 
-/// Whether the `.disabled` file beside `relative` records the user turning that
-/// mod off, rather than being a file the pack ships in its own right.
+/// The `.disabled` name the launcher toggles the file at `relative` with, when
+/// that name is the launcher's to use: only for a mod, and only while the pack
+/// does not claim the name itself.
+///
+/// A pack may ship `foo.jar` and `foo.jar.disabled` side by side, as one does
+/// to offer an alternate build. That second file is the pack's own, and taking
+/// it for the first one's twin — reading it as a choice, renaming over it,
+/// clearing it — destroys it and can switch off a mod meant to be on.
+///
+/// `shipped` is what this version installs, keyed by [`path_key`].
+fn toggle_twin(
+    dest: &Path,
+    relative: &str,
+    target: Option<ProjectFileTarget>,
+    shipped: &HashSet<String>,
+) -> Option<PathBuf> {
+    let claimed = shipped.contains(&path_key(&format!("{relative}.disabled")));
+    (uses_disabled_suffix(target) && !claimed).then(|| disabled_path(dest))
+}
+
+/// Whether the user has turned the mod at `dest` off.
 ///
 /// The name is the whole record of the choice: a mod that only ever arrived as
 /// an override has no mod-list row, and the toggle does not add one, so the
-/// file's existence is what says the user turned it off.
-///
-/// Except when the pack claims that name itself. A pack may ship `foo.jar` and
-/// `foo.jar.disabled` side by side, as one does to offer an alternate build;
-/// that twin is the pack's own file, and renaming over it would destroy it and
-/// switch off a mod meant to be on.
-///
-/// `shipped` is what this version installs, keyed by [`path_key`].
+/// twin's existence is what says the user turned it off.
 fn records_user_disable(
     dest: &Path,
     relative: &str,
     target: Option<ProjectFileTarget>,
     shipped: &HashSet<String>,
 ) -> bool {
-    uses_disabled_suffix(target)
-        && !shipped.contains(&path_key(&format!("{relative}.disabled")))
-        && disabled_path(dest).exists()
+    toggle_twin(dest, relative, target, shipped).is_some_and(|twin| twin.exists())
 }
 
-/// The names a pack owns at `dest`: the file itself, and — only for a mod —
-/// the `.disabled` spelling the launcher toggles it with.
-fn owned_names(dest: &Path, target: Option<ProjectFileTarget>) -> Vec<PathBuf> {
-    let mut names = vec![dest.to_path_buf()];
-    if uses_disabled_suffix(target) {
-        names.push(disabled_path(dest));
-    }
-    names
+/// The names a pack owns at `dest`: the file itself, and the twin it is
+/// toggled with where it has one.
+fn owned_names(
+    dest: &Path,
+    relative: &str,
+    target: Option<ProjectFileTarget>,
+    shipped: &HashSet<String>,
+) -> Vec<PathBuf> {
+    std::iter::once(dest.to_path_buf())
+        .chain(toggle_twin(dest, relative, target, shipped))
+        .collect()
 }
 
 /// Remove what the previous version left at a path this run claims but could
@@ -363,8 +378,13 @@ fn owned_names(dest: &Path, target: Option<ProjectFileTarget>) -> Vec<PathBuf> {
 /// still on disk and still loading is the mismatch this exists to prevent, so
 /// there is nothing useful to do but leave the instance as it was and let the
 /// user retry once whatever holds the file has let go.
-fn clear_stale(dest: &Path, target: Option<ProjectFileTarget>) -> Result<(), Error> {
-    for path in owned_names(dest, target) {
+fn clear_stale(
+    dest: &Path,
+    relative: &str,
+    target: Option<ProjectFileTarget>,
+    shipped: &HashSet<String>,
+) -> Result<(), Error> {
+    for path in owned_names(dest, relative, target, shipped) {
         if path.exists() {
             std::fs::remove_file(&path).map_err(|e| {
                 Error::Invalid(format!(
@@ -401,7 +421,7 @@ async fn sync_pack_files(
     let mut paths: Vec<String> = Vec::new();
     let mut planned: Vec<PlannedDownload> = Vec::new();
 
-    // Everything this version installs, for [`records_user_disable`]: a pack can
+    // Everything this version installs, for [`toggle_twin`]: a pack can
     // claim a `.disabled` name through its index or through its overrides, and
     // either way the file is its own. Resolved the same way the loop below
     // resolves each path, so the two spellings compare.
@@ -454,7 +474,7 @@ async fn sync_pack_files(
         let was_disabled = records_user_disable(&dest, &relative, target, &shipped);
 
         if file.downloads.is_empty() {
-            clear_stale(&dest, target)?;
+            clear_stale(&dest, &relative, target, &shipped)?;
             record_failure("no download URL".to_string());
             continue;
         }
@@ -469,7 +489,7 @@ async fn sync_pack_files(
         // it recorded as absent. With no hash to compare, fetching what the
         // index names is the only answer that keeps disk and record agreeing.
         if file.hashes.sha1.is_empty() {
-            clear_stale(&dest, target)?;
+            clear_stale(&dest, &relative, target, &shipped)?;
         }
 
         // The mod list keys on bare names, so an entry can only stand for a file
@@ -501,6 +521,7 @@ async fn sync_pack_files(
         }
         planned.push(PlannedDownload {
             path: file.path.clone(),
+            relative,
             dest,
             target,
             sha1: file.hashes.sha1.clone(),
@@ -528,7 +549,7 @@ async fn sync_pack_files(
             Ok(()) => (ModState::Enabled, file.dest.clone()),
             Err(e) => {
                 warn!("download failed for {}: {e}; marking for manual install", file.path);
-                clear_stale(&file.dest, file.target)?;
+                clear_stale(&file.dest, &file.relative, file.target, &shipped)?;
                 (ModState::DownloadFailed, file.dest.clone())
             }
         };
@@ -614,51 +635,23 @@ fn path_key(relative: &str) -> String {
 }
 
 /// Delete a file a newer version of the pack no longer ships, under whichever
-/// name it has — a disabled mod is stored with a `.disabled` suffix.
-///
-/// `shipped` is what this version installs, keyed by [`path_key`]. A pack may
-/// legitimately ship a file whose name ends in `.disabled`; that file is its
-/// own, not the disabled twin of the one being removed, so an alias the new
-/// version ships is left alone.
+/// of its [`owned_names`] it has — a disabled mod sits under its twin, unless
+/// `shipped` says the new version claims that name for a file of its own.
 ///
 /// The path came from our own record, but it is resolved through the same guard
 /// as one from an index: a record that has been edited by hand cannot direct a
 /// delete outside the instance.
-/// The record-relative spelling of `path`, given that `dest` is `relative`.
-/// Only the file name can differ between them, which is what the `.disabled`
-/// alias changes.
-fn relative_path_of(dest: &Path, path: &Path, relative: &str) -> Option<String> {
-    let dir = relative.rsplit_once('/').map(|(dir, _)| dir);
-    let name = path.file_name()?.to_string_lossy();
-    if path == dest {
-        return Some(relative.to_string());
-    }
-    Some(match dir {
-        Some(dir) => format!("{dir}/{name}"),
-        None => name.into_owned(),
-    })
-}
-
-/// Returns whether the path should stay in the record — true when the file may
-/// still be there and a later upgrade ought to try again. A path pointing
-/// outside the instance is not the pack's to begin with, so it is dropped
-/// rather than retried forever.
+///
+/// Returns whether the path stays in the record: true when the file may still
+/// be there for a later upgrade to retry, false for one outside the instance.
 fn remove_pack_file(instance_path: &Path, relative: &str, shipped: &HashSet<String>) -> bool {
     let Some(dest) = safe_destination(instance_path, relative) else {
         warn!("refusing to remove '{relative}': not inside the instance");
         return false;
     };
 
-    // A path the new version ships is its own file, not the disabled twin of
-    // the one being dropped, so it is never taken as an alias.
-    let targets = owned_names(&dest, target_for(relative))
-        .into_iter()
-        .filter(|path| match relative_path_of(&dest, path, relative) {
-            Some(candidate) => !shipped.contains(&path_key(&candidate)),
-            None => true,
-        });
     let mut retry = false;
-    for path in targets {
+    for path in owned_names(&dest, relative, target_for(relative), shipped) {
         if path.exists() {
             if let Err(e) = std::fs::remove_file(&path) {
                 warn!("failed to remove dropped file {}: {e}", path.display());
@@ -1376,7 +1369,8 @@ mod upgrade_tests {
         std::fs::write(&dest, b"the version on disk").expect("write dest");
         std::fs::write(&disabled, b"the version the user turned off").expect("write disabled");
 
-        super::clear_stale(&dest, Some(ProjectFileTarget::Mod)).expect("clear");
+        super::clear_stale(&dest, "mods/a.jar", Some(ProjectFileTarget::Mod), &HashSet::new())
+            .expect("clear");
 
         assert!(!dest.exists());
         assert!(
@@ -1427,6 +1421,47 @@ mod upgrade_tests {
             Some(ProjectFileTarget::Mod),
             &none
         ));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A pack may ship `a.jar` and `a.jar.disabled` side by side. When only
+    /// `a.jar` fails to arrive, clearing what stood at its name must not take
+    /// the other with it: that file is the pack's own, just verified, and the
+    /// mod list records it as installed.
+    #[tokio::test]
+    async fn a_failed_mod_does_not_clear_a_twin_the_pack_ships() {
+        let dir = temp_dir("shipped-twin");
+        let twin = dir.join("mods").join("a.jar.disabled");
+        std::fs::write(&twin, b"the pack's alternate build").expect("write twin");
+        let unreachable = vec!["http://127.0.0.1:1/nope.jar".to_string()];
+        let mut index = index_with(MrpackFile {
+            path: "mods/a.jar".to_string(),
+            hashes: MrpackHashes { sha1: "a1b2c3".to_string() },
+            env: None,
+            downloads: unreachable.clone(),
+            file_size: 0,
+        });
+        // Already on disk under the hash the index names, so it arrives without
+        // a fetch while `a.jar` cannot.
+        index.files.push(MrpackFile {
+            path: "mods/a.jar.disabled".to_string(),
+            hashes: MrpackHashes { sha1: crate::http_utils::sha1_hex(b"the pack's alternate build") },
+            env: None,
+            downloads: unreachable,
+            file_size: 0,
+        });
+
+        let synced = super::sync_pack_files(&index, &dir, &HashMap::new(), &[], &reqwest::Client::new(), |_, _| {})
+            .await
+            .expect("sync");
+
+        assert!(twin.exists(), "the pack's own file is not a.jar's toggle to clear");
+        let twin_state = synced
+            .entries
+            .iter()
+            .find(|entry| entry.file_name == "a.jar.disabled")
+            .map(|entry| entry.state);
+        assert_eq!(twin_state, Some(ModState::Enabled));
         std::fs::remove_dir_all(&dir).ok();
     }
 
