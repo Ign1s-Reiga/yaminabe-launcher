@@ -436,10 +436,10 @@ impl ResolvedFiles {
     }
 
     /// The project the file with this hash belongs to.
-    pub fn project_id(&self, sha1: &str) -> Option<&str> {
+    pub fn project(&self, sha1: &str) -> Option<ProjectId> {
         self.0
             .get(&sha1.to_ascii_lowercase())
-            .map(|found| found.project_id.as_str())
+            .map(|found| ProjectId::Modrinth(found.project_id.clone()))
     }
 
     /// Name the pack's files after the projects they come from, so the Mods tab

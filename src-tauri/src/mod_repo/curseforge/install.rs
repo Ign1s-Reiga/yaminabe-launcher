@@ -1,22 +1,25 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use super::super::pack_files::{
+    align_states, disabled_path, installed_entries, path_key, safe_destination, ModStates,
+};
 use super::api::{fetch_project_summaries, resolve_project_files};
 use super::manifest::{manifest_file_ids, read_manifest, resolve_loader, ModpackManifest};
 use crate::commands::instance::{
     create_instance_dir, discard_unfinished_instance_dir, instance_meta_file, is_bare_file_name,
-    is_current_dir, is_launcher_dir, is_parent_dir, modlist_file,
-    replace_modlist_entries_for_file_ids, upsert_modlist_entries,
+    is_current_dir, is_launcher_dir, is_parent_dir, replace_modlist_entries_for_file_ids,
+    upsert_modlist_entries,
 };
 use crate::emit_progress;
 use crate::http_utils::download_resource;
 use crate::install_task::ensure_game_and_loader;
-use crate::json::{read_json, read_json_or_default, write_json};
+use crate::json::{read_json, write_json};
 use crate::AppState;
 use log::{info, warn};
 use tauri::State;
 use yaminabe_launcher_shared::datamodels::{
-    DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModState, ProjectFileInfo,
+    DownloadSource, InstanceMeta, ModListEntry, ModLoader, ModState, ProjectFileInfo, ProjectId,
 };
 use yaminabe_launcher_shared::error::Error;
 
@@ -26,24 +29,102 @@ struct InstalledFile {
     file_name: String,
 }
 
-/// CurseForge file id → what the instance's modlist records for it: the state an
-/// upgrade carries forward, and the name on disk to delete when the pack drops
-/// the file. The modlist is the source of truth for what is installed and is only
-/// rewritten when an upgrade finalizes, so a failed (and retried) upgrade keeps
-/// diffing against the previous set. Empty when the modlist is missing, degrading
-/// to "download everything, remove nothing".
-fn installed_curseforge_files(instance_path: &Path) -> HashMap<u32, InstalledFile> {
-    let modlist: Vec<ModListEntry> = read_json_or_default(modlist_file(instance_path)).unwrap_or_default();
-    modlist
-        .into_iter()
+/// CurseForge file id → what `previous`, the instance's modlist, records for it:
+/// whether its download failed and is due a retry, and the name on disk to
+/// delete when the pack drops the file. The modlist is the source of truth for
+/// what is installed and is only rewritten when an upgrade finalizes, so a
+/// failed (and retried) upgrade keeps diffing against the previous set. Empty
+/// when the modlist is missing, degrading to "download everything, remove nothing".
+fn installed_curseforge_files(previous: &HashMap<String, ModListEntry>) -> HashMap<u32, InstalledFile> {
+    previous
+        .values()
         .filter_map(|entry| {
             let (_, file_id) = entry.source.curseforge_ids()?;
             Some((
                 file_id,
-                InstalledFile { state: entry.state, file_name: entry.file_name },
+                InstalledFile { state: entry.state, file_name: entry.file_name.clone() },
             ))
         })
         .collect()
+}
+
+/// Where a mod the manifest lists sits in the instance.
+fn relative_of(file: &ProjectFileInfo) -> String {
+    format!("{}/{}", file.target.directory(), file.file_name)
+}
+
+/// Delete the jars the new version dropped, under either name: a mod the user
+/// turned off sits under `<name>.disabled`. A name the new version also uses
+/// belongs to the file just written, not to the one being dropped, so it is
+/// left alone — and its old disabled copy is [`settle_states`]'s to replace.
+fn remove_dropped_mods(instance_path: &Path, old_file_names: &[String], new_file_names: &[String]) {
+    let kept_names: HashSet<&str> = new_file_names.iter().map(String::as_str).collect();
+    for file_name in old_file_names {
+        if kept_names.contains(file_name.as_str()) {
+            continue;
+        }
+        // The name is the modlist's, which is a file on disk that could have been
+        // edited; one that climbs out of the instance is not the pack's to delete.
+        let Some(dest) = safe_destination(instance_path, &format!("mods/{file_name}")) else {
+            warn!("refusing to remove '{file_name}': not inside the instance");
+            continue;
+        };
+        for path in [disabled_path(&dest), dest] {
+            if path.exists() {
+                if let Err(e) = std::fs::remove_file(&path) {
+                    warn!("failed to remove old mod {}: {e}", path.display());
+                }
+            }
+        }
+    }
+}
+
+/// The new version's mod-list rows, each in the state the user left its old
+/// version in. Run last, once the old versions are gone, so nothing after it
+/// removes what it renames.
+///
+/// A row comes from the download where one ran, and is built from the file
+/// otherwise, since an unchanged mod is not fetched again. Its state is what
+/// disk says once [`align_states`] has run, which matches each mod to its old
+/// version by path, or failing that by its CurseForge project.
+fn settle_states(
+    instance_path: &Path,
+    new_files: &[ProjectFileInfo],
+    downloaded: Vec<ModListEntry>,
+    states: &ModStates,
+) -> Vec<ModListEntry> {
+    let mods: Vec<&ProjectFileInfo> = new_files
+        .iter()
+        .filter(|file| file.target.tracks_modlist())
+        .collect();
+    let claimed: HashSet<String> = new_files.iter().map(|file| path_key(&relative_of(file))).collect();
+    let placed: Vec<(String, Option<ProjectId>)> = mods
+        .iter()
+        .map(|file| (relative_of(file), file.source.project_id()))
+        .collect();
+    let turned_off = align_states(
+        instance_path,
+        placed.iter().map(|(relative, project)| (relative.as_str(), project.clone())),
+        states,
+        &claimed,
+    );
+
+    let mut entries: Vec<ModListEntry> = mods
+        .iter()
+        .map(|file| file.to_modlist_entry(ModState::Enabled))
+        .collect();
+    for entry in downloaded {
+        entries.retain(|existing| existing.file_name != entry.file_name);
+        entries.push(entry);
+    }
+    for entry in &mut entries {
+        if entry.state != ModState::DownloadFailed {
+            let relative = format!("{}/{}", entry.target.directory(), entry.file_name);
+            let off = turned_off.contains(&path_key(&relative));
+            entry.state = if off { ModState::Disabled } else { ModState::Enabled };
+        }
+    }
+    entries
 }
 
 /// Extract the modpack's `overrides/` tree into `instance_path`, overwriting
@@ -406,8 +487,12 @@ pub async fn upgrade_modpack(
 
     // The modlist (the installed-mod source of truth) is only rewritten at
     // finalize, so this set survives a failed/retried upgrade for a correct re-diff.
-    let installed = installed_curseforge_files(&instance_path);
+    let previous = installed_entries(&instance_path);
+    let installed = installed_curseforge_files(&previous);
     let old_ids: Vec<u32> = installed.keys().copied().collect();
+    // Read before the overrides are extracted over the instance: they and the
+    // downloads both rewrite the files that say which mods are off.
+    let states = ModStates::read(&instance_path, &previous, &[]);
 
     let prepared = prepare_modpack(
         app_handle,
@@ -454,59 +539,25 @@ pub async fn upgrade_modpack(
     let new_files = resolve_project_files(&new_ids, &api_key, http_client).await?;
     let new_files_names: Vec<String> = new_files.iter().map(|f| f.file_name.clone()).collect();
 
-    // Baseline the new modlist from the full file set, but keep only mods. A file
-    // the instance already had keeps its recorded state (a mod the user disabled
-    // stays disabled); the downloaded entries overwrite their baseline below.
-    let mut new_modlist_entries: Vec<ModListEntry> = new_files
-        .iter()
-        .filter(|file| file.target.tracks_modlist())
-        .map(|file| {
-            let previous = file
-                .source
-                .curseforge_ids()
-                .and_then(|(_, fid)| installed.get(&fid).map(|f| f.state));
-            file.to_modlist_entry(previous.unwrap_or(ModState::Enabled))
-        })
-        .collect();
-
     // `to_add` mixes new mods and (all) resource packs — resource packs are never
     // in `installed`, since the modlist tracks only mods. `download_project_files`
     // routes each to the right dir and returns entries for mods alone.
     let added_files: Vec<ProjectFileInfo> = new_files
-        .into_iter()
+        .iter()
         .filter(|file| {
             file.source
                 .curseforge_ids()
                 .is_some_and(|(_, fid)| to_add.contains(&fid))
         })
+        .cloned()
         .collect();
-    let downloaded_modlist_entries =
+    let downloaded =
         crate::mod_repo::download_project_files(added_files, &instance_path, http_client).await?;
 
-    // Everything the new pack ships is now on disk, so the dropped jars can go.
-    // A name the new pack also uses belongs to the file just written, not to the
-    // one being dropped, so it is left alone.
-    let kept_names: HashSet<&str> = new_files_names.iter().map(String::as_str).collect();
-    let mods_dir = instance_path.join("mods");
-    for file_name in &old_file_names {
-        if kept_names.contains(file_name.as_str()) {
-            continue;
-        }
-        // A disabled mod lives under `<name>.disabled`, so drop both spellings.
-        let disabled = mods_dir.join(format!("{file_name}.disabled"));
-        for path in [mods_dir.join(file_name), disabled] {
-            if path.exists() {
-                if let Err(e) = std::fs::remove_file(&path) {
-                    log::warn!("failed to remove old mod {}: {e}", path.display());
-                }
-            }
-        }
-    }
-
-    for entry in downloaded_modlist_entries {
-        new_modlist_entries.retain(|existing| existing.file_name != entry.file_name);
-        new_modlist_entries.push(entry);
-    }
+    // Everything the new pack ships is now on disk, so the old versions can go,
+    // and only then does each new one take the state its old one was left in.
+    remove_dropped_mods(&instance_path, &old_file_names, &new_files_names);
+    let new_modlist_entries = settle_states(&instance_path, &new_files, downloaded, &states);
 
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
     replace_modlist_entries_for_file_ids(
@@ -606,4 +657,135 @@ async fn install_from_zip(
         state,
     )
     .await
+}
+
+#[cfg(test)]
+mod upgrade_tests {
+    use super::super::super::pack_files::{disabled_path, ModStates};
+    use super::{remove_dropped_mods, settle_states};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use yaminabe_launcher_shared::datamodels::{
+        DownloadSource, ModListEntry, ModState, ProjectFileInfo, ProjectFileReleaseType,
+        ProjectFileTarget,
+    };
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("yaminabe-cf-upgrade-{name}"));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("mods")).expect("create mods dir");
+        dir
+    }
+
+    /// A mod file of CurseForge project `project_id`, as the API resolves it.
+    fn mod_file(file_name: &str, project_id: u32, file_id: u32) -> ProjectFileInfo {
+        ProjectFileInfo {
+            source: DownloadSource::CurseForge { project_id, file_id },
+            target: ProjectFileTarget::Mod,
+            release_type: ProjectFileReleaseType::Release,
+            file_name: file_name.to_string(),
+            download_url: None,
+            display_name: file_name.to_string(),
+            project_name: String::new(),
+            icon_url: None,
+            sha1: String::new(),
+            size: 0,
+        }
+    }
+
+    /// The mod list as it stood before the upgrade.
+    fn listed(rows: &[(&ProjectFileInfo, ModState)]) -> HashMap<String, ModListEntry> {
+        rows.iter()
+            .map(|(file, state)| (file.file_name.clone(), file.to_modlist_entry(*state)))
+            .collect()
+    }
+
+    /// A mod update arrives as a new file under a new name. The user's choice
+    /// follows the project: the old version is deleted, and the new one is off.
+    #[test]
+    fn a_mod_updated_to_a_new_file_stays_off() {
+        let dir = temp_dir("updated");
+        let old = mod_file("a-1.0.jar", 10, 100);
+        let new = mod_file("a-2.0.jar", 10, 200);
+        let old_twin = dir.join("mods").join("a-1.0.jar.disabled");
+        std::fs::write(&old_twin, b"1.0").expect("write old");
+        let states = ModStates::read(&dir, &listed(&[(&old, ModState::Disabled)]), &[]);
+        // The new version, downloaded under its plain name.
+        let jar = dir.join("mods").join("a-2.0.jar");
+        std::fs::write(&jar, b"2.0").expect("write new");
+
+        remove_dropped_mods(&dir, &["a-1.0.jar".to_string()], &["a-2.0.jar".to_string()]);
+        let downloaded = vec![new.to_modlist_entry(ModState::Enabled)];
+        let entries = settle_states(&dir, std::slice::from_ref(&new), downloaded, &states);
+
+        assert!(!old_twin.exists(), "the old version is gone");
+        assert!(!jar.exists() && disabled_path(&jar).exists(), "and the new one is off");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].state, ModState::Disabled);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A new file may reuse its old name. The clean-up leaves that name to the
+    /// file just written, so the old disabled copy beside it is replaced by the
+    /// new version, turned off, rather than left behind with the new one on.
+    #[test]
+    fn a_new_file_under_the_old_name_replaces_the_disabled_copy() {
+        let dir = temp_dir("same-name");
+        let old = mod_file("a.jar", 10, 100);
+        let new = mod_file("a.jar", 10, 200);
+        let jar = dir.join("mods").join("a.jar");
+        std::fs::write(disabled_path(&jar), b"old").expect("write old");
+        let states = ModStates::read(&dir, &listed(&[(&old, ModState::Disabled)]), &[]);
+        std::fs::write(&jar, b"new").expect("write new");
+
+        remove_dropped_mods(&dir, &["a.jar".to_string()], &["a.jar".to_string()]);
+        let downloaded = vec![new.to_modlist_entry(ModState::Enabled)];
+        let entries = settle_states(&dir, std::slice::from_ref(&new), downloaded, &states);
+
+        assert!(!jar.exists());
+        assert_eq!(std::fs::read(disabled_path(&jar)).expect("read"), b"new");
+        assert_eq!(entries[0].state, ModState::Disabled);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An unchanged mod is not fetched again, and its state is read off disk
+    /// rather than the mod list: an interrupted toggle leaves the two
+    /// disagreeing, and disk is what the game loads.
+    #[test]
+    fn an_unchanged_mod_keeps_the_state_disk_shows() {
+        let dir = temp_dir("unchanged");
+        let a = mod_file("a.jar", 10, 100);
+        let b = mod_file("b.jar", 11, 110);
+        std::fs::write(dir.join("mods").join("a.jar.disabled"), b"a").expect("write a");
+        std::fs::write(dir.join("mods").join("b.jar"), b"b").expect("write b");
+        // Recorded the other way round from what disk says.
+        let previous = listed(&[(&a, ModState::Enabled), (&b, ModState::Disabled)]);
+        let states = ModStates::read(&dir, &previous, &[]);
+
+        let entries = settle_states(&dir, &[a.clone(), b.clone()], Vec::new(), &states);
+
+        let state_of = |name: &str| entries.iter().find(|entry| entry.file_name == name).map(|entry| entry.state);
+        assert_eq!(state_of("a.jar"), Some(ModState::Disabled));
+        assert_eq!(state_of("b.jar"), Some(ModState::Enabled));
+        assert!(dir.join("mods").join("a.jar.disabled").exists(), "neither is moved");
+        assert!(dir.join("mods").join("b.jar").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A new version that could not be fetched stays recorded as such, so the
+    /// Mods tab still offers to link it, whatever state its old version was in.
+    #[test]
+    fn a_new_version_that_failed_to_download_stays_failed() {
+        let dir = temp_dir("failed");
+        let old = mod_file("a-1.0.jar", 10, 100);
+        let new = mod_file("a-2.0.jar", 10, 200);
+        std::fs::write(dir.join("mods").join("a-1.0.jar.disabled"), b"1.0").expect("write old");
+        let states = ModStates::read(&dir, &listed(&[(&old, ModState::Disabled)]), &[]);
+
+        let downloaded = vec![new.to_modlist_entry(ModState::DownloadFailed)];
+        let entries = settle_states(&dir, std::slice::from_ref(&new), downloaded, &states);
+
+        assert_eq!(entries[0].state, ModState::DownloadFailed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
