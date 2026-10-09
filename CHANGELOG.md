@@ -3,6 +3,12 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 0.6.1 — 2026-10-09
+
+- Remove a mod's old version when a CurseForge upgrade brings a new version of
+  it under the same file name and that download fails. Before, the old version
+  kept loading while the Mods tab reported the new one as missing.
+
 ## 0.6.0 — 2026-10-09
 
 - Update the launcher from inside it. Settings → Software Update checks for a
