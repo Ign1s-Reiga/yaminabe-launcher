@@ -3,6 +3,19 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 0.6.0 — 2026-10-09
+
+- Update the launcher from inside it. Settings → Software Update checks for a
+  new version, lists what changed, and installs it, restarting into the new
+  version. The Settings button shows a dot when one is waiting, and the
+  launcher checks once each time it starts.
+- Keep a mod you turned off turned off when a modpack upgrade brings a new
+  version of it under a different file name, on both CurseForge and Modrinth.
+  Before, the new version came back on and your choice was lost.
+- Tell a modpack's own `.disabled` files apart from mods you turned off, so an
+  upgrade neither switches off a mod the pack means to be on nor deletes a file
+  the pack ships beside it.
+
 ## 0.5.0 — 2026-09-07
 
 - Keep a pack's own files and the record of them in step, so an upgrade removes

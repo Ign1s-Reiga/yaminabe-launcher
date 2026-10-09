@@ -7571,7 +7571,7 @@ checksum = "fdd20c5420375476fbd4394763288da7eb0cc0b8c11deed431a91562af7335d3"
 
 [[package]]
 name = "yaminabe-launcher"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "apple-native-keyring-store",
  "base64 0.22.1",
@@ -7598,7 +7598,7 @@ dependencies = [
 
 [[package]]
 name = "yaminabe-launcher-shared"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "reqwest",
  "serde",
@@ -7608,7 +7608,7 @@ dependencies = [
 
 [[package]]
 name = "yaminabe-launcher-ui"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bamboo-css-macro",
  "console_error_panic_hook",
