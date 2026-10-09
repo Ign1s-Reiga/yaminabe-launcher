@@ -54,11 +54,29 @@ fn relative_of(file: &ProjectFileInfo) -> String {
 }
 
 /// Delete the jars the new version dropped, under either name: a mod the user
-/// turned off sits under `<name>.disabled`. A name the new version also uses
-/// belongs to the file just written, not to the one being dropped, so it is
-/// left alone — and its old disabled copy is [`settle_states`]'s to replace.
-fn remove_dropped_mods(instance_path: &Path, old_file_names: &[String], new_file_names: &[String]) {
-    let kept_names: HashSet<&str> = new_file_names.iter().map(String::as_str).collect();
+/// turned off sits under `<name>.disabled`.
+///
+/// A name the new version also uses belongs to the file just written, so it is
+/// left alone and its old disabled copy is [`settle_states`]'s to replace. But
+/// only once that file arrived: where `downloaded` reports it failed, what sits
+/// at the name is still the old build, and left there it would load while the
+/// mod list calls the new version missing.
+fn remove_dropped_mods(
+    instance_path: &Path,
+    old_file_names: &[String],
+    new_file_names: &[String],
+    downloaded: &[ModListEntry],
+) {
+    let failed: HashSet<&str> = downloaded
+        .iter()
+        .filter(|entry| entry.state == ModState::DownloadFailed)
+        .map(|entry| entry.file_name.as_str())
+        .collect();
+    let kept_names: HashSet<&str> = new_file_names
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !failed.contains(name))
+        .collect();
     for file_name in old_file_names {
         if kept_names.contains(file_name.as_str()) {
             continue;
@@ -556,7 +574,7 @@ pub async fn upgrade_modpack(
 
     // Everything the new pack ships is now on disk, so the old versions can go,
     // and only then does each new one take the state its old one was left in.
-    remove_dropped_mods(&instance_path, &old_file_names, &new_files_names);
+    remove_dropped_mods(&instance_path, &old_file_names, &new_files_names, &downloaded);
     let new_modlist_entries = settle_states(&instance_path, &new_files, downloaded, &states);
 
     emit_progress(app_handle, id, instance_name, "Finalizing", false, None);
@@ -714,8 +732,8 @@ mod upgrade_tests {
         let jar = dir.join("mods").join("a-2.0.jar");
         std::fs::write(&jar, b"2.0").expect("write new");
 
-        remove_dropped_mods(&dir, &["a-1.0.jar".to_string()], &["a-2.0.jar".to_string()]);
         let downloaded = vec![new.to_modlist_entry(ModState::Enabled)];
+        remove_dropped_mods(&dir, &["a-1.0.jar".to_string()], &["a-2.0.jar".to_string()], &downloaded);
         let entries = settle_states(&dir, std::slice::from_ref(&new), downloaded, &states);
 
         assert!(!old_twin.exists(), "the old version is gone");
@@ -738,14 +756,40 @@ mod upgrade_tests {
         let states = ModStates::read(&dir, &listed(&[(&old, ModState::Disabled)]), &[]);
         std::fs::write(&jar, b"new").expect("write new");
 
-        remove_dropped_mods(&dir, &["a.jar".to_string()], &["a.jar".to_string()]);
         let downloaded = vec![new.to_modlist_entry(ModState::Enabled)];
+        remove_dropped_mods(&dir, &["a.jar".to_string()], &["a.jar".to_string()], &downloaded);
         let entries = settle_states(&dir, std::slice::from_ref(&new), downloaded, &states);
 
         assert!(!jar.exists());
         assert_eq!(std::fs::read(disabled_path(&jar)).expect("read"), b"new");
         assert_eq!(entries[0].state, ModState::Disabled);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A new file under its old name whose download failed: what sits at that
+    /// name is still the old build, enabled or not, and left in place it would
+    /// load while the mod list says the new version is missing.
+    #[test]
+    fn a_failed_replacement_under_the_old_name_leaves_no_old_build() {
+        for (old_on_disk, state) in [("a.jar", ModState::Enabled), ("a.jar.disabled", ModState::Disabled)] {
+            let dir = temp_dir("failed-same-name");
+            let old = mod_file("a.jar", 10, 100);
+            let new = mod_file("a.jar", 10, 200);
+            let jar = dir.join("mods").join("a.jar");
+            std::fs::write(dir.join("mods").join(old_on_disk), b"old").expect("write old");
+            let states = ModStates::read(&dir, &listed(&[(&old, state)]), &[]);
+
+            let downloaded = vec![new.to_modlist_entry(ModState::DownloadFailed)];
+            remove_dropped_mods(&dir, &["a.jar".to_string()], &["a.jar".to_string()], &downloaded);
+            let entries = settle_states(&dir, std::slice::from_ref(&new), downloaded, &states);
+
+            assert!(
+                !jar.exists() && !disabled_path(&jar).exists(),
+                "the old build left as {old_on_disk} must go"
+            );
+            assert_eq!(entries[0].state, ModState::DownloadFailed);
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 
     /// An unchanged mod is not fetched again, and its state is read off disk
