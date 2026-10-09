@@ -3,9 +3,10 @@ name: Release
 # Push a version tag (e.g. `v0.6.0`) to build the Windows installer, sign it
 # for the in-app updater, and attach it with a `latest.json` manifest to a draft
 # GitHub Release. Installed launchers read `releases/latest/download/latest.json`,
-# so an update reaches them only once the draft is published. Can also be run by
-# hand from the Actions tab, which builds an unsigned installer as an artifact
-# and drafts nothing.
+# so an update reaches them only once the draft is published, and published as a
+# full release: GitHub's "latest" skips pre-releases, so one marked as such is
+# never offered. Can also be run by hand from the Actions tab, which builds an
+# unsigned installer as an artifact and drafts nothing.
 on:
   push:
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
@@ -189,7 +190,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
           since=()
           if previous=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null); then
@@ -200,5 +200,5 @@ jobs:
             target/release/bundle/msi/*.msi.sig \
             target/release/bundle/latest.json \
             --draft --verify-tag \
-            --title "Yaminabe Launcher $VERSION" \
+            --title "$GITHUB_REF_NAME" \
             --generate-notes "${since[@]}"
