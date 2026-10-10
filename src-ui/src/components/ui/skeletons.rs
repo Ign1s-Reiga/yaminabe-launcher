@@ -94,8 +94,6 @@ pub fn SkeletonSettingsPage() -> impl IntoView {
     view! {
         <SkeletonSection>
             <SkeletonPropRow />
-            <SkeletonPropRow />
-            <SkeletonPropRow />
         </SkeletonSection>
         <SkeletonSection>
             <SkeletonPropRow />
