@@ -142,6 +142,7 @@ static ASSETS_DIR: OnceLock<PathBuf> = OnceLock::new();
 static LIBRARIES_DIR: OnceLock<PathBuf> = OnceLock::new();
 static RUNTIMES_DIR: OnceLock<PathBuf> = OnceLock::new();
 static CACHES_DIR: OnceLock<PathBuf> = OnceLock::new();
+static LOGS_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 fn settings_path() -> &'static PathBuf {
     SETTINGS_PATH.get().unwrap()
@@ -172,6 +173,29 @@ pub fn runtimes_dir() -> &'static PathBuf {
 pub fn caches_dir() -> &'static PathBuf {
     CACHES_DIR.get().unwrap()
 }
+/// The launcher's own log, under `.yaminabe/logs` beside the rest of its data.
+pub fn logs_dir() -> &'static PathBuf {
+    LOGS_DIR.get().unwrap()
+}
+/// The launcher's logger. Stdout serves development; a release build has no
+/// console, so the same lines also go to a file in [`logs_dir`].
+fn log_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri_plugin_log::Builder::new()
+        // Filter out Trace; the builder's default is LevelFilter::Trace,
+        // which surfaces every hyper/h2/reqwest trace call on stdout.
+        .level(log::LevelFilter::Debug)
+        .target(tauri_plugin_log::Target::new(
+            tauri_plugin_log::TargetKind::Stdout,
+        ))
+        .target(tauri_plugin_log::Target::new(
+            tauri_plugin_log::TargetKind::Folder { path: logs_dir().clone(), file_name: None },
+        ))
+        // The plugin's 40 KB default would not hold one modpack install.
+        .max_file_size(5_000_000)
+        .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(2))
+        .build()
+}
+
 fn init_dirs(app: &tauri::App) -> Result<(), InitializationError> {
     fn path_err(e: tauri::Error) -> InitializationError {
         InitializationError::PathResolution(e.to_string())
@@ -188,6 +212,7 @@ fn init_dirs(app: &tauri::App) -> Result<(), InitializationError> {
     ASSETS_DIR.set(bin_dir.join("assets"))?;
     RUNTIMES_DIR.set(bin_dir.join("runtimes"))?;
     CACHES_DIR.set(app_dir.join("caches"))?;
+    LOGS_DIR.set(app_dir.join("logs"))?;
     BIN_DIR.set(bin_dir)?;
     SETTINGS_PATH.set(app_dir.join("settings.json"))?;
     ACCOUNTS_PATH.set(app_dir.join("accounts.json"))?;
@@ -210,25 +235,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(PendingUpdate::default())
-        .plugin(tauri_plugin_log::Builder::new()
-            // Filter out Trace; the builder's default is LevelFilter::Trace,
-            // which surfaces every hyper/h2/reqwest trace call on stdout.
-            .level(log::LevelFilter::Debug)
-            .target(tauri_plugin_log::Target::new(
-                tauri_plugin_log::TargetKind::Stdout,
-            ))
-            // A release build has no console, so stdout alone leaves nothing to
-            // read afterwards. The file lands in the app's log directory; the
-            // plugin's 40 KB default would not hold one modpack install.
-            .target(tauri_plugin_log::Target::new(
-                tauri_plugin_log::TargetKind::LogDir { file_name: None },
-            ))
-            .max_file_size(5_000_000)
-            .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(2))
-            .build()
-        )
         .setup(|app| {
             init_dirs(app)?;
+            // Registered here rather than on the builder: the log's folder is
+            // under `.yaminabe`, which only resolves once the app's paths do.
+            app.handle().plugin(log_plugin())?;
 
             // Register the OS-native credential store as the keyring default
             // (DPAPI on Windows, Keychain on macOS, keyutils on Linux). A
