@@ -3,6 +3,15 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 0.6.2 — 2026-10-10
+
+- Tell you when an instance cannot be loaded. If an instance's settings file
+  is missing or damaged, the launcher shows a notice at startup naming its
+  folder, instead of the instance quietly disappearing from the library. The
+  reason goes into the launcher's log, now kept in `%LOCALAPPDATA%\.yaminabe\logs`.
+- Remove the Language and Theme settings, which never did anything. The
+  launcher keeps following your system's light or dark preference.
+
 ## 0.6.1 — 2026-10-09
 
 - Remove a mod's old version when a CurseForge upgrade brings a new version of
