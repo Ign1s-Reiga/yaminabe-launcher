@@ -196,11 +196,11 @@ fn report_skipped(toasts: Toasts, skipped: &[SkippedInstance]) {
         0 => return,
         1 => (
             "1 instance could not be loaded".to_string(),
-            "Its instance.json is missing or damaged.",
+            "Its instance.json is missing, damaged or unreadable.",
         ),
         n => (
             format!("{n} instances could not be loaded"),
-            "Their instance.json is missing or damaged.",
+            "Their instance.json is missing, damaged or unreadable.",
         ),
     };
     let mut lines: Vec<String> = skipped.iter().take(SHOWN).map(|s| s.folder.clone()).collect();

@@ -244,8 +244,8 @@ pub fn run() {
             // Registered here rather than on the builder: the log's folder is
             // under `.yaminabe`, which only resolves once the app's paths do.
             if let Err(e) = app.handle().plugin(log_plugin(true)) {
-                // A log file that cannot be opened, as one another launcher
-                // window holds, costs the file, not the launcher.
+                // A log file that cannot be opened, as in a folder the user may
+                // not write to, costs the file, not the launcher.
                 app.handle().plugin(log_plugin(false))?;
                 warn!("cannot write the log file in {}: {e}", logs_dir().display());
             }
