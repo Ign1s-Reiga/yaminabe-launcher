@@ -40,7 +40,6 @@ pub fn HomePage() -> impl IntoView {
         played.truncate(RECENT_LIMIT);
         played
     });
-    let releases = StoredValue::new(changelog::releases());
     // Drawn once per visit: a StoredValue so a reactive update elsewhere on the
     // page cannot reshuffle the facts under the reader.
     let facts = StoredValue::new(trivia::pick(TRIVIA_COUNT));
@@ -92,10 +91,7 @@ pub fn HomePage() -> impl IntoView {
         grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
         gap: 12px;
     };
-    let release_list = css! {
-        display: flex;
-        flex-direction: column;
-        gap: 20px;
+    let release = css! {
         max-width: 640px;
     };
     let release_head = css! {
@@ -194,33 +190,31 @@ pub fn HomePage() -> impl IntoView {
             .map(|instance| view! { <RecentCard instance=instance registry=registry /> })
             .collect_view()
     };
-    let release_entries = move || {
-        releases
-            .get_value()
-            .into_iter()
-            .map(|release| {
-                // Marked by version rather than by position, so an Unreleased
-                // section or notes staged for the next release cannot claim to
-                // be what is running.
-                let current = release.version == env!("CARGO_PKG_VERSION");
-                view! {
-                    <div>
-                        <div class=release_head>
-                            <span class=release_version>{release.version}</span>
-                            <span class=release_date>{release.date}</span>
-                            {current.then(move || view! {
-                                <span class=release_current>"Current"</span>
-                            })}
-                        </div>
-                        <ul class=change_list>
-                            {release.changes.into_iter()
-                                .map(|change| view! { <li>{change}</li> })
-                                .collect_view()}
-                        </ul>
+    // The changelog is compiled in, so this is drawn once and never changes.
+    let what_is_new = match changelog::current() {
+        Some(entry) => {
+            // Unmarked when the newest notes stand in for a build that has no
+            // section of its own.
+            let current = entry.version == env!("CARGO_PKG_VERSION");
+            view! {
+                <div class=release>
+                    <div class=release_head>
+                        <span class=release_version>{entry.version}</span>
+                        <span class=release_date>{entry.date}</span>
+                        {current.then(move || view! {
+                            <span class=release_current>"Current"</span>
+                        })}
                     </div>
-                }
-            })
-            .collect_view()
+                    <ul class=change_list>
+                        {entry.changes.into_iter()
+                            .map(|change| view! { <li>{change}</li> })
+                            .collect_view()}
+                    </ul>
+                </div>
+            }
+            .into_any()
+        }
+        None => view! { <p class=empty>"No release notes yet."</p> }.into_any(),
     };
 
     view! {
@@ -260,12 +254,7 @@ pub fn HomePage() -> impl IntoView {
                         <div class=section_head>
                             <h2 class=section_title>"What is new"</h2>
                         </div>
-                        <Show
-                            when=move || !releases.get_value().is_empty()
-                            fallback=move || view! { <p class=empty>"No release notes yet."</p> }
-                        >
-                            <div class=release_list>{release_entries}</div>
-                        </Show>
+                        {what_is_new}
                     </div>
                     <aside class=trivia_card>
                         <p class=trivia_title>"Did you know?"</p>

@@ -12,9 +12,17 @@ pub struct Release {
     pub changes: Vec<String>,
 }
 
-/// The releases of the bundled changelog, newest first as the file lists them.
-pub fn releases() -> Vec<Release> {
-    parse(CHANGELOG)
+/// The release the Home page shows from the bundled changelog: the one this
+/// build is, or the newest the file lists when it has no section for it.
+pub fn current() -> Option<Release> {
+    pick(parse(CHANGELOG), env!("CARGO_PKG_VERSION"))
+}
+
+/// Picked by version rather than by position, so notes staged above for the
+/// next release cannot stand in for what is running.
+fn pick(releases: Vec<Release>, version: &str) -> Option<Release> {
+    let position = releases.iter().position(|release| release.version == version).unwrap_or(0);
+    releases.into_iter().nth(position)
 }
 
 /// The changes in one release's notes: its section of the changelog without
@@ -89,7 +97,7 @@ fn parse(text: &str) -> Vec<Release> {
 
 #[cfg(test)]
 mod tests {
-    use super::{changes, parse, releases};
+    use super::{changes, parse, pick, CHANGELOG};
 
     /// An update carries its section of the changelog without the heading, and
     /// it has to read the same as that section does on the Home page.
@@ -103,7 +111,7 @@ mod tests {
 
     #[test]
     fn parses_the_bundled_changelog() {
-        let releases = releases();
+        let releases = parse(CHANGELOG);
 
         assert!(!releases.is_empty(), "changelog has no releases");
         let first = &releases[0];
@@ -112,6 +120,17 @@ mod tests {
         assert!(!first.changes.is_empty());
         // The prose above the first heading must not be read as a change.
         assert!(first.changes.iter().all(|c| !c.starts_with('#')));
+    }
+
+    /// Notes staged above for the next release do not stand in for the running
+    /// one; a build with no section of its own gets the newest instead.
+    #[test]
+    fn picks_the_running_release_or_else_the_newest() {
+        let releases = || parse("## 1.1.0 — staged\n- next\n## 1.0.0 — 2026-01-01\n- running\n");
+
+        assert_eq!(pick(releases(), "1.0.0").map(|r| r.changes), Some(vec!["running".to_string()]));
+        assert_eq!(pick(releases(), "2.0.0").map(|r| r.version), Some("1.1.0".to_string()));
+        assert!(pick(Vec::new(), "1.0.0").is_none());
     }
 
     #[test]
