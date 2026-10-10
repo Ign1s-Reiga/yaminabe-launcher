@@ -294,14 +294,15 @@ pub async fn get_instances(state: State<'_, AppState>) -> Result<InstanceList, E
 
 /// Read every instance under `root`. A folder with launcher data whose
 /// `instance.json` cannot be loaded is reported in `skipped`, leaving the rest of
-/// the library to load; a folder without any is not an instance and is ignored.
+/// the library to load; a folder without any, or with only what an unfinished
+/// install leaves, is not an instance and is ignored.
 fn scan_instances(root: &Path) -> Result<InstanceList, Error> {
     let mut list = InstanceList::default();
     for entry in std::fs::read_dir(root)?.flatten() {
         let path = entry.path();
         if !path.is_dir() { continue; }
         migrate_legacy_meta(&path);
-        if !path.join(LAUNCHER_DIR).is_dir() { continue; }
+        if !path.join(LAUNCHER_DIR).is_dir() || is_unfinished_install(&path) { continue; }
         match read_json::<InstanceMeta>(instance_meta_file(&path)) {
             Ok(meta) => list.instances.push(meta),
             Err(e) => list.skipped.push(SkippedInstance {
@@ -313,6 +314,16 @@ fn scan_instances(root: &Path) -> Result<InstanceList, Error> {
     list.instances.sort_by(|a, b| a.name.cmp(&b.name));
     list.skipped.sort_by(|a, b| a.folder.cmp(&b.folder));
     Ok(list)
+}
+
+/// Whether `dir` is what an install closed part-way leaves: a `.launcher/`
+/// holding nothing but the cache its modpack download is staged in. That is not
+/// an instance yet, nor a damaged one.
+fn is_unfinished_install(dir: &Path) -> bool {
+    let cache = dir.join(ProjectFileTarget::Modpack.directory());
+    let Ok(entries) = std::fs::read_dir(dir.join(LAUNCHER_DIR)) else { return false };
+    let paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+    paths == [cache]
 }
 
 /// Why an `instance.json` would not load, put the way a person reading the log
@@ -484,9 +495,9 @@ pub fn toggle_state_instance_mod(
 
 #[cfg(test)]
 mod scan_tests {
-    use super::{instance_meta_file, scan_instances, LAUNCHER_DIR};
-    use std::path::PathBuf;
-    use yaminabe_launcher_shared::datamodels::InstanceMeta;
+    use super::{instance_meta_file, modlist_file, scan_instances, LAUNCHER_DIR};
+    use std::path::{Path, PathBuf};
+    use yaminabe_launcher_shared::datamodels::{InstanceMeta, ProjectFileTarget};
 
     fn temp_root(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("yaminabe-scan-{name}"));
@@ -499,8 +510,15 @@ mod scan_tests {
         InstanceMeta { name: name.to_string(), ..InstanceMeta::default() }
     }
 
-    /// Two instances that load, two whose metadata will not, and the folders
-    /// and files an install directory may also hold. Only the two broken
+    /// Write a modpack zip into `dir`'s install cache, as an install stages it.
+    fn stage_pack(dir: &Path) {
+        let cache = dir.join(ProjectFileTarget::Modpack.directory());
+        std::fs::create_dir_all(&cache).expect("mkdir");
+        std::fs::write(cache.join("pack.zip"), b"PK").expect("write");
+    }
+
+    /// Two instances that load, three whose metadata will not, and the folders
+    /// and files an install directory may also hold. Only the three broken
     /// instances are reported, and the rest of the library still loads.
     #[test]
     fn a_broken_instance_is_reported_and_the_rest_still_load() {
@@ -510,20 +528,25 @@ mod scan_tests {
         crate::json::write_json(root.join("legacy").join("instance.json"), &named("Legacy")).expect("write");
         std::fs::create_dir_all(root.join("malformed").join(LAUNCHER_DIR)).expect("mkdir");
         std::fs::write(instance_meta_file(&root.join("malformed")), b"{ not json").expect("write");
+        // A vanilla instance's `.launcher/` holds its metadata and nothing else.
         std::fs::create_dir_all(root.join("missing").join(LAUNCHER_DIR)).expect("mkdir");
-        // Not instances: a folder with no launcher data, and a stray file.
+        stage_pack(&root.join("cached"));
+        crate::json::write_json(modlist_file(&root.join("cached")), &Vec::<String>::new()).expect("write");
+        // Not instances: a folder with no launcher data, an install closed
+        // before it got past the download, and a stray file.
         std::fs::create_dir_all(root.join("screenshots")).expect("mkdir");
+        stage_pack(&root.join("unfinished"));
         std::fs::write(root.join("notes.txt"), b"mine").expect("write");
 
         let list = scan_instances(&root).expect("scan");
 
         let names: Vec<&str> = list.instances.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, vec!["Good", "Legacy"]);
-        assert_eq!(list.skipped.len(), 2, "{:?}", list.skipped);
-        assert_eq!(list.skipped[0].folder, "malformed");
-        assert!(list.skipped[0].reason.starts_with("instance.json is malformed"), "{}", list.skipped[0].reason);
-        assert_eq!(list.skipped[1].folder, "missing");
-        assert_eq!(list.skipped[1].reason, "instance.json is missing");
+        let folders: Vec<&str> = list.skipped.iter().map(|s| s.folder.as_str()).collect();
+        assert_eq!(folders, vec!["cached", "malformed", "missing"]);
+        assert_eq!(list.skipped[0].reason, "instance.json is missing");
+        assert!(list.skipped[1].reason.starts_with("instance.json is malformed"), "{}", list.skipped[1].reason);
+        assert_eq!(list.skipped[2].reason, "instance.json is missing");
         std::fs::remove_dir_all(&root).ok();
     }
 }
