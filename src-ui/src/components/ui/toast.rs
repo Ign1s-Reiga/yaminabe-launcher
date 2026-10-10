@@ -49,11 +49,13 @@ impl Toasts {
 pub fn ToastHost() -> impl IntoView {
     let toasts = use_context::<Toasts>().expect("toasts");
 
+    // Below every modal tier (100 and 200) and the card menu (150), so a
+    // dialog's backdrop covers a toast rather than a toast covering it.
     let host = css! {
         position: fixed;
         top: 24px;
         right: 24px;
-        z-index: 200;
+        z-index: 90;
         width: 340px;
         display: flex;
         flex-direction: column;

@@ -207,7 +207,9 @@ fn report_skipped(toasts: Toasts, skipped: &[SkippedInstance]) {
     if skipped.len() > SHOWN {
         lines.push(format!("and {} more", skipped.len() - SHOWN));
     }
-    lines.push(format!("{cause} The launcher's log has the details."));
+    lines.push(format!(
+        "{cause} The launcher's log in %LOCALAPPDATA%\\.yaminabe\\logs has the details."
+    ));
     toasts.push(WARNING, title, lines);
 }
 
