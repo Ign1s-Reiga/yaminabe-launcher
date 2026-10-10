@@ -71,25 +71,6 @@ pub fn SettingsPage() -> impl IntoView {
                             <form on:submit=on_submit>
                                 <SettingsSection id="general" heading="General">
                                     <SettingsProp
-                                        label="Language"
-                                        hint="Language support is coming in a future update."
-                                    >
-                                        <SelectInput disabled=true>
-                                            <option value="English" selected>"English"</option>
-                                            <option value="Japanese">"日本語"</option>
-                                        </SelectInput>
-                                    </SettingsProp>
-                                    <SettingsProp
-                                        label="Theme"
-                                        hint="Theme follows your system preference. Manual override coming soon."
-                                    >
-                                        <SelectInput disabled=true>
-                                            <option value="System" selected>"System default"</option>
-                                            <option value="Light">"Light"</option>
-                                            <option value="Dark">"Dark"</option>
-                                        </SelectInput>
-                                    </SettingsProp>
-                                    <SettingsProp
                                         label="Instance Root"
                                         hint="Parent directory for new instances. Each instance is created in a subfolder named after the instance."
                                     >
