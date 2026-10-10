@@ -6,6 +6,7 @@ pub mod segmented;
 pub mod skeletons;
 pub mod switch;
 pub mod tabbar;
+pub mod toast;
 pub mod version_list;
 
 pub use button::*;
@@ -16,6 +17,7 @@ pub use segmented::*;
 pub use skeletons::*;
 pub use switch::*;
 pub use tabbar::*;
+pub use toast::*;
 pub use version_list::*;
 
 use bamboo_css_macro::css;

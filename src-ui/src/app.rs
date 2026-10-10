@@ -10,6 +10,7 @@ use crate::pages::{
     instance_detail::InstanceDetailPage,
     play::PlayPage,
 };
+use crate::components::ui::{ToastHost, Toasts};
 use crate::ipc;
 use crate::signal_ext::VecSignalExt;
 use crate::update::Updates;
@@ -19,8 +20,12 @@ use leptos::{component, IntoView, view, web_sys};
 use leptos_router::components::{Route, Router, Routes};
 use leptos_router::hooks::{use_location, use_navigate};
 use leptos_router::path;
-use phosphor_leptos::{Icon, IconData, IconWeight, BOOKS, GEAR_SIX, HOUSE, MAGNIFYING_GLASS, PLAY};
-use yaminabe_launcher_shared::datamodels::{AppSettings, InstanceMeta, LaunchMode, ModProjectInfo};
+use phosphor_leptos::{
+    Icon, IconData, IconWeight, BOOKS, GEAR_SIX, HOUSE, MAGNIFYING_GLASS, PLAY, WARNING,
+};
+use yaminabe_launcher_shared::datamodels::{
+    AppSettings, InstanceList, InstanceMeta, LaunchMode, ModProjectInfo, SkippedInstance,
+};
 use yaminabe_launcher_shared::ipc::LogLine;
 
 styled!(MainViewWrapper, div, {
@@ -49,14 +54,24 @@ styled!(MainViewNavbar, nav, {
 pub fn App() -> impl IntoView {
     let instances: RwSignal<Vec<InstanceMeta>> = RwSignal::new(vec![]);
     let refresh: RwSignal<u32> = RwSignal::new(0);
+    let toasts = Toasts::provide();
+    // Only the load at launch reports skipped instances; reloading after an
+    // install would otherwise raise the same toast again.
+    let skipped_reported = StoredValue::new(false);
 
     Effect::new(move |_| {
         // Track only — re-fetch instances whenever `refresh` bumps without
         // depending on its actual value.
         refresh.track();
         leptos::task::spawn_local(async move {
-            match ipc::call_noargs::<Vec<InstanceMeta>>("get_instances").await {
-                Ok(list) => instances.set(list),
+            match ipc::call_noargs::<InstanceList>("get_instances").await {
+                Ok(list) => {
+                    if !skipped_reported.get_value() {
+                        skipped_reported.set_value(true);
+                        report_skipped(toasts, &list.skipped);
+                    }
+                    instances.set(list.instances);
+                }
                 Err(e) => log::error!("get_instances failed: {e}"),
             }
         });
@@ -167,9 +182,33 @@ pub fn App() -> impl IntoView {
                     <NavigationButton href="/settings" icon=GEAR_SIX label="Settings" badge=update_offered/>
                 </MainViewNavbar>
                 <ActivityDock jobs=install_jobs registry=running_registry expanded=dock_expanded />
+                <ToastHost />
             </MainViewWrapper>
         </Router>
     }
+}
+
+/// Tell the user which instances were left out of the library at launch. The
+/// backend's log has each one's reason; the toast names the folders.
+fn report_skipped(toasts: Toasts, skipped: &[SkippedInstance]) {
+    const SHOWN: usize = 3;
+    let (title, cause) = match skipped.len() {
+        0 => return,
+        1 => (
+            "1 instance could not be loaded".to_string(),
+            "Its instance.json is missing or damaged.",
+        ),
+        n => (
+            format!("{n} instances could not be loaded"),
+            "Their instance.json is missing or damaged.",
+        ),
+    };
+    let mut lines: Vec<String> = skipped.iter().take(SHOWN).map(|s| s.folder.clone()).collect();
+    if skipped.len() > SHOWN {
+        lines.push(format!("and {} more", skipped.len() - SHOWN));
+    }
+    lines.push(format!("{cause} The launcher's log has the details."));
+    toasts.push(WARNING, title, lines);
 }
 
 #[component]
