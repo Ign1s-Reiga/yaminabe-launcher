@@ -178,15 +178,19 @@ pub fn logs_dir() -> &'static PathBuf {
     LOGS_DIR.get().unwrap()
 }
 /// The launcher's logger. Stdout serves development; a release build has no
-/// console, so the same lines also go to a file in [`logs_dir`].
-fn log_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
-    tauri_plugin_log::Builder::new()
+/// console, so with `to_file` the same lines also go to a file in [`logs_dir`].
+fn log_plugin<R: tauri::Runtime>(to_file: bool) -> tauri::plugin::TauriPlugin<R> {
+    let builder = tauri_plugin_log::Builder::new()
         // Filter out Trace; the builder's default is LevelFilter::Trace,
         // which surfaces every hyper/h2/reqwest trace call on stdout.
         .level(log::LevelFilter::Debug)
         .target(tauri_plugin_log::Target::new(
             tauri_plugin_log::TargetKind::Stdout,
-        ))
+        ));
+    if !to_file {
+        return builder.build();
+    }
+    builder
         .target(tauri_plugin_log::Target::new(
             tauri_plugin_log::TargetKind::Folder { path: logs_dir().clone(), file_name: None },
         ))
@@ -239,7 +243,12 @@ pub fn run() {
             init_dirs(app)?;
             // Registered here rather than on the builder: the log's folder is
             // under `.yaminabe`, which only resolves once the app's paths do.
-            app.handle().plugin(log_plugin())?;
+            if let Err(e) = app.handle().plugin(log_plugin(true)) {
+                // A log file that cannot be opened, as one another launcher
+                // window holds, costs the file, not the launcher.
+                app.handle().plugin(log_plugin(false))?;
+                warn!("cannot write the log file in {}: {e}", logs_dir().display());
+            }
 
             // Register the OS-native credential store as the keyring default
             // (DPAPI on Windows, Keychain on macOS, keyutils on Linux). A
