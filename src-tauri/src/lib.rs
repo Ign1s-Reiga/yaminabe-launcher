@@ -217,6 +217,14 @@ pub fn run() {
             .target(tauri_plugin_log::Target::new(
                 tauri_plugin_log::TargetKind::Stdout,
             ))
+            // A release build has no console, so stdout alone leaves nothing to
+            // read afterwards. The file lands in the app's log directory; the
+            // plugin's 40 KB default would not hold one modpack install.
+            .target(tauri_plugin_log::Target::new(
+                tauri_plugin_log::TargetKind::LogDir { file_name: None },
+            ))
+            .max_file_size(5_000_000)
+            .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(2))
             .build()
         )
         .setup(|app| {
