@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use log::{info, warn};
 use tauri::State;
 use yaminabe_launcher_shared::datamodels::{
-    DownloadSource, InstanceMeta, ModListEntry, ModState, ProjectFileTarget,
+    DownloadSource, InstanceList, InstanceMeta, ModListEntry, ModState, ProjectFileTarget,
+    SkippedInstance,
 };
 use yaminabe_launcher_shared::error::Error;
 use crate::{emit_progress, libraries_dir, versions_dir, ActivityGuard, AppState, InstanceActivity};
@@ -274,26 +275,57 @@ pub async fn create_instance(
 }
 
 #[tauri::command]
-pub async fn get_instances(state: State<'_, AppState>) -> Result<Vec<InstanceMeta>, Error> {
+pub async fn get_instances(state: State<'_, AppState>) -> Result<InstanceList, Error> {
     let location = state.settings.read().unwrap().instance_install_dir.clone();
     if location.is_empty() {
-        return Ok(vec![]);
+        return Ok(InstanceList::default());
     }
     let root = PathBuf::from(&location);
     if !root.exists() {
-        return Ok(vec![]);
+        return Ok(InstanceList::default());
     }
-    let mut instances: Vec<InstanceMeta> = Vec::new();
-    for entry in std::fs::read_dir(&root)?.flatten() {
+    let list = scan_instances(&root)?;
+    for skipped in &list.skipped {
+        warn!("skipped instance folder '{}': {}", skipped.folder, skipped.reason);
+    }
+    info!("Found {} instances", list.instances.len());
+    Ok(list)
+}
+
+/// Read every instance under `root`. A folder with launcher data whose
+/// `instance.json` cannot be loaded is reported in `skipped`, leaving the rest of
+/// the library to load; a folder without any is not an instance and is ignored.
+fn scan_instances(root: &Path) -> Result<InstanceList, Error> {
+    let mut list = InstanceList::default();
+    for entry in std::fs::read_dir(root)?.flatten() {
         let path = entry.path();
         if !path.is_dir() { continue; }
         migrate_legacy_meta(&path);
-        let Ok(meta) = read_json(instance_meta_file(&path)) else { continue };
-        instances.push(meta);
+        if !path.join(LAUNCHER_DIR).is_dir() { continue; }
+        match read_json::<InstanceMeta>(instance_meta_file(&path)) {
+            Ok(meta) => list.instances.push(meta),
+            Err(e) => list.skipped.push(SkippedInstance {
+                folder: entry.file_name().to_string_lossy().into_owned(),
+                reason: skip_reason(&e),
+            }),
+        }
     }
-    instances.sort_by(|a, b| a.name.cmp(&b.name));
-    info!("Found {} instances", instances.len());
-    Ok(instances)
+    list.instances.sort_by(|a, b| a.name.cmp(&b.name));
+    list.skipped.sort_by(|a, b| a.folder.cmp(&b.folder));
+    Ok(list)
+}
+
+/// Why an `instance.json` would not load, put the way a person reading the log
+/// would want it.
+fn skip_reason(error: &Error) -> String {
+    match error {
+        Error::IO(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            "instance.json is missing".to_string()
+        }
+        Error::IO(e) => format!("instance.json could not be read: {e}"),
+        Error::ParseJson(e) => format!("instance.json is malformed: {e}"),
+        other => other.to_string(),
+    }
 }
 
 #[tauri::command]
@@ -448,4 +480,50 @@ pub fn toggle_state_instance_mod(
     write_json(modlist_file(&instance_dir), &modlist)?;
     info!("Toggled mod '{file_name}' to {new_state:?} in instance '{instance_id}'");
     Ok(())
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::{instance_meta_file, scan_instances, LAUNCHER_DIR};
+    use std::path::PathBuf;
+    use yaminabe_launcher_shared::datamodels::InstanceMeta;
+
+    fn temp_root(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("yaminabe-scan-{name}"));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).expect("create root");
+        dir
+    }
+
+    fn named(name: &str) -> InstanceMeta {
+        InstanceMeta { name: name.to_string(), ..InstanceMeta::default() }
+    }
+
+    /// Two instances that load, two whose metadata will not, and the folders
+    /// and files an install directory may also hold. Only the two broken
+    /// instances are reported, and the rest of the library still loads.
+    #[test]
+    fn a_broken_instance_is_reported_and_the_rest_still_load() {
+        let root = temp_root("broken");
+        crate::json::write_json(instance_meta_file(&root.join("good")), &named("Good")).expect("write");
+        // Metadata from before `.launcher/` existed is moved in before the check.
+        crate::json::write_json(root.join("legacy").join("instance.json"), &named("Legacy")).expect("write");
+        std::fs::create_dir_all(root.join("malformed").join(LAUNCHER_DIR)).expect("mkdir");
+        std::fs::write(instance_meta_file(&root.join("malformed")), b"{ not json").expect("write");
+        std::fs::create_dir_all(root.join("missing").join(LAUNCHER_DIR)).expect("mkdir");
+        // Not instances: a folder with no launcher data, and a stray file.
+        std::fs::create_dir_all(root.join("screenshots")).expect("mkdir");
+        std::fs::write(root.join("notes.txt"), b"mine").expect("write");
+
+        let list = scan_instances(&root).expect("scan");
+
+        let names: Vec<&str> = list.instances.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["Good", "Legacy"]);
+        assert_eq!(list.skipped.len(), 2, "{:?}", list.skipped);
+        assert_eq!(list.skipped[0].folder, "malformed");
+        assert!(list.skipped[0].reason.starts_with("instance.json is malformed"), "{}", list.skipped[0].reason);
+        assert_eq!(list.skipped[1].folder, "missing");
+        assert_eq!(list.skipped[1].reason, "instance.json is missing");
+        std::fs::remove_dir_all(&root).ok();
+    }
 }

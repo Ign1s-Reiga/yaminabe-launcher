@@ -63,6 +63,24 @@ impl Default for InstanceMeta {
     }
 }
 
+/// The instances found in the install directory, and the ones that could not
+/// be loaded.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct InstanceList {
+    pub instances: Vec<InstanceMeta>,
+    pub skipped: Vec<SkippedInstance>,
+}
+
+/// A folder holding an instance's launcher data whose `instance.json` could not
+/// be loaded, so it is left out of the library.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SkippedInstance {
+    /// The instance's folder name under the install directory.
+    pub folder: String,
+    /// Why it was skipped: missing, unreadable, or malformed.
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
