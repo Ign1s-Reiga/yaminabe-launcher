@@ -11,6 +11,7 @@ use crate::commands::auth::{
     cancel_microsoft_login, get_accounts, get_selected_account, remove_account,
     set_selected_account, start_microsoft_login,
 };
+use crate::commands::bookmark::{add_bookmark, get_bookmarks, load_bookmarks, remove_bookmark};
 use crate::commands::instance::{
     create_instance, delete_instance, get_instances, list_instance_mods, save_instance_settings,
     toggle_state_instance_mod,
@@ -38,7 +39,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use tauri::{Emitter, Manager};
-use yaminabe_launcher_shared::datamodels::{AppSettings, JavaInstall};
+use yaminabe_launcher_shared::datamodels::{AppSettings, JavaInstall, ModProjectInfo};
 use yaminabe_launcher_shared::error::InitializationError;
 use yaminabe_launcher_shared::ipc::InstallProgress;
 
@@ -131,11 +132,14 @@ pub struct AppState {
     /// Cooperative cancel flag for an in-flight `start_microsoft_login` poll
     /// loop. `cancel_microsoft_login` flips it to `true` to abort cleanly.
     pub ms_login_cancel: Arc<AtomicBool>,
+    /// Bookmarked modpacks, newest first. Backed by `bookmarks.json`.
+    pub bookmarks: Mutex<Vec<ModProjectInfo>>,
 }
 
 static TEMP_DIR: OnceLock<PathBuf> = OnceLock::new();
 static SETTINGS_PATH: OnceLock<PathBuf> = OnceLock::new();
 static ACCOUNTS_PATH: OnceLock<PathBuf> = OnceLock::new();
+static BOOKMARKS_PATH: OnceLock<PathBuf> = OnceLock::new();
 static BIN_DIR: OnceLock<PathBuf> = OnceLock::new();
 static VERSIONS_DIR: OnceLock<PathBuf> = OnceLock::new();
 static ASSETS_DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -149,6 +153,9 @@ fn settings_path() -> &'static PathBuf {
 }
 pub fn accounts_path() -> &'static PathBuf {
     ACCOUNTS_PATH.get().unwrap()
+}
+pub fn bookmarks_path() -> &'static PathBuf {
+    BOOKMARKS_PATH.get().unwrap()
 }
 pub fn temp_dir() -> &'static PathBuf {
     TEMP_DIR.get().unwrap()
@@ -220,6 +227,7 @@ fn init_dirs(app: &tauri::App) -> Result<(), InitializationError> {
     BIN_DIR.set(bin_dir)?;
     SETTINGS_PATH.set(app_dir.join("settings.json"))?;
     ACCOUNTS_PATH.set(app_dir.join("accounts.json"))?;
+    BOOKMARKS_PATH.set(app_dir.join("bookmarks.json"))?;
     for p in [
         versions_dir(),
         libraries_dir(),
@@ -294,6 +302,7 @@ pub fn run() {
                 instance_activity: Arc::new(Mutex::new(HashMap::new())),
                 account_store: Mutex::new(account_store),
                 ms_login_cancel: Arc::new(AtomicBool::new(false)),
+                bookmarks: Mutex::new(load_bookmarks()),
             });
 
             let handle = app.app_handle().clone();
@@ -352,6 +361,9 @@ pub fn run() {
             checks_updates_on_launch,
             check_for_update,
             install_update,
+            get_bookmarks,
+            add_bookmark,
+            remove_bookmark,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

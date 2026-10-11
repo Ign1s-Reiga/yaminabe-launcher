@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod bookmark;
 pub mod instance;
 pub mod java;
 pub mod launch;
