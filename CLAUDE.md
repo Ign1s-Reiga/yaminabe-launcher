@@ -84,8 +84,8 @@ src-ui/src/
 │   ├── search.rs            # `/search` — CurseForge modpack search
 │   └── settings.rs          # `/settings`
 ├── components.rs / components/
-│   ├── ui.rs / ui/          # Atomic UI primitives (Button, IconButton, Modal, Input, TabBar,
-│   │                        # Segmented, Skeletons)
+│   ├── ui.rs / ui/          # Atomic UI primitives (Button, IconButton, BadgeIconButton, Modal,
+│   │                        # Input, TabBar, Segmented, Skeletons)
 │   ├── activity_dock.rs     # Bottom-right floating dock (collapsible) listing
 │   │                        # install jobs + running instances; also owns the
 │   │                        # running-instance data model (RunStatus, registry,

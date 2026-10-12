@@ -165,3 +165,59 @@ pub fn IconButton(
         </button>
     }
 }
+
+/// A rounded-square green button that floats in the bottom-right corner,
+/// above the navbar, and shows only `icon`. `label` names it, as the tooltip
+/// and for screen readers. While one is on the page, the activity dock moves
+/// up to leave it the corner.
+///
+/// ```rust
+/// <BadgeIconButton
+///     icon=PLUS
+///     label="Create New Instance"
+///     on_click=Callback::new(move |_| show_modal.set(true))
+/// />
+/// ```
+#[component]
+pub fn BadgeIconButton(
+    icon: IconData,
+    #[prop(into)] label: String,
+    #[prop(optional)] on_click: Option<Callback<web_sys::MouseEvent>>,
+) -> impl IntoView {
+    // 16px above the 100px navbar, where the activity dock otherwise sits.
+    // Below the modal tiers, like the toasts, so a dialog's backdrop covers it.
+    let badge = css! {
+        position: fixed;
+        right: 24px;
+        bottom: 116px;
+        z-index: 90;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 56px;
+        height: 56px;
+        padding: 0;
+        border: none;
+        border-radius: 25%;
+        background-color: #3a9e5f;
+        color: white;
+        box-shadow: 0 6px 20px rgb(0 0 0 / 0.28);
+        cursor: pointer;
+        transition: background-color 0.15s ease;
+        &:hover { background-color: #2e7d4f; }
+    };
+    let title = label.clone();
+
+    view! {
+        <button
+            type="button"
+            class=badge
+            title=title
+            aria-label=label
+            data-floating-action=""
+            on:click=move |ev| { if let Some(cb) = on_click { cb.run(ev); } }
+        >
+            <Icon icon=icon size="26px" weight=IconWeight::Bold />
+        </button>
+    }
+}
