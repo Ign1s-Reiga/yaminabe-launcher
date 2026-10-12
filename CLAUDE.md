@@ -44,7 +44,8 @@ src-tauri/src/
 ├── commands/                # `#[tauri::command]` handlers
 │   ├── mod.rs
 │   ├── bookmark.rs          # Bookmarked modpacks (bookmarks.json): get / add / remove
-│   ├── instance.rs          # create_instance, get_instances, save_instance_settings
+│   ├── instance.rs          # create_instance, get_instances, save_instance_settings,
+│   │                        # modpack icons (.launcher/icon.*)
 │   ├── java.rs              # Local Java detection + Mojang JRE download
 │   ├── minecraft.rs         # Mojang version-manifest-v2 fetch + cache
 │   ├── modfile.rs           # Bridge to mod_repo: search, files, install, download

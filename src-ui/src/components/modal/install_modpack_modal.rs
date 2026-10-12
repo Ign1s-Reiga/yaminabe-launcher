@@ -170,7 +170,7 @@ impl ModpackInstaller {
         };
         let source = ver.source;
 
-        let Some(args) = InstallModpackArgs::from_form_data(source, &data) else {
+        let Some(args) = InstallModpackArgs::from_form_data(source, state.pack.logo_url, &data) else {
             return;
         };
         self.install.set(None);
