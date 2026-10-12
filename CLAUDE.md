@@ -101,7 +101,8 @@ src-ui/src/
 │   │   │   ├── step_method.rs  # Step 1 — pick creation method
 │   │   │   ├── step_basics.rs  # Step 2 — name + MC version + category
 │   │   │   └── step_loader.rs  # Step 3 — mod loader + loader version
-│   │   ├── install_modpack_modal.rs  # CurseForge modpack install flow
+│   │   ├── install_modpack_modal.rs  # CurseForge modpack install flow; any page
+│   │   │                             # opens it via `ModpackInstaller`
 │   │   ├── login_modal.rs   # Microsoft device-code login dialog
 │   │   └── upgrade_modal.rs # CurseForge modpack upgrade flow
 │   ├── log_viewer.rs        # Dark sticky-tail log box used by `play.rs`. Tail mode
