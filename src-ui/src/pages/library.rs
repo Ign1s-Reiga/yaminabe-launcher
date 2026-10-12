@@ -7,7 +7,9 @@ use crate::components::ui::*;
 use bamboo_css_macro::css;
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
-use phosphor_leptos::{Icon, IconData, IconWeight, BOOKMARK_SIMPLE, BOOKS, ROWS, SQUARES_FOUR};
+use phosphor_leptos::{
+    Icon, IconData, IconWeight, BOOKMARK_SIMPLE, BOOKS, DOWNLOAD_SIMPLE, ROWS, SQUARES_FOUR,
+};
 use yaminabe_launcher_shared::datamodels::{InstanceMeta, ModProjectInfo};
 use crate::components::card::instance_card::InstanceCard;
 
@@ -382,7 +384,15 @@ fn BookmarkList(bookmarks: Bookmarks, layout: RwSignal<BookmarkLayout>) -> impl 
         n => format!("{n} bookmarks"),
     };
     let row = move |pack: ModProjectInfo| {
-        view! { <ResultCard pack=pack bookmarks=Some(bookmarks) show_platform=true on_select=install /> }
+        view! {
+            <ResultCard
+                pack=pack
+                action_icon=Some(DOWNLOAD_SIMPLE)
+                bookmarks=Some(bookmarks)
+                show_platform=true
+                on_select=install
+            />
+        }
     };
     let tile = move |pack: ModProjectInfo| {
         view! { <PackTile pack=pack bookmarks=Some(bookmarks) show_platform=true on_select=install /> }

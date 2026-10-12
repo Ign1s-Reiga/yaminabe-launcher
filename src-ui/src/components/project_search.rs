@@ -7,6 +7,7 @@ use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{IntoView, component, view, web_sys};
+use phosphor_leptos::{IconData, MAGNIFYING_GLASS};
 use yaminabe_launcher_shared::datamodels::{
     ModLoader, ModProjectInfo, Platform, ProjectFileTarget, ProjectSortField, SearchOptions,
 };
@@ -43,6 +44,8 @@ pub fn ProjectSearch(
     #[prop(optional)] mod_loader: Option<ModLoader>,
     #[prop(into)] placeholder: String,
     #[prop(into, default = "Install".to_string())] action_label: String,
+    /// Given, each result's action is this icon, with `action_label` as its name.
+    #[prop(optional)] action_icon: Option<IconData>,
     #[prop(into)] empty_message: String,
     /// Run a search (with whatever query is present, including empty → browse)
     /// as soon as the component mounts, instead of showing the idle prompt.
@@ -260,9 +263,12 @@ pub fn ProjectSearch(
                     }
                 }).collect_view()}
             </Dropdown>
-            <Button variant=ButtonVariant::Primary on_click=Callback::new(move |_| do_search())>
-                "Search"
-            </Button>
+            <IconButton
+                variant=ButtonVariant::Primary
+                icon=MAGNIFYING_GLASS
+                label="Search"
+                on_click=Callback::new(move |_| do_search())
+            />
         </div>
 
         {move || {
@@ -294,6 +300,7 @@ pub fn ProjectSearch(
                             <ResultCard
                                 pack=pack
                                 action_label=action_label.get_value()
+                                action_icon=action_icon
                                 bookmarks=bookmarks
                                 on_select=on_select
                             />

@@ -1,6 +1,7 @@
 use bamboo_css_macro::{css, cx};
 use leptos::prelude::*;
 use leptos::{component, view, web_sys, IntoView};
+use phosphor_leptos::{Icon, IconData, IconWeight};
 
 #[derive(Clone)]
 pub enum ButtonVariant {
@@ -117,6 +118,50 @@ pub fn Button(
             on:click=move |ev| { if let Some(cb) = on_click { cb.run(ev); } }
         >
             {children()}
+        </button>
+    }
+}
+
+/// A square button that shows only `icon`, in the same variants as `Button`.
+/// `label` names it, as the tooltip and for screen readers, since there is no
+/// text to read.
+///
+/// ```rust
+/// <IconButton
+///     variant=ButtonVariant::Primary
+///     icon=MAGNIFYING_GLASS
+///     label="Search"
+///     on_click=Callback::new(move |_| search())
+/// />
+/// ```
+#[component]
+pub fn IconButton(
+    variant: ButtonVariant,
+    icon: IconData,
+    #[prop(into)] label: String,
+    #[prop(optional)] on_click: Option<Callback<web_sys::MouseEvent>>,
+) -> impl IntoView {
+    // The height of a text input beside it, so a row of the two lines up.
+    let square = css! {
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        padding: 0;
+    };
+    let title = label.clone();
+
+    view! {
+        <button
+            type="button"
+            class=cx!(variant.class(), square)
+            title=title
+            aria-label=label
+            on:click=move |ev| { if let Some(cb) = on_click { cb.run(ev); } }
+        >
+            <Icon icon=icon size="20px" weight=IconWeight::Bold />
         </button>
     }
 }

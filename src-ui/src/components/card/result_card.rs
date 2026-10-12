@@ -1,17 +1,20 @@
 use crate::bookmarks::Bookmarks;
 use crate::components::bookmark_toggle::BookmarkToggle;
-use crate::components::ui::{Button, ButtonVariant};
+use crate::components::ui::{Button, ButtonVariant, IconButton};
 use crate::curseforge::fmt_downloads;
 use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
+use phosphor_leptos::IconData;
 use yaminabe_launcher_shared::datamodels::ModProjectInfo;
 
 #[component]
 pub fn ResultCard(
     pack: ModProjectInfo,
     #[prop(into, default = "Install".to_string())] action_label: String,
+    /// Given, the action is this icon, with `action_label` as its name.
+    #[prop(optional_no_strip)] action_icon: Option<IconData>,
     /// Given, the card carries a toggle that bookmarks the pack.
     #[prop(optional_no_strip)] bookmarks: Option<Bookmarks>,
     /// Names the platform among the details, for a list that mixes them.
@@ -86,6 +89,17 @@ pub fn ResultCard(
     };
 
     let pack_for_click = pack.clone();
+    let select = Callback::new(move |_: leptos::ev::MouseEvent| on_select.run(pack_for_click.clone()));
+    let action = match action_icon {
+        Some(icon) => view! {
+            <IconButton variant=ButtonVariant::Primary icon=icon label=action_label on_click=select />
+        }
+        .into_any(),
+        None => view! {
+            <Button variant=ButtonVariant::Primary on_click=select>{action_label}</Button>
+        }
+        .into_any(),
+    };
     let platform = if show_platform { format!(" · {}", pack.id.platform()) } else { String::new() };
     let bookmark = bookmarks.map(|bookmarks| view! { <BookmarkToggle pack=pack.clone() bookmarks=bookmarks /> });
 
@@ -121,12 +135,7 @@ pub fn ResultCard(
                 </div>
             </div>
             {bookmark}
-            <Button
-                variant=ButtonVariant::Primary
-                on_click=Callback::new(move |_| on_select.run(pack_for_click.clone()))
-            >
-                {action_label}
-            </Button>
+            {action}
         </div>
     }
 }
