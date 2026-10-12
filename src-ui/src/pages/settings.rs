@@ -302,8 +302,10 @@ fn AccountsSection() -> impl IntoView {
                                     }.into_any()
                                 } else {
                                     view! {
+                                        // Big, to stand as tall as the remove button.
                                         <Button
                                             variant=ButtonVariant::Secondary
+                                            size=ButtonSize::Big
                                             on_click=Callback::new(move |_| {
                                                 let uuid = acc_uuid_for_use.clone();
                                                 leptos::task::spawn_local(async move {
@@ -319,8 +321,10 @@ fn AccountsSection() -> impl IntoView {
                                         </Button>
                                     }.into_any()
                                 }}
-                                <Button
+                                <IconButton
                                     variant=ButtonVariant::Danger
+                                    icon=TRASH
+                                    label="Remove account"
                                     on_click=Callback::new(move |_| {
                                         let uuid = acc_uuid_for_remove.clone();
                                         leptos::task::spawn_local(async move {
@@ -331,9 +335,7 @@ fn AccountsSection() -> impl IntoView {
                                             }
                                         });
                                     })
-                                >
-                                    <Icon icon=TRASH size="14px" weight=IconWeight::Regular />
-                                </Button>
+                                />
                             </div>
                         </div>
                     }
