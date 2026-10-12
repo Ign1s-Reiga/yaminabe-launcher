@@ -1,10 +1,18 @@
 use crate::components::ui::*;
+use crate::curseforge::{
+    InstallModpackArgs, call_install_modpack, call_list_project_files, usable_instance_name,
+};
+use crate::ipc;
 use bamboo_css_macro::css;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::{IntoView, component, view, web_sys};
 use wasm_bindgen::JsCast;
-use yaminabe_launcher_shared::datamodels::{ModProjectInfo, ProjectFileInfo};
+use yaminabe_launcher_shared::datamodels::{
+    AppSettings, ModProjectInfo, ProjectFileInfo, ProjectFileTarget,
+};
+
+const PAGE_SIZE: usize = 50;
 
 #[derive(Clone)]
 pub struct InstallState {
@@ -16,8 +24,185 @@ pub struct InstallState {
     pub versions_done: bool,
 }
 
+/// The modpack install dialog for a page: the page keeps one, opens it on a
+/// pack, and renders it with `ModpackInstallDialog`.
+#[derive(Clone, Copy)]
+pub struct ModpackInstaller {
+    install: RwSignal<Option<InstallState>>,
+    install_name: RwSignal<String>,
+    default_location: RwSignal<String>,
+}
+
+impl ModpackInstaller {
+    /// Start closed, with the install location read from the settings.
+    pub fn new() -> Self {
+        let installer = ModpackInstaller {
+            install: RwSignal::new(None),
+            install_name: RwSignal::new(String::new()),
+            default_location: RwSignal::new(String::new()),
+        };
+        leptos::task::spawn_local(async move {
+            if let Ok(s) = ipc::call_noargs::<AppSettings>("get_settings").await {
+                installer.default_location.set(s.instance_install_dir);
+            }
+        });
+        installer
+    }
+
+    /// Open the dialog on `pack` and fetch its first page of versions.
+    pub fn open(self, pack: ModProjectInfo) {
+        let install = self.install;
+        self.install_name.set(usable_instance_name(&pack.name));
+        let project_id = pack.id.clone();
+        install.set(Some(InstallState {
+            pack,
+            version: String::new(),
+            versions: vec![],
+            versions_loading: true,
+            versions_error: None,
+            versions_done: false,
+        }));
+        leptos::task::spawn_local(async move {
+            match call_list_project_files(project_id, ProjectFileTarget::Modpack, None, None, 0).await
+            {
+                Ok(files) => {
+                    let first_version = files
+                        .first()
+                        .and_then(|f| f.source.version_key())
+                        .unwrap_or_default();
+                    install.update(|opt| {
+                        if let Some(s) = opt {
+                            s.version = first_version;
+                            s.versions_done = files.len() < PAGE_SIZE;
+                            s.versions = files;
+                            s.versions_loading = false;
+                        }
+                    });
+                }
+                Err(e) => {
+                    install.update(|opt| {
+                        if let Some(s) = opt {
+                            s.versions_loading = false;
+                            s.versions_error = Some(e);
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    fn close(self) {
+        self.install.set(None);
+    }
+
+    fn load_more_versions(self) {
+        let install = self.install;
+        let Some(state) = install.get_untracked() else {
+            return;
+        };
+        if state.versions_loading || state.versions_done {
+            return;
+        }
+        let project_id = state.pack.id.clone();
+        let index = state.versions.len() as u32;
+        install.update(|opt| {
+            if let Some(s) = opt {
+                s.versions_loading = true;
+                s.versions_error = None;
+            }
+        });
+        leptos::task::spawn_local(async move {
+            match call_list_project_files(project_id, ProjectFileTarget::Modpack, None, None, index)
+                .await
+            {
+                Ok(mut files) => {
+                    install.update(|opt| {
+                        if let Some(s) = opt {
+                            s.versions_done = files.len() < PAGE_SIZE;
+                            s.versions.append(&mut files);
+                            s.versions_loading = false;
+                        }
+                    });
+                }
+                Err(e) => {
+                    install.update(|opt| {
+                        if let Some(s) = opt {
+                            s.versions_error = Some(e);
+                            s.versions_loading = false;
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    fn submit(self, ev: SubmitEvent) {
+        ev.prevent_default();
+        let Some(state) = self.install.get_untracked() else {
+            return;
+        };
+        if state.versions_loading {
+            return;
+        }
+        let Some(form) = ev
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::HtmlFormElement>().ok())
+        else {
+            return;
+        };
+        let Ok(data) = web_sys::FormData::new_with_form(&form) else {
+            return;
+        };
+
+        // The backend reads the install dir from settings now; still gate on a
+        // configured location so we don't kick off an install with none set.
+        if self.default_location.get_untracked().trim().is_empty() {
+            return;
+        }
+
+        let version_key = data.get("version").as_string().unwrap_or_default();
+        let Some(ver) = state
+            .versions
+            .into_iter()
+            .find(|v| v.source.version_key().as_deref() == Some(version_key.as_str()))
+        else {
+            return;
+        };
+        let source = ver.source;
+
+        let Some(args) = InstallModpackArgs::from_form_data(source, &data) else {
+            return;
+        };
+        self.install.set(None);
+
+        leptos::task::spawn_local(async move {
+            // Install progress flows through the install sidebar's event
+            // stream; synchronous IPC failures don't, so log them here.
+            if let Err(e) = call_install_modpack(args).await {
+                log::error!("install_modpack failed: {e}");
+            }
+        });
+    }
+}
+
+/// The install dialog, shown while `installer` has a pack open.
 #[component]
-pub fn InstallModpackModal(
+pub fn ModpackInstallDialog(installer: ModpackInstaller) -> impl IntoView {
+    view! {
+        <Show when=move || installer.install.with(Option::is_some)>
+            <InstallModpackModal
+                install=installer.install
+                install_name=installer.install_name
+                on_submit=Callback::new(move |ev: SubmitEvent| installer.submit(ev))
+                on_load_more=Callback::new(move |_: ()| installer.load_more_versions())
+                on_close=Callback::new(move |_: ()| installer.close())
+            />
+        </Show>
+    }
+}
+
+#[component]
+fn InstallModpackModal(
     install: RwSignal<Option<InstallState>>,
     install_name: RwSignal<String>,
     on_submit: Callback<SubmitEvent>,

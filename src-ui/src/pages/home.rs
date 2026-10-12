@@ -10,7 +10,8 @@ use yaminabe_launcher_shared::datamodels::{InstanceMeta, LaunchMode, ModProjectI
 use crate::changelog;
 use crate::trivia;
 use crate::components::activity_dock::{ActivityDockOpen, RunningRegistry, note_played, start_launch};
-use crate::curseforge::{call_get_popular_modpacks, fmt_downloads};
+use crate::components::card::pack_tile::PackTile;
+use crate::curseforge::call_get_popular_modpacks;
 use crate::pages::search::PendingInstall;
 
 /// How many instances the recently-played strip shows before deferring to the
@@ -43,6 +44,13 @@ pub fn HomePage() -> impl IntoView {
     // Drawn once per visit: a StoredValue so a reactive update elsewhere on the
     // page cannot reshuffle the facts under the reader.
     let facts = StoredValue::new(trivia::pick(TRIVIA_COUNT));
+    // A popular pack opens its install dialog on the Search page.
+    let pending = use_context::<PendingInstall>().expect("pending install context");
+    let navigate = StoredValue::new(use_navigate());
+    let install = Callback::new(move |pack: ModProjectInfo| {
+        pending.0.set(Some(pack));
+        navigate.with_value(|nav| nav("/search", Default::default()));
+    });
 
     // The backend serves these from a disk cache, so revisiting Home costs no
     // request and the strip still fills in offline.
@@ -173,7 +181,7 @@ pub fn HomePage() -> impl IntoView {
         }
         Some(Ok(packs)) => view! {
             <div class=popular_list>
-                {packs.into_iter().map(|pack| view! { <PopularCard pack=pack /> }).collect_view()}
+                {packs.into_iter().map(|pack| view! { <PackTile pack=pack on_select=install /> }).collect_view()}
             </div>
         }
         .into_any(),
@@ -263,94 +271,6 @@ pub fn HomePage() -> impl IntoView {
                             .collect_view()}
                     </aside>
                 </div>
-            </div>
-        </div>
-    }
-}
-
-/// One popular modpack. Picking it hands the pack to the search page rather
-/// than duplicating the install dialog and its version fetching here.
-#[component]
-fn PopularCard(pack: ModProjectInfo) -> impl IntoView {
-    let pending = use_context::<PendingInstall>().expect("pending install context");
-    let navigate = StoredValue::new(use_navigate());
-
-    let card = css! {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        padding: 12px;
-        border: 1.5px solid var(--secondary-color);
-        border-radius: 10px;
-        cursor: pointer;
-        user-select: none;
-        transition: border-color 0.12s ease, background-color 0.12s ease;
-        &:hover {
-            border-color: rgba(58, 158, 95, 0.45);
-            background-color: rgba(58, 158, 95, 0.04);
-        }
-    };
-    let logo = css! {
-        width: 100%;
-        aspect-ratio: 1 / 1;
-        border-radius: 8px;
-        object-fit: cover;
-        background-color: var(--secondary-color);
-    };
-    let logo_placeholder = css! {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 100%;
-        aspect-ratio: 1 / 1;
-        border-radius: 8px;
-        background-color: var(--secondary-color);
-        font-size: 1.6rem;
-    };
-    let name = css! {
-        font-weight: 600;
-        font-size: 0.85rem;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    };
-    let downloads = css! {
-        font-size: 0.72rem;
-        opacity: 0.5;
-    };
-
-    let logo_view = match pack.logo_url.clone() {
-        Some(url) => view! { <img class=logo src=url alt="" /> }.into_any(),
-        None => view! { <div class=logo_placeholder>"📦"</div> }.into_any(),
-    };
-    let count = format!("{} downloads", fmt_downloads(pack.download_count));
-    let title = pack.name.clone();
-    let hover = title.clone();
-    let chosen = StoredValue::new(pack);
-    let pick = move || {
-        pending.0.set(Some(chosen.get_value()));
-        navigate.with_value(|nav| nav("/search", Default::default()));
-    };
-
-    view! {
-        <div
-            class=card
-            role="button"
-            tabindex="0"
-            title=hover
-            on:click=move |_| pick()
-            // A div has no activation behaviour of its own.
-            on:keydown=move |ev: leptos::ev::KeyboardEvent| {
-                if ev.key() == "Enter" || ev.key() == " " {
-                    ev.prevent_default();
-                    pick();
-                }
-            }
-        >
-            {logo_view}
-            <div>
-                <div class=name>{title}</div>
-                <div class=downloads>{count}</div>
             </div>
         </div>
     }

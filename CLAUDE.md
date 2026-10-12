@@ -43,6 +43,7 @@ src-tauri/src/
 │                            # fetch_and_verify, verify_sha1, download_from_maven
 ├── commands/                # `#[tauri::command]` handlers
 │   ├── mod.rs
+│   ├── bookmark.rs          # Bookmarked modpacks (bookmarks.json): get / add / remove
 │   ├── instance.rs          # create_instance, get_instances, save_instance_settings
 │   ├── java.rs              # Local Java detection + Mojang JRE download
 │   ├── minecraft.rs         # Mojang version-manifest-v2 fetch + cache
@@ -73,9 +74,11 @@ src-ui/src/
 ├── app.rs                   # Router, install-sidebar wiring, navbar
 ├── ipc.rs                   # `call` / `call_noargs` / `on_event` wrappers around Tauri
 ├── curseforge.rs            # Frontend wrappers around CurseForge backend commands
+├── bookmarks.rs             # `Bookmarks`: the bookmarked modpacks + their IPC calls
 ├── pages.rs / pages/
 │   ├── home.rs              # `/`
-│   ├── library.rs           # `/library` — instance grid + category tabs
+│   ├── library.rs           # `/library` — instance grid + category tabs; side switch to
+│   │                        # Bookmarks (List / Cards layouts)
 │   ├── instance_detail.rs   # `/library/:id` — Description / Mods / Settings tabs
 │   ├── play.rs              # `/library/:id/play` — runs the launcher, shows logs
 │   ├── search.rs            # `/search` — CurseForge modpack search
@@ -87,10 +90,13 @@ src-ui/src/
 │   │                        # install jobs + running instances; also owns the
 │   │                        # running-instance data model (RunStatus, registry,
 │   │                        # start_launch / stop_instance) and InstallJob alias
+│   ├── bookmark_toggle.rs   # Bookmark button shared by modpack cards and tiles
 │   ├── card/                # Card components, grouped under one module
 │   │   ├── instance_card.rs        # Library grid card for one instance
 │   │   ├── managed_notice_card.rs  # Read-only "managed by a modpack" notice
 │   │   │                           # for the Mods tab (with upgrade action)
+│   │   ├── pack_tile.rs            # Square-logo modpack tile (Home popular,
+│   │   │                           # bookmark cards)
 │   │   └── result_card.rs          # CurseForge modpack search-result card
 │   ├── modal/               # Modal dialogs, grouped under one module
 │   │   ├── create_modal/    # 3-step "create instance" wizard
@@ -99,7 +105,8 @@ src-ui/src/
 │   │   │   ├── step_method.rs  # Step 1 — pick creation method
 │   │   │   ├── step_basics.rs  # Step 2 — name + MC version + category
 │   │   │   └── step_loader.rs  # Step 3 — mod loader + loader version
-│   │   ├── install_modpack_modal.rs  # CurseForge modpack install flow
+│   │   ├── install_modpack_modal.rs  # CurseForge modpack install flow; any page
+│   │   │                             # opens it via `ModpackInstaller`
 │   │   ├── login_modal.rs   # Microsoft device-code login dialog
 │   │   └── upgrade_modal.rs # CurseForge modpack upgrade flow
 │   ├── log_viewer.rs        # Dark sticky-tail log box used by `play.rs`. Tail mode

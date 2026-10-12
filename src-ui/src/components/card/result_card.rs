@@ -1,3 +1,5 @@
+use crate::bookmarks::Bookmarks;
+use crate::components::bookmark_toggle::BookmarkToggle;
 use crate::components::ui::{Button, ButtonVariant};
 use crate::curseforge::fmt_downloads;
 use bamboo_css_macro::css;
@@ -10,6 +12,10 @@ use yaminabe_launcher_shared::datamodels::ModProjectInfo;
 pub fn ResultCard(
     pack: ModProjectInfo,
     #[prop(into, default = "Install".to_string())] action_label: String,
+    /// Given, the card carries a toggle that bookmarks the pack.
+    #[prop(optional_no_strip)] bookmarks: Option<Bookmarks>,
+    /// Names the platform among the details, for a list that mixes them.
+    #[prop(optional)] show_platform: bool,
     on_select: Callback<ModProjectInfo>,
 ) -> impl IntoView {
     let card = css! {
@@ -80,6 +86,8 @@ pub fn ResultCard(
     };
 
     let pack_for_click = pack.clone();
+    let platform = if show_platform { format!(" · {}", pack.id.platform()) } else { String::new() };
+    let bookmark = bookmarks.map(|bookmarks| view! { <BookmarkToggle pack=pack.clone() bookmarks=bookmarks /> });
 
     view! {
         <div class=card>
@@ -104,7 +112,7 @@ pub fn ResultCard(
                 </Show>
                 <div class=card_meta>
                     {format!(
-                        "{} downloads{}",
+                        "{} downloads{}{platform}",
                         fmt_downloads(pack.download_count),
                         pack.game_versions.last()
                             .map(|v| format!(" · {v}"))
@@ -112,6 +120,7 @@ pub fn ResultCard(
                     )}
                 </div>
             </div>
+            {bookmark}
             <Button
                 variant=ButtonVariant::Primary
                 on_click=Callback::new(move |_| on_select.run(pack_for_click.clone()))

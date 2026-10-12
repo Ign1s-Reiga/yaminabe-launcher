@@ -1,3 +1,4 @@
+use crate::bookmarks::Bookmarks;
 use crate::components::card::result_card::ResultCard;
 use crate::components::pagination::Pagination;
 use crate::components::ui::*;
@@ -46,6 +47,8 @@ pub fn ProjectSearch(
     /// Run a search (with whatever query is present, including empty → browse)
     /// as soon as the component mounts, instead of showing the idle prompt.
     #[prop(optional)] search_on_open: bool,
+    /// Given, every result carries a toggle that bookmarks it.
+    #[prop(optional)] bookmarks: Option<Bookmarks>,
     on_select: Callback<ModProjectInfo>,
 ) -> impl IntoView {
     let game_version = StoredValue::new(game_version);
@@ -291,6 +294,7 @@ pub fn ProjectSearch(
                             <ResultCard
                                 pack=pack
                                 action_label=action_label.get_value()
+                                bookmarks=bookmarks
                                 on_select=on_select
                             />
                         }
