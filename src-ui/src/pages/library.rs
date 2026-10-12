@@ -8,7 +8,7 @@ use bamboo_css_macro::css;
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
 use phosphor_leptos::{
-    Icon, IconData, IconWeight, BOOKMARK_SIMPLE, BOOKS, DOWNLOAD_SIMPLE, ROWS, SQUARES_FOUR,
+    Icon, IconData, IconWeight, BOOKMARK_SIMPLE, BOOKS, DOWNLOAD_SIMPLE, PLUS, ROWS, SQUARES_FOUR,
 };
 use yaminabe_launcher_shared::datamodels::{InstanceMeta, ModProjectInfo};
 use crate::components::card::instance_card::InstanceCard;
@@ -152,14 +152,11 @@ pub fn LibraryPage() -> impl IntoView {
                     when=move || view_mode.get() == LibraryView::Instances
                     fallback=move || view! { <BookmarkList bookmarks=bookmarks layout=bookmark_layout /> }
                 >
-                    <Button
-                        variant=ButtonVariant::Primary
-                        size=ButtonSize::Big
-                        style="margin-bottom: 24px;"
+                    <BadgeIconButton
+                        icon=PLUS
+                        label="Create New Instance"
                         on_click=Callback::new(move |_| show_create_modal.set(true))
-                    >
-                        "+ Create New Instance"
-                    </Button>
+                    />
 
                     // Category tab bar
                     <TabBar

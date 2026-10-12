@@ -200,11 +200,14 @@ pub fn ActivityDock(
             || registry.with(|l| l.iter().any(|r| !r.status.is_active()))
     });
 
+    // A `BadgeIconButton` on the page holds this corner, so the dock moves up
+    // by its 56px plus a 16px gap.
     let dock_root = css! {
         position: fixed;
         right: 24px;
         bottom: 116px;
         z-index: 100;
+        body:has([data-floating-action]) & { bottom: 188px; }
     };
     let pill = css! {
         display: flex;
