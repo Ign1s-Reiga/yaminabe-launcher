@@ -1,4 +1,5 @@
 pub mod activity_dock;
+pub mod bookmark_toggle;
 pub mod log_viewer;
 pub mod mod_manager;
 pub mod modal;

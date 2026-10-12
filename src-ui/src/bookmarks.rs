@@ -40,6 +40,10 @@ impl Bookmarks {
         self.list.get()
     }
 
+    pub fn len(self) -> usize {
+        self.list.with(Vec::len)
+    }
+
     pub fn is_empty(self) -> bool {
         self.list.with(Vec::is_empty)
     }

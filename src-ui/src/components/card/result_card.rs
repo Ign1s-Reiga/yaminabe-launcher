@@ -1,11 +1,11 @@
 use crate::bookmarks::Bookmarks;
+use crate::components::bookmark_toggle::BookmarkToggle;
 use crate::components::ui::{Button, ButtonVariant};
 use crate::curseforge::fmt_downloads;
 use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
-use phosphor_leptos::{Icon, IconWeight, BOOKMARK_SIMPLE};
 use yaminabe_launcher_shared::datamodels::ModProjectInfo;
 
 #[component]
@@ -84,47 +84,10 @@ pub fn ResultCard(
         font-size: 0.76rem;
         opacity: 0.45;
     };
-    let bookmark_toggle = css! {
-        flex-shrink: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 36px;
-        height: 36px;
-        padding: 0;
-        border: none;
-        border-radius: 8px;
-        background: none;
-        color: inherit;
-        cursor: pointer;
-        opacity: 0.5;
-        transition: background-color 0.15s ease, opacity 0.15s ease;
-        &:hover { background-color: var(--secondary-color); opacity: 1; }
-        // The activity dock's blue, kept apart from the green of the Install action.
-        &[aria-pressed="true"] { color: #3b82f6; opacity: 1; }
-    };
 
     let pack_for_click = pack.clone();
     let platform = if show_platform { format!(" · {}", pack.id.platform()) } else { String::new() };
-    let bookmark = bookmarks.map(|bookmarks| {
-        let id = pack.id.clone();
-        let marked = Memo::new(move |_| bookmarks.contains(&id));
-        let pack_for_bookmark = StoredValue::new(pack.clone());
-        let label = move || if marked.get() { "Remove bookmark" } else { "Bookmark" };
-        let weight = Signal::derive(move || if marked.get() { IconWeight::Fill } else { IconWeight::Regular });
-        view! {
-            <button
-                type="button"
-                class=bookmark_toggle
-                title=label
-                aria-label=label
-                aria-pressed=move || marked.get().to_string()
-                on:click=move |_| bookmarks.toggle(pack_for_bookmark.get_value())
-            >
-                <Icon icon=BOOKMARK_SIMPLE size="20px" weight=weight />
-            </button>
-        }
-    });
+    let bookmark = bookmarks.map(|bookmarks| view! { <BookmarkToggle pack=pack.clone() bookmarks=bookmarks /> });
 
     view! {
         <div class=card>
