@@ -1,10 +1,10 @@
-use bamboo_css_macro::{css, styled};
+use bamboo_css_macro::css;
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, view, web_sys, IntoView};
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
-use phosphor_leptos::{Icon, IconWeight, FOLDER_OPEN, GEAR_SIX, PLAY, TRASH};
+use phosphor_leptos::{Icon, IconWeight, CLOCK, FOLDER_OPEN, GEAR_SIX, PLAY, TRASH};
 use serde::Serialize;
 use yaminabe_launcher_shared::datamodels::InstanceMeta;
 use crate::components::open_in_file_manager::folder_label;
@@ -57,39 +57,108 @@ pub fn InstanceCard(
     // instance root is always offered in addition to these).
     let subfolders: RwSignal<Vec<String>> = RwSignal::new(vec![]);
 
+    // The art fills the card, square as the modpack icons are, with the name
+    // on a dark fade over its bottom edge. Hovering, or tabbing to the play
+    // button, brings up the play overlay.
     let card_wrapper = css! {
+        position: relative;
         display: block;
-        text-decoration: none;
-        color: inherit;
-        background-color: var(--secondary-color);
+        aspect-ratio: 1;
         border-radius: 12px;
         overflow: hidden;
+        color: white;
+        text-decoration: none;
         cursor: pointer;
         transition: transform 0.15s ease, box-shadow 0.15s ease;
         &:hover {
             transform: translateY(-3px);
-            box-shadow: 0 8px 24px rgb(0 0 0 / 0.2);
+            box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
         }
+        &:hover [data-play-overlay], &:focus-within [data-play-overlay] { opacity: 1; }
     };
     let card_wrapper_pending = css! {
+        position: relative;
         display: block;
-        text-decoration: none;
-        color: inherit;
-        background-color: var(--secondary-color);
+        aspect-ratio: 1;
         border-radius: 12px;
         overflow: hidden;
+        color: white;
+        text-decoration: none;
         opacity: 0.6;
     };
+    // The caption and the chip lie over the play overlay, so they let clicks
+    // through to it rather than to the card's link.
+    let caption = css! {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 48px 14px 12px;
+        background: linear-gradient(transparent, rgb(0 0 0 / 0.8));
+        pointer-events: none;
+    };
     let name_style = css! {
-        font-weight: 600;
-        font-size: 0.95rem;
+        font-weight: 700;
+        font-size: 1rem;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
     };
     let meta_style = css! {
         font-size: 0.8rem;
-        opacity: 0.6;
+        opacity: 0.8;
+    };
+    let activity_chip = css! {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 0.72rem;
+        font-weight: 600;
+        background-color: rgb(0 0 0 / 0.55);
+        backdrop-filter: blur(6px);
+        pointer-events: none;
+    };
+    let running_dot = css! {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background-color: #3a9e5f;
+        animation: pulse 1.2s ease-in-out infinite;
+    };
+    let play_overlay = css! {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background-color: rgb(0 0 0 / 0.35);
+        opacity: 0;
+        transition: opacity 0.15s ease;
+    };
+    // Nudged right, as a play triangle's visual middle sits left of its box's.
+    let play_button = css! {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 60px;
+        height: 60px;
+        padding: 0 0 0 4px;
+        border: none;
+        border-radius: 50%;
+        background-color: #3a9e5f;
+        color: white;
+        cursor: pointer;
+        box-shadow: 0 6px 20px rgb(0 0 0 / 0.35);
+        transition: background-color 0.15s ease;
+        &:hover { background-color: #2e7d4f; }
     };
 
     let backdrop = css! {
@@ -171,10 +240,48 @@ pub fn InstanceCard(
         line-height: 1.5;
     };
 
-    let bg = format!("background-color: {}", &instance.mod_loader.mod_loader_color());
     let name = instance.name.clone();
-    let mc_version = format!("MC {}", instance.game_version);
-    let mod_loader = instance.mod_loader.clone();
+    let details = format!("MC {} · {}", instance.game_version, instance.mod_loader);
+    // A pending instance has no folder yet to keep an icon in.
+    let icon = LocalResource::new(move || {
+        let id = instance_id.get_value();
+        async move {
+            if pending {
+                return None;
+            }
+            ipc::call::<_, Option<String>>("get_instance_icon", IdArg { id })
+                .await
+                .ok()
+                .flatten()
+        }
+    });
+    let icon = Signal::derive(move || icon.get().flatten());
+
+    let last_played = instance.last_played;
+    let activity = Memo::new(move |_| {
+        if pending {
+            Activity::Installing
+        } else if is_running.get() {
+            Activity::Running
+        } else {
+            Activity::Idle { last_played }
+        }
+    });
+    let activity_label = move || match activity.get() {
+        Activity::Installing => view! { "Installing…" }.into_any(),
+        Activity::Running => view! { <span class=running_dot></span>"Running" }.into_any(),
+        Activity::Idle { last_played } => view! {
+            <Icon icon=CLOCK size="12px" weight=IconWeight::Bold />
+            {last_played_text(last_played)}
+        }
+        .into_any(),
+    };
+    let play = move || {
+        navigate.with_value(|nav| nav(
+            &format!("/library/{}/play?mode=online", instance_id.get_value()),
+            Default::default(),
+        ));
+    };
 
     let on_confirm_delete = Callback::new(move |_: web_sys::MouseEvent| {
         let id = instance_id.get_value();
@@ -210,12 +317,32 @@ pub fn InstanceCard(
                 });
             }
         >
-            <div class=css! { width: 100%; aspect-ratio: 16 / 9; } style=bg />
-            <CardBody>
+            <Art instance=instance icon=icon />
+            // Only an idle instance offers to launch: a pending one is not on
+            // disk yet, and a running one must not start a second copy.
+            <Show when=move || matches!(activity.get(), Activity::Idle { .. })>
+                <div class=play_overlay data-play-overlay="">
+                    <button
+                        type="button"
+                        class=play_button
+                        aria-label="Play"
+                        on:click=move |ev: web_sys::MouseEvent| {
+                            // It sits inside the card's link: launch rather than
+                            // open the instance.
+                            ev.prevent_default();
+                            ev.stop_propagation();
+                            play();
+                        }
+                    >
+                        <Icon icon=PLAY size="28px" weight=IconWeight::Fill />
+                    </button>
+                </div>
+            </Show>
+            <div class=caption>
                 <span class=name_style>{name}</span>
-                <span class=meta_style>{mc_version}</span>
-                <span class=meta_style>{mod_loader.to_string()}</span>
-            </CardBody>
+                <span class=meta_style>{details}</span>
+            </div>
+            <span class=activity_chip>{activity_label}</span>
         </A>
 
         <Show when=move || menu.get().is_some()>
@@ -236,10 +363,7 @@ pub fn InstanceCard(
                     prop:disabled=move || is_running.get()
                     on:click=move |_| {
                         menu.set(None);
-                        navigate.with_value(|nav| nav(
-                            &format!("/library/{}/play?mode=online", instance_id.get_value()),
-                            Default::default(),
-                        ));
+                        play();
                     }
                 >
                     <Icon icon=PLAY size="16px" weight=IconWeight::Fill />
@@ -347,9 +471,75 @@ pub fn InstanceCard(
     }
 }
 
-styled!(CardBody, div, {
-    padding: 12px 14px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-});
+/// What the card's chip says the instance is doing.
+#[derive(Clone, PartialEq)]
+enum Activity {
+    /// Still being created, so not yet on disk.
+    Installing,
+    Running,
+    Idle { last_played: Option<i64> },
+}
+
+/// How long ago the instance was last played, for its activity chip.
+fn last_played_text(last_played: Option<i64>) -> String {
+    let Some(at) = last_played else {
+        return "Never played".to_string();
+    };
+    let minutes = ((js_sys::Date::now() as i64 - at) / 60_000).max(0);
+    match minutes {
+        0 => "Just now".to_string(),
+        1..=59 => format!("{minutes} min ago"),
+        60..=1439 => format!("{} h ago", minutes / 60),
+        1440..=2879 => "Yesterday".to_string(),
+        _ => format!("{} days ago", minutes / 1440),
+    }
+}
+
+/// Up to two initials from the name, for art without an icon.
+fn initials(name: &str) -> String {
+    name.split_whitespace()
+        .filter_map(|word| word.chars().next())
+        .take(2)
+        .flat_map(char::to_uppercase)
+        .collect()
+}
+
+/// The instance's icon filling the card, or without one, its initials on the
+/// loader's color.
+#[component]
+fn Art(instance: InstanceMeta, icon: Signal<Option<String>>) -> impl IntoView {
+    let art = css! {
+        width: 100%;
+        height: 100%;
+        container-type: size;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    };
+    let image = css! {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    };
+    // Sized to the art, so the letters keep their proportion at any card size.
+    let monogram = css! {
+        font-size: 40cqmin;
+        font-weight: 700;
+        letter-spacing: -1px;
+        color: rgb(255 255 255 / 0.85);
+        user-select: none;
+    };
+    let color = instance.mod_loader.mod_loader_color();
+    let background = format!("linear-gradient(135deg, {color}, color-mix(in srgb, {color} 45%, black))");
+    let letters = initials(&instance.name);
+
+    view! {
+        <div class=art style:background=background>
+            {move || match icon.get() {
+                Some(src) => view! { <img class=image src=src alt="" /> }.into_any(),
+                None => view! { <span class=monogram>{letters.clone()}</span> }.into_any(),
+            }}
+        </div>
+    }
+}

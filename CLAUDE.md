@@ -93,7 +93,8 @@ src-ui/src/
 │   │                        # start_launch / stop_instance) and InstallJob alias
 │   ├── bookmark_toggle.rs   # Bookmark button shared by modpack cards and tiles
 │   ├── card/                # Card components, grouped under one module
-│   │   ├── instance_card.rs        # Library grid card for one instance
+│   │   ├── instance_card.rs        # Library card for one instance: square art (icon
+│   │   │                           # or initials), hover play, activity chip
 │   │   ├── managed_notice_card.rs  # Read-only "managed by a modpack" notice
 │   │   │                           # for the Mods tab (with upgrade action)
 │   │   ├── pack_tile.rs            # Square-logo modpack tile (Home popular,
