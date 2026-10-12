@@ -1,10 +1,11 @@
-use crate::components::ui::button::{Button, ButtonVariant};
+use crate::components::ui::button::{ButtonVariant, IconButton};
 use crate::components::ui::{input_class, select_class};
 use crate::ipc;
 use bamboo_css_macro::css;
 use leptos::html::{Input, Select};
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
+use phosphor_leptos::FOLDER_OPEN;
 
 // ── Form input components ──────────────────────────────────────────────────────
 
@@ -32,7 +33,7 @@ pub fn TextInput(
     }
 }
 
-/// File-path text input with a trailing Browse button.
+/// File-path text input with a trailing folder button that browses for one.
 /// `on_change` fires with the new value on user input or folder selection.
 /// Set `name` to include this field in a form submission.
 #[component]
@@ -58,9 +59,10 @@ pub fn PathInput(
                     if let Some(cb) = on_change { cb.run(event_target_value(&ev)); }
                 }
             />
-            <Button
+            <IconButton
                 variant=ButtonVariant::Secondary
-                style="white-space: nowrap; flex-shrink: 0;"
+                icon=FOLDER_OPEN
+                label="Choose a folder"
                 on_click=Callback::new(move |_| {
                     leptos::task::spawn_local(async move {
                         if let Ok(Some(path)) = ipc::call_noargs::<Option<String>>("pick_folder").await {
@@ -71,9 +73,7 @@ pub fn PathInput(
                         }
                     });
                 })
-            >
-                "Browse…"
-            </Button>
+            />
         </div>
     }
 }

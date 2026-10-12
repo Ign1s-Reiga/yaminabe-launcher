@@ -4,6 +4,7 @@ use crate::components::project_search::ProjectSearch;
 use bamboo_css_macro::css;
 use leptos::prelude::*;
 use leptos::{IntoView, component, view};
+use phosphor_leptos::DOWNLOAD_SIMPLE;
 use yaminabe_launcher_shared::datamodels::{ModProjectInfo, ProjectFileTarget};
 
 /// A modpack picked somewhere other than this page — the Home page's popular
@@ -47,6 +48,7 @@ pub fn SearchPage() -> impl IntoView {
             target=ProjectFileTarget::Modpack
             placeholder="Search modpacks…"
             empty_message="No modpacks found."
+            action_icon=DOWNLOAD_SIMPLE
             bookmarks=bookmarks
             on_select=Callback::new(move |p: ModProjectInfo| installer.open(p))
         />
