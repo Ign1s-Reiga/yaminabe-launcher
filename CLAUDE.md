@@ -43,6 +43,7 @@ src-tauri/src/
 │                            # fetch_and_verify, verify_sha1, download_from_maven
 ├── commands/                # `#[tauri::command]` handlers
 │   ├── mod.rs
+│   ├── bookmark.rs          # Bookmarked modpacks (bookmarks.json): get / add / remove
 │   ├── instance.rs          # create_instance, get_instances, save_instance_settings
 │   ├── java.rs              # Local Java detection + Mojang JRE download
 │   ├── minecraft.rs         # Mojang version-manifest-v2 fetch + cache
@@ -73,9 +74,10 @@ src-ui/src/
 ├── app.rs                   # Router, install-sidebar wiring, navbar
 ├── ipc.rs                   # `call` / `call_noargs` / `on_event` wrappers around Tauri
 ├── curseforge.rs            # Frontend wrappers around CurseForge backend commands
+├── bookmarks.rs             # `Bookmarks`: the bookmarked modpacks + their IPC calls
 ├── pages.rs / pages/
 │   ├── home.rs              # `/`
-│   ├── library.rs           # `/library` — instance grid + category tabs
+│   ├── library.rs           # `/library` — instance grid + category tabs; side switch to Bookmarks
 │   ├── instance_detail.rs   # `/library/:id` — Description / Mods / Settings tabs
 │   ├── play.rs              # `/library/:id/play` — runs the launcher, shows logs
 │   ├── search.rs            # `/search` — CurseForge modpack search

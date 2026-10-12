@@ -1,3 +1,4 @@
+use crate::bookmarks::Bookmarks;
 use crate::components::modal::install_modpack_modal::{InstallModpackModal, InstallState};
 use crate::components::project_search::ProjectSearch;
 use crate::curseforge::{
@@ -26,6 +27,7 @@ pub fn SearchPage() -> impl IntoView {
     let install_name: RwSignal<String> = RwSignal::new(String::new());
     let default_location: RwSignal<String> = RwSignal::new(String::new());
     let pending = use_context::<PendingInstall>().expect("pending install context");
+    let bookmarks = Bookmarks::load();
 
     leptos::task::spawn_local(async move {
         if let Ok(s) = ipc::call_noargs::<AppSettings>("get_settings").await {
@@ -192,6 +194,7 @@ pub fn SearchPage() -> impl IntoView {
             target=ProjectFileTarget::Modpack
             placeholder="Search modpacks…"
             empty_message="No modpacks found."
+            bookmarks=bookmarks
             on_select=Callback::new(move |p: ModProjectInfo| open_install(p))
         />
 

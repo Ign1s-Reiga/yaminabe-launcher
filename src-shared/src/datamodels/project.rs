@@ -185,6 +185,15 @@ pub enum Platform {
     Modrinth,
 }
 
+impl Display for Platform {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Platform::CurseForge => write!(f, "CurseForge"),
+            Platform::Modrinth => write!(f, "Modrinth"),
+        }
+    }
+}
+
 /// Sort order for a project search. The CurseForge options the launcher
 /// exposes, mapped per-platform (`sortField` for CurseForge, `index` for
 /// Modrinth).
