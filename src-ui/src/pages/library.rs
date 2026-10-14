@@ -12,6 +12,7 @@ use phosphor_leptos::{
 };
 use yaminabe_launcher_shared::datamodels::{InstanceMeta, ModProjectInfo};
 use crate::components::card::instance_card::InstanceCard;
+use crate::components::card::Layout;
 
 fn matches_active_category(inst: &InstanceMeta, active: &str) -> bool {
     if active == "Default" { inst.category.is_empty() } else { inst.category == active }
@@ -51,27 +52,20 @@ impl SwitchOption for LibraryView {
     }
 }
 
-/// How the bookmarks are laid out: full-width rows, or a grid of tiles.
-#[derive(Clone, Copy, PartialEq)]
-enum BookmarkLayout {
-    List,
-    Cards,
-}
-
-impl SwitchOption for BookmarkLayout {
-    const ALL: &'static [Self] = &[BookmarkLayout::List, BookmarkLayout::Cards];
+impl SwitchOption for Layout {
+    const ALL: &'static [Self] = &[Layout::List, Layout::Cards];
 
     fn label(self) -> &'static str {
         match self {
-            BookmarkLayout::List => "List",
-            BookmarkLayout::Cards => "Cards",
+            Layout::List => "List",
+            Layout::Cards => "Cards",
         }
     }
 
     fn icon(self) -> IconData {
         match self {
-            BookmarkLayout::List => ROWS,
-            BookmarkLayout::Cards => SQUARES_FOUR,
+            Layout::List => ROWS,
+            Layout::Cards => SQUARES_FOUR,
         }
     }
 }
@@ -96,7 +90,8 @@ pub fn LibraryPage() -> impl IntoView {
     let bookmarks = Bookmarks::load();
     // Kept here rather than in the list, so a trip to the instances and back
     // keeps the layout.
-    let bookmark_layout = RwSignal::new(BookmarkLayout::List);
+    let bookmark_layout = RwSignal::new(Layout::List);
+    let instance_layout = RwSignal::new(Layout::Cards);
 
     // ── derived tab list ───────────────────────────────────────────────────
     let all_tabs = Signal::derive(move || {
@@ -142,7 +137,55 @@ pub fn LibraryPage() -> impl IntoView {
         top: 50%;
         transform: translateY(-50%);
     };
+    let rows = css! {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin-top: 16px;
+    };
+    let toolbar = css! {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+    };
     let title = move || format!("# {}", view_mode.get().label());
+
+    // The category's instances, then the ones of it still being created.
+    let instance_cards = move |layout: Layout| view! {
+        <For
+            each=move || {
+                let active = active_category.get();
+                instances.get().into_iter()
+                    .filter(|inst| matches_active_category(inst, &active))
+                    .collect::<Vec<_>>()
+            }
+            key=|v| v.id.clone()
+            let(inst)
+        >
+            <InstanceCard instance=inst layout=layout />
+        </For>
+        <For
+            each=move || {
+                let active = active_category.get();
+                pending_instances.get().into_iter()
+                    .filter(|inst| matches_active_category(inst, &active))
+                    .collect::<Vec<_>>()
+            }
+            key=|v| v.id.clone()
+            let(inst)
+        >
+            <InstanceCard instance=inst pending=true layout=layout />
+        </For>
+    };
+    let instance_list = move || {
+        let layout = instance_layout.get();
+        let container = match layout {
+            Layout::Cards => grid,
+            Layout::List => rows,
+        };
+        view! { <div class=container>{instance_cards(layout)}</div> }
+    };
 
     view! {
         <div class=page_grid>
@@ -158,40 +201,18 @@ pub fn LibraryPage() -> impl IntoView {
                         on_click=Callback::new(move |_| show_create_modal.set(true))
                     />
 
-                    // Category tab bar
-                    <TabBar
-                        tabs=all_tabs
-                        active=active_category
-                        allow_add=true
-                        on_add=Callback::new(move |_| show_add_category_modal.set(true))
-                    />
-
-                    <div class=grid>
-                        <For
-                            each=move || {
-                                let active = active_category.get();
-                                instances.get().into_iter()
-                                    .filter(|inst| matches_active_category(inst, &active))
-                                    .collect::<Vec<_>>()
-                            }
-                            key=|v| v.id.clone()
-                            let(inst)
-                        >
-                            <InstanceCard instance=inst />
-                        </For>
-                        <For
-                            each=move || {
-                                let active = active_category.get();
-                                pending_instances.get().into_iter()
-                                    .filter(|inst| matches_active_category(inst, &active))
-                                    .collect::<Vec<_>>()
-                            }
-                            key=|v| v.id.clone()
-                            let(inst)
-                        >
-                            <InstanceCard instance=inst pending=true />
-                        </For>
+                    <div class=toolbar>
+                        // Category tab bar
+                        <TabBar
+                            tabs=all_tabs
+                            active=active_category
+                            allow_add=true
+                            on_add=Callback::new(move |_| show_add_category_modal.set(true))
+                        />
+                        <IconSwitch selected=instance_layout horizontal=true />
                     </div>
+
+                    {instance_list}
                 </Show>
             </div>
             <div class=switch_rail>
@@ -340,7 +361,7 @@ fn IconSwitch<T: SwitchOption>(
 /// The bookmarked modpacks, newest first, as rows or as tiles, each opening the
 /// install dialog here.
 #[component]
-fn BookmarkList(bookmarks: Bookmarks, layout: RwSignal<BookmarkLayout>) -> impl IntoView {
+fn BookmarkList(bookmarks: Bookmarks, layout: RwSignal<Layout>) -> impl IntoView {
     let installer = ModpackInstaller::new();
     let install = Callback::new(move |pack: ModProjectInfo| installer.open(pack));
 
@@ -395,13 +416,13 @@ fn BookmarkList(bookmarks: Bookmarks, layout: RwSignal<BookmarkLayout>) -> impl 
         view! { <PackTile pack=pack bookmarks=Some(bookmarks) show_platform=true on_select=install /> }
     };
     let packs = move || match layout.get() {
-        BookmarkLayout::List => view! {
+        Layout::List => view! {
             <div class=rows>
                 <For each=move || bookmarks.list() key=|pack| pack.id.clone() children=row />
             </div>
         }
         .into_any(),
-        BookmarkLayout::Cards => view! {
+        Layout::Cards => view! {
             <div class=tiles>
                 <For each=move || bookmarks.list() key=|pack| pack.id.clone() children=tile />
             </div>

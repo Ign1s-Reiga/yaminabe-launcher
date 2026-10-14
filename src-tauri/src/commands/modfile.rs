@@ -1,5 +1,6 @@
 use crate::commands::instance::{
-    find_instance_dir, instance_meta_file, is_bare_file_name, modlist_file, upsert_modlist_entries,
+    find_instance_dir, instance_meta_file, is_bare_file_name, modlist_file, save_instance_icon,
+    upsert_modlist_entries,
 };
 use crate::http_utils::sha1_hex;
 use crate::json::{read_json, read_json_or_default, write_json};
@@ -53,6 +54,7 @@ pub async fn install_modpack(
     instance_name: String,
     category: String,
     source: DownloadSource,
+    icon_url: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
     let id = std::time::SystemTime::now()
@@ -66,6 +68,13 @@ pub async fn install_modpack(
 
     match result {
         Ok(()) => {
+            // Before "Done", which refreshes the library, so the new card finds
+            // it. Cosmetic, so a pack whose icon fails still counts as installed.
+            if let Some(url) = icon_url {
+                if let Err(e) = save_instance_icon(&id, &url, &state).await {
+                    log::warn!("no icon for instance '{instance_name}': {e}");
+                }
+            }
             emit_progress(&app_handle, &id, &instance_name, "Done", true, None);
             Ok(())
         }

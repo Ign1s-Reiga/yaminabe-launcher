@@ -44,7 +44,8 @@ src-tauri/src/
 ├── commands/                # `#[tauri::command]` handlers
 │   ├── mod.rs
 │   ├── bookmark.rs          # Bookmarked modpacks (bookmarks.json): get / add / remove
-│   ├── instance.rs          # create_instance, get_instances, save_instance_settings
+│   ├── instance.rs          # create_instance, get_instances, save_instance_settings,
+│   │                        # modpack icons (.launcher/icon.*)
 │   ├── java.rs              # Local Java detection + Mojang JRE download
 │   ├── minecraft.rs         # Mojang version-manifest-v2 fetch + cache
 │   ├── modfile.rs           # Bridge to mod_repo: search, files, install, download
@@ -77,8 +78,8 @@ src-ui/src/
 ├── bookmarks.rs             # `Bookmarks`: the bookmarked modpacks + their IPC calls
 ├── pages.rs / pages/
 │   ├── home.rs              # `/`
-│   ├── library.rs           # `/library` — instance grid + category tabs; side switch to
-│   │                        # Bookmarks (List / Cards layouts)
+│   ├── library.rs           # `/library` — instances (Cards / List layouts) + category
+│   │                        # tabs; side switch to Bookmarks (List / Cards layouts)
 │   ├── instance_detail.rs   # `/library/:id` — Description / Mods / Settings tabs
 │   ├── play.rs              # `/library/:id/play` — runs the launcher, shows logs
 │   ├── search.rs            # `/search` — CurseForge modpack search
@@ -92,7 +93,8 @@ src-ui/src/
 │   │                        # start_launch / stop_instance) and InstallJob alias
 │   ├── bookmark_toggle.rs   # Bookmark button shared by modpack cards and tiles
 │   ├── card/                # Card components, grouped under one module
-│   │   ├── instance_card.rs        # Library grid card for one instance
+│   │   ├── instance_card.rs        # Library card for one instance, as a tile or a list
+│   │   │                           # row: art (icon or initials), hover play, activity chip
 │   │   ├── managed_notice_card.rs  # Read-only "managed by a modpack" notice
 │   │   │                           # for the Mods tab (with upgrade action)
 │   │   ├── pack_tile.rs            # Square-logo modpack tile (Home popular,

@@ -13,8 +13,8 @@ use crate::commands::auth::{
 };
 use crate::commands::bookmark::{add_bookmark, get_bookmarks, load_bookmarks, remove_bookmark};
 use crate::commands::instance::{
-    create_instance, delete_instance, get_instances, list_instance_mods, save_instance_settings,
-    toggle_state_instance_mod,
+    create_instance, delete_instance, get_instance_icon, get_instances, list_instance_mods,
+    save_instance_settings, toggle_state_instance_mod,
 };
 use crate::commands::java::{detect_java_installs, get_java_installs};
 use crate::commands::launch::{kill_instance, launch_instance};
@@ -328,6 +328,7 @@ pub fn run() {
             save_settings,
             pick_folder,
             get_instance_subfolders,
+            get_instance_icon,
             open_instance_subfolder,
             launch_instance,
             kill_instance,

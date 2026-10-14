@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use base64::Engine;
 use log::{info, warn};
 use tauri::State;
 use yaminabe_launcher_shared::datamodels::{
@@ -9,6 +10,7 @@ use yaminabe_launcher_shared::datamodels::{
 use yaminabe_launcher_shared::error::Error;
 use crate::{emit_progress, libraries_dir, versions_dir, ActivityGuard, AppState, InstanceActivity};
 use crate::commands::java::download_java_runtime;
+use crate::http_utils::download_resource;
 use crate::json::{read_json, read_json_or_default, write_json};
 use crate::install_task::{ensure_game_and_loader, version_manifest_path};
 
@@ -379,6 +381,52 @@ pub fn delete_instance(id: String, state: State<'_, AppState>) -> Result<(), Err
     Ok(())
 }
 
+/// The image types an instance icon is kept as: its file extension in the
+/// launcher directory, and the MIME type it is shown with.
+const ICON_TYPES: [(&str, &str); 5] = [
+    ("png", "image/png"),
+    ("jpg", "image/jpeg"),
+    ("jpeg", "image/jpeg"),
+    ("webp", "image/webp"),
+    ("gif", "image/gif"),
+];
+
+/// The extension an icon at `url` is kept under, read off the URL's path, or
+/// `None` for a type not in [`ICON_TYPES`].
+fn icon_extension(url: &str) -> Option<String> {
+    let url = reqwest::Url::parse(url).ok()?;
+    let ext = Path::new(url.path()).extension()?.to_str()?.to_ascii_lowercase();
+    ICON_TYPES.iter().any(|(known, _)| *known == ext).then_some(ext)
+}
+
+/// Keep a copy of the modpack's icon at `url` in the instance's launcher
+/// directory, so its library card can show it without the network.
+pub async fn save_instance_icon(id: &str, url: &str, state: &State<'_, AppState>) -> Result<(), Error> {
+    let ext = icon_extension(url)
+        .ok_or_else(|| Error::Unsupported(format!("icon type of {url}")))?;
+    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
+    let dir = find_instance_dir(Path::new(&install_dir), id)?;
+    let dest = dir.join(LAUNCHER_DIR).join(format!("icon.{ext}"));
+    download_resource(&state.http_client, url, "", dest).await
+}
+
+/// The instance's icon as a `data:` URL, or `None` for one without: created by
+/// hand, installed from a file, or installed before icons were kept.
+#[tauri::command]
+pub async fn get_instance_icon(id: String, state: State<'_, AppState>) -> Result<Option<String>, Error> {
+    let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
+    let launcher_dir = find_instance_dir(Path::new(&install_dir), &id)?.join(LAUNCHER_DIR);
+    let Some((path, mime)) = ICON_TYPES
+        .iter()
+        .map(|(ext, mime)| (launcher_dir.join(format!("icon.{ext}")), mime))
+        .find(|(path, _)| path.exists())
+    else {
+        return Ok(None);
+    };
+    let encoded = base64::engine::general_purpose::STANDARD.encode(std::fs::read(path)?);
+    Ok(Some(format!("data:{mime};base64,{encoded}")))
+}
+
 /// Every mod the instance has: the tracked entries of `modlist.json` plus the
 /// jars sitting in `mods/` that no entry claims. `DownloadFailed` entries have
 /// no file yet and are reported from the modlist alone.
@@ -548,5 +596,23 @@ mod scan_tests {
         assert!(list.skipped[1].reason.starts_with("instance.json is malformed"), "{}", list.skipped[1].reason);
         assert_eq!(list.skipped[2].reason, "instance.json is missing");
         std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+#[cfg(test)]
+mod icon_tests {
+    use super::icon_extension;
+
+    #[test]
+    fn icon_extension_reads_the_url_path() {
+        assert_eq!(icon_extension("https://media.forgecdn.net/avatars/1/2/logo.png").as_deref(), Some("png"));
+        assert_eq!(icon_extension("https://cdn.modrinth.com/data/abc/icon.WEBP?v=2").as_deref(), Some("webp"));
+    }
+
+    #[test]
+    fn icon_extension_refuses_other_types() {
+        assert_eq!(icon_extension("https://cdn.modrinth.com/data/abc/icon.svg"), None);
+        assert_eq!(icon_extension("https://cdn.modrinth.com/data/abc/icon"), None);
+        assert_eq!(icon_extension("not a url"), None);
     }
 }

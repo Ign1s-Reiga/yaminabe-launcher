@@ -53,10 +53,16 @@ pub struct InstallModpackArgs {
     instance_name: String,
     category: String,
     source: DownloadSource,
+    /// The pack's icon, which the instance keeps a copy of for its card.
+    icon_url: Option<String>,
 }
 
 impl InstallModpackArgs {
-    pub fn from_form_data(source: DownloadSource, data: &web_sys::FormData) -> Option<Self> {
+    pub fn from_form_data(
+        source: DownloadSource,
+        icon_url: Option<String>,
+        data: &web_sys::FormData,
+    ) -> Option<Self> {
         let get = |k: &str| data.get(k).as_string().unwrap_or_default();
         let instance_name = get("instance_name");
         if instance_name.trim().is_empty() {
@@ -66,6 +72,7 @@ impl InstallModpackArgs {
             instance_name,
             category: get("category"),
             source,
+            icon_url,
         })
     }
 }
