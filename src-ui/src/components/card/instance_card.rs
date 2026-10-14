@@ -1,4 +1,4 @@
-use bamboo_css_macro::css;
+use bamboo_css_macro::{css, cx};
 use leptos::control_flow::Show;
 use leptos::prelude::*;
 use leptos::{component, view, web_sys, IntoView};
@@ -7,6 +7,7 @@ use leptos_router::hooks::use_navigate;
 use phosphor_leptos::{Icon, IconWeight, CLOCK, FOLDER_OPEN, GEAR_SIX, PLAY, TRASH};
 use serde::Serialize;
 use yaminabe_launcher_shared::datamodels::InstanceMeta;
+use crate::components::card::Layout;
 use crate::components::open_in_file_manager::folder_label;
 use crate::components::activity_dock::RunningRegistry;
 use crate::components::ui::{Button, ButtonVariant, DialogBox, DialogFooter, DialogOverlay};
@@ -33,7 +34,9 @@ enum DeleteDialog {
 #[component]
 pub fn InstanceCard(
     instance: InstanceMeta,
-    #[prop(optional)] pending: bool
+    #[prop(optional)] pending: bool,
+    /// A square tile for a grid, or a full-width row for a list.
+    #[prop(optional)] layout: Layout,
 ) -> impl IntoView {
     // StoredValue keeps these Copy so they can be captured by the `Fn` closures
     // the context-menu's `<Show>` children require.
@@ -101,6 +104,68 @@ pub fn InstanceCard(
         background: linear-gradient(transparent, rgb(0 0 0 / 0.8));
         pointer-events: none;
     };
+    // A full-width row: the art as a square at its left, the details beside it,
+    // and the activity chip in its own column at the top-right corner.
+    let row_wrapper = css! {
+        display: grid;
+        grid-template-columns: 112px minmax(0, 1fr) auto;
+        border-radius: 12px;
+        overflow: hidden;
+        background-color: var(--secondary-color);
+        color: inherit;
+        text-decoration: none;
+        cursor: pointer;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+        &:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 24px rgb(0 0 0 / 0.2);
+        }
+        &:hover [data-play-overlay], &:focus-within [data-play-overlay] { opacity: 1; }
+    };
+    let row_wrapper_pending = css! {
+        display: grid;
+        grid-template-columns: 112px minmax(0, 1fr) auto;
+        border-radius: 12px;
+        overflow: hidden;
+        background-color: var(--secondary-color);
+        color: inherit;
+        text-decoration: none;
+        opacity: 0.6;
+    };
+    let row_art = css! {
+        position: relative;
+        aspect-ratio: 1;
+    };
+    let row_text = css! {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 4px;
+        padding: 12px 16px;
+        min-width: 0;
+    };
+    let row_chip = css! {
+        align-self: start;
+        margin: 12px 16px 0 0;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 10px;
+        border-radius: 999px;
+        font-size: 0.72rem;
+        font-weight: 600;
+        background-color: var(--tertiary-color);
+    };
+    let row_description = css! {
+        margin-top: 2px;
+        font-size: 0.8rem;
+        line-height: 1.4;
+        opacity: 0.7;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+    };
     let name_style = css! {
         font-weight: 700;
         font-size: 1rem;
@@ -143,12 +208,11 @@ pub fn InstanceCard(
         transition: opacity 0.15s ease;
     };
     // Nudged right, as a play triangle's visual middle sits left of its box's.
+    // Sized by `play_large` or `play_small`.
     let play_button = css! {
         display: flex;
         align-items: center;
         justify-content: center;
-        width: 60px;
-        height: 60px;
         padding: 0 0 0 4px;
         border: none;
         border-radius: 50%;
@@ -158,6 +222,14 @@ pub fn InstanceCard(
         box-shadow: 0 6px 20px rgb(0 0 0 / 0.35);
         transition: background-color 0.15s ease;
         &:hover { background-color: #2e7d4f; }
+    };
+    let play_large = css! {
+        width: 60px;
+        height: 60px;
+    };
+    let play_small = css! {
+        width: 44px;
+        height: 44px;
     };
 
     let backdrop = css! {
@@ -240,7 +312,14 @@ pub fn InstanceCard(
     };
 
     let name = instance.name.clone();
-    let details = format!("MC {} · {}", instance.game_version, instance.mod_loader);
+    // A row has the room to name the loader's version too.
+    let details = match (layout, instance.mod_loader_version.as_deref()) {
+        (Layout::List, Some(version)) if !version.is_empty() => {
+            format!("MC {} · {} {version}", instance.game_version, instance.mod_loader)
+        }
+        _ => format!("MC {} · {}", instance.game_version, instance.mod_loader),
+    };
+    let description = Some(instance.description.trim().to_string()).filter(|text| !text.is_empty());
     // A pending instance has no folder yet to keep an icon in.
     let icon = LocalResource::new(move || {
         let id = instance_id.get_value();
@@ -281,6 +360,60 @@ pub fn InstanceCard(
             Default::default(),
         ));
     };
+    // Only an idle instance offers to launch: a pending one is not on disk
+    // yet, and a running one must not start a second copy.
+    let play_overlay_view = move |size: &'static str, icon_size: &'static str| view! {
+        <Show when=move || matches!(activity.get(), Activity::Idle { .. })>
+            <div class=play_overlay data-play-overlay="">
+                <button
+                    type="button"
+                    class=cx!(play_button, size)
+                    aria-label="Play"
+                    on:click=move |ev: web_sys::MouseEvent| {
+                        // It sits inside the card's link: launch rather than
+                        // open the instance.
+                        ev.prevent_default();
+                        ev.stop_propagation();
+                        play();
+                    }
+                >
+                    <Icon icon=PLAY size=icon_size weight=IconWeight::Fill />
+                </button>
+            </div>
+        </Show>
+    };
+
+    let wrapper = match (layout, pending) {
+        (Layout::Cards, false) => card_wrapper,
+        (Layout::Cards, true) => card_wrapper_pending,
+        (Layout::List, false) => row_wrapper,
+        (Layout::List, true) => row_wrapper_pending,
+    };
+    let content = match layout {
+        Layout::Cards => view! {
+            <Art instance=instance icon=icon />
+            {play_overlay_view(play_large, "28px")}
+            <div class=caption>
+                <span class=activity_chip>{activity_label}</span>
+                <span class=name_style>{name}</span>
+                <span class=meta_style>{details}</span>
+            </div>
+        }
+        .into_any(),
+        Layout::List => view! {
+            <div class=row_art>
+                <Art instance=instance icon=icon />
+                {play_overlay_view(play_small, "20px")}
+            </div>
+            <div class=row_text>
+                <span class=name_style>{name}</span>
+                <span class=meta_style>{details}</span>
+                {description.map(|text| view! { <span class=row_description>{text}</span> })}
+            </div>
+            <span class=row_chip>{activity_label}</span>
+        }
+        .into_any(),
+    };
 
     let on_confirm_delete = Callback::new(move |_: web_sys::MouseEvent| {
         let id = instance_id.get_value();
@@ -301,7 +434,7 @@ pub fn InstanceCard(
     view! {
         <A
             href=format!("/library/{}", instance_id.get_value())
-            attr:class=if pending { card_wrapper_pending } else { card_wrapper }
+            attr:class=wrapper
             on:contextmenu=move |ev: web_sys::MouseEvent| {
                 ev.prevent_default();
                 if pending { return; }
@@ -316,32 +449,7 @@ pub fn InstanceCard(
                 });
             }
         >
-            <Art instance=instance icon=icon />
-            // Only an idle instance offers to launch: a pending one is not on
-            // disk yet, and a running one must not start a second copy.
-            <Show when=move || matches!(activity.get(), Activity::Idle { .. })>
-                <div class=play_overlay data-play-overlay="">
-                    <button
-                        type="button"
-                        class=play_button
-                        aria-label="Play"
-                        on:click=move |ev: web_sys::MouseEvent| {
-                            // It sits inside the card's link: launch rather than
-                            // open the instance.
-                            ev.prevent_default();
-                            ev.stop_propagation();
-                            play();
-                        }
-                    >
-                        <Icon icon=PLAY size="28px" weight=IconWeight::Fill />
-                    </button>
-                </div>
-            </Show>
-            <div class=caption>
-                <span class=activity_chip>{activity_label}</span>
-                <span class=name_style>{name}</span>
-                <span class=meta_style>{details}</span>
-            </div>
+            {content}
         </A>
 
         <Show when=move || menu.get().is_some()>
