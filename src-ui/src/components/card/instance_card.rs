@@ -86,8 +86,9 @@ pub fn InstanceCard(
         text-decoration: none;
         opacity: 0.6;
     };
-    // The caption and the chip lie over the play overlay, so they let clicks
-    // through to it rather than to the card's link.
+    // Holds the activity chip too, rather than the art's top corners, where a
+    // pack's art tends to put its title. It lies over the play overlay, so it
+    // lets clicks through to it rather than to the card's link.
     let caption = css! {
         position: absolute;
         left: 0;
@@ -96,7 +97,7 @@ pub fn InstanceCard(
         display: flex;
         flex-direction: column;
         gap: 2px;
-        padding: 48px 14px 12px;
+        padding: 56px 14px 12px;
         background: linear-gradient(transparent, rgb(0 0 0 / 0.8));
         pointer-events: none;
     };
@@ -112,19 +113,17 @@ pub fn InstanceCard(
         opacity: 0.8;
     };
     let activity_chip = css! {
-        position: absolute;
-        top: 10px;
-        left: 10px;
+        align-self: flex-start;
         display: flex;
         align-items: center;
         gap: 6px;
+        margin-bottom: 6px;
         padding: 4px 10px;
         border-radius: 999px;
         font-size: 0.72rem;
         font-weight: 600;
         background-color: rgb(0 0 0 / 0.55);
         backdrop-filter: blur(6px);
-        pointer-events: none;
     };
     let running_dot = css! {
         width: 8px;
@@ -339,10 +338,10 @@ pub fn InstanceCard(
                 </div>
             </Show>
             <div class=caption>
+                <span class=activity_chip>{activity_label}</span>
                 <span class=name_style>{name}</span>
                 <span class=meta_style>{details}</span>
             </div>
-            <span class=activity_chip>{activity_label}</span>
         </A>
 
         <Show when=move || menu.get().is_some()>
