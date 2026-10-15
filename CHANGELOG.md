@@ -3,6 +3,28 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.0.0 — 2026-10-15
+
+- Show a small splash screen while the launcher starts, instead of an empty
+  window that fills in as it loads.
+- Show instances as cards built around their modpack's icon. A pack you install
+  from the search keeps its icon from now on; other instances show their
+  initials on the color of their mod loader. Point at a card to play it, read
+  on it whether it is installing or running, and switch the library between
+  these cards and a list.
+- Bookmark a modpack from the search results and come back to it in the
+  library, where a switch on the right turns from your instances to your
+  bookmarks. A bookmark installs through the same dialog as a search result.
+- Clear away the folder an install leaves behind when the launcher closes or
+  crashes partway through, so its name is free again. Creating an instance by
+  hand now cleans up after itself when it fails, too. Folders left this way by
+  earlier versions stay where they are; delete one yourself to free its name.
+- Create a new instance from a floating button at the bottom right of the
+  library, which shows its label when you point at it.
+- Turn the search, install and browse buttons into icons, and give the button
+  that removes an account a proper size and a label.
+- Show only the notes of the version you are running in What is new.
+
 ## 0.6.2 — 2026-10-10
 
 - Tell you when an instance cannot be loaded. If an instance's settings file
