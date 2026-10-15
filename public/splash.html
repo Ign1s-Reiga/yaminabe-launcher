@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Yaminabe Launcher</title>
+    <!-- Shown while the main window loads its frontend, so it loads nothing
+         itself: the app's fonts would come over the network, and a font
+         swapping in partway would only add a flicker. -->
+    <style>
+      html, body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 28px;
+        background-color: rgb(35 38 40);
+        color: rgb(246 246 246);
+        font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+        cursor: default;
+        user-select: none;
+      }
+      h1 {
+        margin: 0;
+        font-size: 2.25rem;
+        font-weight: 800;
+      }
+      .bar {
+        position: relative;
+        width: 160px;
+        height: 4px;
+        border-radius: 2px;
+        overflow: hidden;
+        background-color: rgb(60 63 68);
+      }
+      .bar::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        width: 40%;
+        border-radius: inherit;
+        background-color: #3a9e5f;
+        animation: slide 1.1s ease-in-out infinite;
+      }
+      @keyframes slide {
+        from { transform: translateX(-100%); }
+        to { transform: translateX(250%); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .bar::after {
+          width: 100%;
+          animation: pulse 1.6s ease-in-out infinite alternate;
+        }
+      }
+      @keyframes pulse {
+        from { opacity: 0.35; }
+        to { opacity: 1; }
+      }
+    </style>
+  </head>
+  <body oncontextmenu="return false">
+    <h1>Yaminabe Launcher</h1>
+    <div class="bar" role="progressbar" aria-label="Loading"></div>
+  </body>
+</html>
