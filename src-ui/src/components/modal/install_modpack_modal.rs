@@ -9,7 +9,7 @@ use leptos::prelude::*;
 use leptos::{IntoView, component, view, web_sys};
 use wasm_bindgen::JsCast;
 use yaminabe_launcher_shared::datamodels::{
-    AppSettings, ModProjectInfo, ProjectFileInfo, ProjectFileTarget,
+    AppSettings, ModProjectInfo, ProjectFileInfo, ProjectFileTarget, ProjectId,
 };
 
 const PAGE_SIZE: usize = 50;
@@ -63,28 +63,25 @@ impl ModpackInstaller {
             versions_done: false,
         }));
         leptos::task::spawn_local(async move {
-            match call_list_project_files(project_id, ProjectFileTarget::Modpack, None, None, 0).await
+            match call_list_project_files(project_id.clone(), ProjectFileTarget::Modpack, None, None, 0)
+                .await
             {
                 Ok(files) => {
                     let first_version = files
                         .first()
                         .and_then(|f| f.source.version_key())
                         .unwrap_or_default();
-                    install.update(|opt| {
-                        if let Some(s) = opt {
-                            s.version = first_version;
-                            s.versions_done = files.len() < PAGE_SIZE;
-                            s.versions = files;
-                            s.versions_loading = false;
-                        }
+                    self.update_if_open_on(&project_id, |s| {
+                        s.version = first_version;
+                        s.versions_done = files.len() < PAGE_SIZE;
+                        s.versions = files;
+                        s.versions_loading = false;
                     });
                 }
                 Err(e) => {
-                    install.update(|opt| {
-                        if let Some(s) = opt {
-                            s.versions_loading = false;
-                            s.versions_error = Some(e);
-                        }
+                    self.update_if_open_on(&project_id, |s| {
+                        s.versions_loading = false;
+                        s.versions_error = Some(e);
                     });
                 }
             }
@@ -93,6 +90,16 @@ impl ModpackInstaller {
 
     fn close(self) {
         self.install.set(None);
+    }
+
+    /// Apply an answer about `project_id`'s versions, unless the dialog has
+    /// been closed or opened on another pack since it was asked for.
+    fn update_if_open_on(self, project_id: &ProjectId, apply: impl FnOnce(&mut InstallState)) {
+        self.install.update(|opt| {
+            if let Some(s) = opt.as_mut().filter(|s| s.pack.id == *project_id) {
+                apply(s);
+            }
+        });
     }
 
     fn load_more_versions(self) {
@@ -112,24 +119,20 @@ impl ModpackInstaller {
             }
         });
         leptos::task::spawn_local(async move {
-            match call_list_project_files(project_id, ProjectFileTarget::Modpack, None, None, index)
+            match call_list_project_files(project_id.clone(), ProjectFileTarget::Modpack, None, None, index)
                 .await
             {
                 Ok(mut files) => {
-                    install.update(|opt| {
-                        if let Some(s) = opt {
-                            s.versions_done = files.len() < PAGE_SIZE;
-                            s.versions.append(&mut files);
-                            s.versions_loading = false;
-                        }
+                    self.update_if_open_on(&project_id, |s| {
+                        s.versions_done = files.len() < PAGE_SIZE;
+                        s.versions.append(&mut files);
+                        s.versions_loading = false;
                     });
                 }
                 Err(e) => {
-                    install.update(|opt| {
-                        if let Some(s) = opt {
-                            s.versions_error = Some(e);
-                            s.versions_loading = false;
-                        }
+                    self.update_if_open_on(&project_id, |s| {
+                        s.versions_error = Some(e);
+                        s.versions_loading = false;
                     });
                 }
             }
