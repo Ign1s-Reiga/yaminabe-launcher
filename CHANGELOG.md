@@ -3,6 +3,15 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.0.1 — 2026-10-16
+
+- Stop the library from deleting the folder of an install that has just
+  started. If the library loaded at that exact moment, it could take the new
+  folder for one left behind by an interrupted install.
+- Show a modpack's own versions in its install dialog. If you opened another
+  pack before the first one's versions had loaded, the dialog could list them,
+  and install one under the second pack's name.
+
 ## 1.0.0 — 2026-10-15
 
 - Show a small splash screen while the launcher starts, instead of an empty
