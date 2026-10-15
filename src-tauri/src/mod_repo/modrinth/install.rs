@@ -9,8 +9,8 @@ use super::super::pack_files::{
 use super::api::{name_entries_by_project, selected_file, ResolvedFiles, Version};
 use super::mrpack::{read_index, resolve_loader, MrpackFile, MrpackIndex, INDEX_NAME};
 use crate::commands::instance::{
-    create_instance_dir, discard_unfinished_instance_dir, instance_meta_file, is_bare_file_name,
-    replace_modlist_entries, upsert_modlist_entries,
+    create_instance_dir, instance_meta_file, is_bare_file_name, replace_modlist_entries,
+    upsert_modlist_entries,
 };
 use crate::emit_progress;
 use crate::http_utils::{download_resource, fetch_json};
@@ -220,25 +220,23 @@ pub async fn install_modpack_from_file(
     state: &State<'_, AppState>,
 ) -> Result<(), Error> {
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
-    let instance_path = create_instance_dir(&install_dir, instance_name)?;
     // Nothing usable exists until the instance record is written, so a failure
-    // partway through clears the directory rather than leaving one that the
-    // library never shows and that blocks retrying the same name.
-    let result = install_into(
+    // partway through drops `instance_dir` unfinished, clearing the folder
+    // rather than leaving one that blocks retrying the same name.
+    let instance_dir = create_instance_dir(&install_dir, instance_name)?;
+    install_into(
         app_handle,
         id,
         instance_name,
         category,
         zip_path,
         DownloadSource::Manual,
-        &instance_path,
+        instance_dir.path(),
         state,
     )
-    .await;
-    if result.is_err() {
-        discard_unfinished_instance_dir(&instance_path);
-    }
-    result
+    .await?;
+    instance_dir.finish();
+    Ok(())
 }
 
 /// A staged `.mrpack` with its game and loader already installed. Shared by
@@ -707,25 +705,23 @@ pub async fn install_modpack(
         ));
     };
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
-    let instance_path = create_instance_dir(&install_dir, instance_name)?;
-    // Nothing usable exists until the instance record is written, so clear the
-    // directory on failure rather than leaving one the library never shows and
-    // that blocks retrying the same name.
-    let result = install_by_version(
+    // Nothing usable exists until the instance record is written, so a failure
+    // drops `instance_dir` unfinished, clearing the folder rather than leaving
+    // one that blocks retrying the same name.
+    let instance_dir = create_instance_dir(&install_dir, instance_name)?;
+    install_by_version(
         app_handle,
         id,
         instance_name,
         category,
         &source,
         version_id,
-        &instance_path,
+        instance_dir.path(),
         state,
     )
-    .await;
-    if result.is_err() {
-        discard_unfinished_instance_dir(&instance_path);
-    }
-    result
+    .await?;
+    instance_dir.finish();
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

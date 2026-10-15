@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 use base64::Engine;
 use log::{info, warn};
@@ -129,12 +130,59 @@ pub fn is_bare_file_name(name: &str) -> bool {
 /// installing. Only ever touches one with no metadata file, so a real instance
 /// cannot be deleted this way; leaving it would block retrying the same name,
 /// while the library would never show it to be deleted by hand.
-pub fn discard_unfinished_instance_dir(instance_path: &Path) {
+fn discard_unfinished_instance_dir(instance_path: &Path) {
     if instance_meta_file(instance_path).exists() {
         return;
     }
     if let Err(e) = std::fs::remove_dir_all(instance_path) {
-        warn!("cannot clear {} after a failed install: {e}", instance_path.display());
+        warn!("cannot clear the unfinished install at {}: {e}", instance_path.display());
+    }
+}
+
+/// The file in [`LAUNCHER_DIR`] that marks a new instance's folder as still
+/// being installed, from the folder's creation until its record is written.
+fn installing_marker(instance_dir: &Path) -> PathBuf {
+    instance_dir.join(LAUNCHER_DIR).join("installing")
+}
+
+/// A new instance's folder while its install runs.
+///
+/// The install holds the folder's marker locked throughout. The lock goes with
+/// the process, so a later scan, in this launcher or another, can tell a running
+/// install from one cut short by the launcher closing or the machine going down.
+/// Dropped before [`finish`](Self::finish), it clears the folder away, as an
+/// install that fails has nothing usable to leave.
+pub struct NewInstanceDir {
+    path: PathBuf,
+    marker: Option<File>,
+    finished: bool,
+}
+
+impl NewInstanceDir {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Hand the folder over to the instance whose record has just been written
+    /// into it. A marker left behind is cleared by the next scan instead.
+    pub fn finish(mut self) {
+        self.finished = true;
+        drop(self.marker.take());
+        let marker = installing_marker(&self.path);
+        if let Err(e) = std::fs::remove_file(&marker) {
+            warn!("cannot remove {}: {e}", marker.display());
+        }
+    }
+}
+
+impl Drop for NewInstanceDir {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        // Closed first, so no handle of ours is open in the folder it removes.
+        drop(self.marker.take());
+        discard_unfinished_instance_dir(&self.path);
     }
 }
 
@@ -157,7 +205,7 @@ pub fn replace_modlist_entries(
 /// Create the directory a new instance will live in, refusing to reuse one that
 /// already exists — installing over an existing instance would overlay its files
 /// and overwrite its record, orphaning it from the library.
-pub fn create_instance_dir(install_dir: &str, instance_name: &str) -> Result<PathBuf, Error> {
+pub fn create_instance_dir(install_dir: &str, instance_name: &str) -> Result<NewInstanceDir, Error> {
     let folder = instance_name.trim().to_lowercase();
     // The name is untrusted: an import fills it from the pack's own manifest.
     // A separator or `..` here would put the instance outside the install
@@ -173,8 +221,13 @@ pub fn create_instance_dir(install_dir: &str, instance_name: &str) -> Result<Pat
             "folder '{folder}' already exists at this location"
         )));
     }
-    std::fs::create_dir_all(&instance_path)?;
-    Ok(instance_path)
+    std::fs::create_dir_all(instance_path.join(LAUNCHER_DIR))?;
+    // Owned from here, so a marker that cannot be made still clears the folder.
+    let mut new_dir = NewInstanceDir { path: instance_path, marker: None, finished: false };
+    let marker = File::create(installing_marker(&new_dir.path))?;
+    marker.lock()?;
+    new_dir.marker = Some(marker);
+    Ok(new_dir)
 }
 
 pub fn find_instance_dir(install_dir: &Path, id: &str) -> Result<PathBuf, Error> {
@@ -226,8 +279,9 @@ pub async fn create_instance(
 
     step!("Preparing directories");
     let install_dir = state.settings.read().unwrap().instance_install_dir.clone();
-    let instance_path = match create_instance_dir(&install_dir, &name) {
-        Ok(path) => path,
+    // Dropped by any `fail!` below, it clears the folder away.
+    let instance_dir = match create_instance_dir(&install_dir, &name) {
+        Ok(dir) => dir,
         Err(e) => fail!(e),
     };
 
@@ -269,10 +323,11 @@ pub async fn create_instance(
     instance_meta.version_id = version_id;
 
     step!("Finalizing");
-    if let Err(e) = write_json(instance_meta_file(&instance_path), &instance_meta) { fail!(e); }
+    if let Err(e) = write_json(instance_meta_file(instance_dir.path()), &instance_meta) { fail!(e); }
+    info!("Created '{}' (MC {}, {}) → {}", name, mc_version, mod_loader, instance_dir.path().display());
+    instance_dir.finish();
 
     emit_progress(&app_handle, &id, &name, "Done", true, None);
-    info!("Created '{}' (MC {}, {}) → {}", name, mc_version, mod_loader, instance_path.display());
     Ok(())
 }
 
@@ -296,14 +351,16 @@ pub async fn get_instances(state: State<'_, AppState>) -> Result<InstanceList, E
 
 /// Read every instance under `root`. A folder with launcher data whose
 /// `instance.json` cannot be loaded is reported in `skipped`, leaving the rest of
-/// the library to load; a folder without any, or with only what an unfinished
-/// install leaves, is not an instance and is ignored.
+/// the library to load; a folder without any, or one an install is still
+/// filling, is not an instance and is ignored. One an interrupted install left
+/// is cleared away.
 fn scan_instances(root: &Path) -> Result<InstanceList, Error> {
     let mut list = InstanceList::default();
     for entry in std::fs::read_dir(root)?.flatten() {
         let path = entry.path();
         if !path.is_dir() { continue; }
         migrate_legacy_meta(&path);
+        clear_interrupted_install(&path);
         if !path.join(LAUNCHER_DIR).is_dir() || is_unfinished_install(&path) { continue; }
         match read_json::<InstanceMeta>(instance_meta_file(&path)) {
             Ok(meta) => list.instances.push(meta),
@@ -318,10 +375,41 @@ fn scan_instances(root: &Path) -> Result<InstanceList, Error> {
     Ok(list)
 }
 
-/// Whether `dir` is what an install closed part-way leaves: a `.launcher/`
-/// holding nothing but the cache its modpack download is staged in. That is not
-/// an instance yet, nor a damaged one.
+/// Clear away what an install cut short left in `dir`. The lock on its marker
+/// went with the process, so finding it unlocked means no install is filling
+/// the folder any more. Without a record, the folder holds nothing usable and
+/// only blocks its name. With one, the install had finished, and only the
+/// marker is stray.
+fn clear_interrupted_install(dir: &Path) {
+    let marker_path = installing_marker(dir);
+    let Ok(marker) = File::open(&marker_path) else { return };
+    match marker.try_lock() {
+        Ok(()) => drop(marker),
+        // An install in this launcher or another is still running.
+        Err(TryLockError::WouldBlock) => return,
+        Err(TryLockError::Error(e)) => {
+            warn!("cannot tell whether an install is still filling {}: {e}", dir.display());
+            return;
+        }
+    }
+    if instance_meta_file(dir).exists() {
+        if let Err(e) = std::fs::remove_file(&marker_path) {
+            warn!("cannot remove {}: {e}", marker_path.display());
+        }
+    } else {
+        info!("clearing {}, left by an interrupted install", dir.display());
+        discard_unfinished_instance_dir(dir);
+    }
+}
+
+/// Whether `dir` is not an instance yet, nor a damaged one: an install is still
+/// filling it, or it is what an install from before the marker left when closed
+/// part-way, a `.launcher/` holding nothing but the cache its modpack download
+/// is staged in.
 fn is_unfinished_install(dir: &Path) -> bool {
+    if installing_marker(dir).exists() {
+        return !instance_meta_file(dir).exists();
+    }
     let cache = dir.join(ProjectFileTarget::Modpack.directory());
     let Ok(entries) = std::fs::read_dir(dir.join(LAUNCHER_DIR)) else { return false };
     let paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
@@ -543,7 +631,10 @@ pub fn toggle_state_instance_mod(
 
 #[cfg(test)]
 mod scan_tests {
-    use super::{instance_meta_file, modlist_file, scan_instances, LAUNCHER_DIR};
+    use super::{
+        create_instance_dir, installing_marker, instance_meta_file, modlist_file, scan_instances,
+        LAUNCHER_DIR,
+    };
     use std::path::{Path, PathBuf};
     use yaminabe_launcher_shared::datamodels::{InstanceMeta, ProjectFileTarget};
 
@@ -595,6 +686,56 @@ mod scan_tests {
         assert_eq!(list.skipped[0].reason, "instance.json is missing");
         assert!(list.skipped[1].reason.starts_with("instance.json is malformed"), "{}", list.skipped[1].reason);
         assert_eq!(list.skipped[2].reason, "instance.json is missing");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The scan clears a folder whose install was cut short and drops the stray
+    /// marker of one that had finished, but leaves an install still running
+    /// alone, unlisted until it finishes.
+    #[test]
+    fn an_interrupted_install_is_cleared_and_a_running_one_left_alone() {
+        let root = temp_root("interrupted");
+        let root_str = root.to_str().expect("utf-8 path");
+        // Nothing holds these markers locked, as with a process that is gone.
+        let interrupted = root.join("interrupted");
+        stage_pack(&interrupted);
+        std::fs::write(installing_marker(&interrupted), b"").expect("write");
+        let finished = root.join("finished");
+        crate::json::write_json(instance_meta_file(&finished), &named("Finished")).expect("write");
+        std::fs::write(installing_marker(&finished), b"").expect("write");
+        let running = create_instance_dir(root_str, "Running").expect("create");
+
+        let list = scan_instances(&root).expect("scan");
+
+        assert!(!interrupted.exists());
+        assert!(!installing_marker(&finished).exists());
+        assert!(installing_marker(running.path()).exists());
+        let names: Vec<&str> = list.instances.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["Finished"]);
+        assert!(list.skipped.is_empty());
+        drop(running);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A new instance's folder is kept once finished, without its marker, and
+    /// cleared away when dropped unfinished, freeing the name to try again.
+    #[test]
+    fn a_new_instance_dir_is_kept_only_once_finished() {
+        let root = temp_root("new-dir");
+        let root_str = root.to_str().expect("utf-8 path");
+
+        let kept = create_instance_dir(root_str, "Kept").expect("create");
+        let kept_path = kept.path().to_path_buf();
+        crate::json::write_json(instance_meta_file(&kept_path), &named("Kept")).expect("write");
+        kept.finish();
+        assert!(instance_meta_file(&kept_path).exists());
+        assert!(!installing_marker(&kept_path).exists());
+
+        let failed = create_instance_dir(root_str, "Failed").expect("create");
+        let failed_path = failed.path().to_path_buf();
+        drop(failed);
+        assert!(!failed_path.exists());
+        assert!(create_instance_dir(root_str, "Failed").is_ok());
         std::fs::remove_dir_all(&root).ok();
     }
 }
