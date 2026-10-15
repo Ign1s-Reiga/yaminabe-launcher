@@ -19,11 +19,24 @@
     "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
         "title": "Yaminabe Launcher",
         "width": 1600,
         "height": 900,
         "minWidth": 1366,
-        "minHeight": 768
+        "minHeight": 768,
+        "visible": false
+      },
+      {
+        "label": "splashscreen",
+        "title": "Yaminabe Launcher",
+        "url": "public/splash.html",
+        "width": 480,
+        "height": 280,
+        "center": true,
+        "resizable": false,
+        "decorations": false,
+        "backgroundColor": "#232628"
       }
     ],
     "security": {

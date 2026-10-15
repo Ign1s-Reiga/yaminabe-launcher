@@ -19,7 +19,14 @@ fn main() {
         view! {
             <App/>
         }
-    })
+    });
+    // The main window waits hidden behind the splash screen until now, so it
+    // is never seen before the app has drawn itself.
+    leptos::task::spawn_local(async {
+        if let Err(e) = ipc::call_noargs::<()>("close_splashscreen").await {
+            log::error!("cannot swap the splash screen for the main window: {e}");
+        }
+    });
 }
 
 /// Suppress the WebView's native right-click menu app-wide, *except* over

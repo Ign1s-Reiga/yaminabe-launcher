@@ -33,6 +33,7 @@ use crate::commands::settings::{
 use crate::commands::update::{
     PendingUpdate, check_for_update, checks_updates_on_launch, install_update,
 };
+use crate::commands::window::{close_splashscreen, quit_on_splash_closed};
 use log::warn;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -323,6 +324,7 @@ pub fn run() {
 
             Ok(())
         })
+        .on_window_event(quit_on_splash_closed)
         .invoke_handler(tauri::generate_handler![
             get_settings,
             save_settings,
@@ -365,6 +367,7 @@ pub fn run() {
             get_bookmarks,
             add_bookmark,
             remove_bookmark,
+            close_splashscreen,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

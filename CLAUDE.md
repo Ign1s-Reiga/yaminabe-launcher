@@ -50,6 +50,8 @@ src-tauri/src/
 │   ├── minecraft.rs         # Mojang version-manifest-v2 fetch + cache
 │   ├── modfile.rs           # Bridge to mod_repo: search, files, install, download
 │   ├── settings.rs          # get/save AppSettings, pick_folder, subfolder helpers
+│   ├── window.rs            # Startup splash (public/splash.html): close_splashscreen
+│   │                        # shows the hidden main window once the frontend mounts
 │   └── launch/              # launch_instance + kill_instance
 │       ├── mod.rs           # Tauri command body + lifecycle + stdio drain
 │       ├── manifest.rs      # load_manifest + merge_manifest (inheritsFrom)
