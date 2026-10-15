@@ -145,6 +145,12 @@ fn installing_marker(instance_dir: &Path) -> PathBuf {
     instance_dir.join(LAUNCHER_DIR).join("installing")
 }
 
+/// Where a new folder's marker is made and locked before it moves into place,
+/// so a scan never finds the marker unlocked while the install is running.
+fn staged_marker(instance_dir: &Path) -> PathBuf {
+    instance_dir.join(".installing")
+}
+
 /// A new instance's folder while its install runs.
 ///
 /// The install holds the folder's marker locked throughout. The lock goes with
@@ -221,12 +227,17 @@ pub fn create_instance_dir(install_dir: &str, instance_name: &str) -> Result<New
             "folder '{folder}' already exists at this location"
         )));
     }
-    std::fs::create_dir_all(instance_path.join(LAUNCHER_DIR))?;
+    std::fs::create_dir_all(&instance_path)?;
     // Owned from here, so a marker that cannot be made still clears the folder.
     let mut new_dir = NewInstanceDir { path: instance_path, marker: None, finished: false };
-    let marker = File::create(installing_marker(&new_dir.path))?;
+    let staged = staged_marker(&new_dir.path);
+    let marker = File::create(&staged)?;
     marker.lock()?;
     new_dir.marker = Some(marker);
+    // The folder counts as an instance only once `.launcher/` exists, and by
+    // then the staged marker already hides it from the scan.
+    std::fs::create_dir(new_dir.path.join(LAUNCHER_DIR))?;
+    std::fs::rename(&staged, installing_marker(&new_dir.path))?;
     Ok(new_dir)
 }
 
@@ -403,10 +414,13 @@ fn clear_interrupted_install(dir: &Path) {
 }
 
 /// Whether `dir` is not an instance yet, nor a damaged one: an install is still
-/// filling it, or it is what an install from before the marker left when closed
-/// part-way, a `.launcher/` holding nothing but the cache its modpack download
-/// is staged in.
+/// filling it or still setting up its marker, or it is what an install from
+/// before the marker left when closed part-way, a `.launcher/` holding nothing
+/// but the cache its modpack download is staged in.
 fn is_unfinished_install(dir: &Path) -> bool {
+    if staged_marker(dir).exists() {
+        return true;
+    }
     if installing_marker(dir).exists() {
         return !instance_meta_file(dir).exists();
     }
@@ -633,7 +647,7 @@ pub fn toggle_state_instance_mod(
 mod scan_tests {
     use super::{
         create_instance_dir, installing_marker, instance_meta_file, modlist_file, scan_instances,
-        LAUNCHER_DIR,
+        staged_marker, LAUNCHER_DIR,
     };
     use std::path::{Path, PathBuf};
     use yaminabe_launcher_shared::datamodels::{InstanceMeta, ProjectFileTarget};
@@ -690,8 +704,8 @@ mod scan_tests {
     }
 
     /// The scan clears a folder whose install was cut short and drops the stray
-    /// marker of one that had finished, but leaves an install still running
-    /// alone, unlisted until it finishes.
+    /// marker of one that had finished, but leaves an install still running or
+    /// still setting up its marker alone, unlisted until it finishes.
     #[test]
     fn an_interrupted_install_is_cleared_and_a_running_one_left_alone() {
         let root = temp_root("interrupted");
@@ -704,12 +718,18 @@ mod scan_tests {
         crate::json::write_json(instance_meta_file(&finished), &named("Finished")).expect("write");
         std::fs::write(installing_marker(&finished), b"").expect("write");
         let running = create_instance_dir(root_str, "Running").expect("create");
+        // Caught between making `.launcher/` and moving the marker into it.
+        let starting = root.join("starting");
+        std::fs::create_dir_all(starting.join(LAUNCHER_DIR)).expect("mkdir");
+        std::fs::write(staged_marker(&starting), b"").expect("write");
 
         let list = scan_instances(&root).expect("scan");
 
         assert!(!interrupted.exists());
         assert!(!installing_marker(&finished).exists());
         assert!(installing_marker(running.path()).exists());
+        assert!(!staged_marker(running.path()).exists());
+        assert!(staged_marker(&starting).exists());
         let names: Vec<&str> = list.instances.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, vec!["Finished"]);
         assert!(list.skipped.is_empty());
