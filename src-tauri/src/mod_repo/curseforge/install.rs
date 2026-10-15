@@ -7,9 +7,8 @@ use super::super::pack_files::{
 use super::api::{fetch_project_summaries, resolve_project_files};
 use super::manifest::{manifest_file_ids, read_manifest, resolve_loader, ModpackManifest};
 use crate::commands::instance::{
-    create_instance_dir, discard_unfinished_instance_dir, instance_meta_file, is_bare_file_name,
-    is_current_dir, is_launcher_dir, is_parent_dir, replace_modlist_entries_for_file_ids,
-    upsert_modlist_entries,
+    create_instance_dir, instance_meta_file, is_bare_file_name, is_current_dir, is_launcher_dir,
+    is_parent_dir, replace_modlist_entries_for_file_ids, upsert_modlist_entries,
 };
 use crate::emit_progress;
 use crate::http_utils::download_resource;
@@ -410,11 +409,11 @@ pub async fn install_modpack(
         let settings = state.settings.read().unwrap();
         (settings.curseforge_api_key.clone(), settings.instance_install_dir.clone())
     };
-    let instance_path = create_instance_dir(&install_dir, instance_name)?;
-    // Nothing usable exists until the instance record is written, so clear the
-    // directory on failure rather than leaving one the library never shows and
-    // that blocks retrying the same name — a missing API key gets this far.
-    let result = install_by_id(
+    // Nothing usable exists until the instance record is written, so a failure
+    // drops `instance_dir` unfinished, clearing the folder rather than leaving
+    // one that blocks retrying the same name — a missing API key gets this far.
+    let instance_dir = create_instance_dir(&install_dir, instance_name)?;
+    install_by_id(
         app_handle,
         id,
         instance_name,
@@ -423,14 +422,12 @@ pub async fn install_modpack(
         project_id,
         file_id,
         &api_key,
-        &instance_path,
+        instance_dir.path(),
         state,
     )
-    .await;
-    if result.is_err() {
-        discard_unfinished_instance_dir(&instance_path);
-    }
-    result
+    .await?;
+    instance_dir.finish();
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -620,22 +617,20 @@ pub async fn install_modpack_from_file(
         let settings = state.settings.read().unwrap();
         (settings.curseforge_api_key.clone(), settings.instance_install_dir.clone())
     };
-    let instance_path = create_instance_dir(&install_dir, instance_name)?;
-    let result = install_from_zip(
+    let instance_dir = create_instance_dir(&install_dir, instance_name)?;
+    install_from_zip(
         app_handle,
         id,
         instance_name,
         category,
         zip_path,
         &api_key,
-        &instance_path,
+        instance_dir.path(),
         state,
     )
-    .await;
-    if result.is_err() {
-        discard_unfinished_instance_dir(&instance_path);
-    }
-    result
+    .await?;
+    instance_dir.finish();
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
