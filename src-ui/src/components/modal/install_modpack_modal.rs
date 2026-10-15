@@ -9,13 +9,16 @@ use leptos::prelude::*;
 use leptos::{IntoView, component, view, web_sys};
 use wasm_bindgen::JsCast;
 use yaminabe_launcher_shared::datamodels::{
-    AppSettings, ModProjectInfo, ProjectFileInfo, ProjectFileTarget, ProjectId,
+    AppSettings, ModProjectInfo, ProjectFileInfo, ProjectFileTarget,
 };
 
 const PAGE_SIZE: usize = 50;
 
 #[derive(Clone)]
 pub struct InstallState {
+    /// Which opening of the dialog this is, so that an answer asked for by an
+    /// earlier one is told apart, even on the same pack.
+    pub opening: u32,
     pub pack: ModProjectInfo,
     pub version: String,
     pub versions: Vec<ProjectFileInfo>,
@@ -29,6 +32,8 @@ pub struct InstallState {
 #[derive(Clone, Copy)]
 pub struct ModpackInstaller {
     install: RwSignal<Option<InstallState>>,
+    /// How many times the dialog has been opened, which numbers each opening.
+    openings: StoredValue<u32>,
     install_name: RwSignal<String>,
     default_location: RwSignal<String>,
 }
@@ -38,6 +43,7 @@ impl ModpackInstaller {
     pub fn new() -> Self {
         let installer = ModpackInstaller {
             install: RwSignal::new(None),
+            openings: StoredValue::new(0),
             install_name: RwSignal::new(String::new()),
             default_location: RwSignal::new(String::new()),
         };
@@ -54,7 +60,10 @@ impl ModpackInstaller {
         let install = self.install;
         self.install_name.set(usable_instance_name(&pack.name));
         let project_id = pack.id.clone();
+        let opening = self.openings.get_value() + 1;
+        self.openings.set_value(opening);
         install.set(Some(InstallState {
+            opening,
             pack,
             version: String::new(),
             versions: vec![],
@@ -63,7 +72,7 @@ impl ModpackInstaller {
             versions_done: false,
         }));
         leptos::task::spawn_local(async move {
-            match call_list_project_files(project_id.clone(), ProjectFileTarget::Modpack, None, None, 0)
+            match call_list_project_files(project_id, ProjectFileTarget::Modpack, None, None, 0)
                 .await
             {
                 Ok(files) => {
@@ -71,7 +80,7 @@ impl ModpackInstaller {
                         .first()
                         .and_then(|f| f.source.version_key())
                         .unwrap_or_default();
-                    self.update_if_open_on(&project_id, |s| {
+                    self.update_if_still_open(opening, |s| {
                         s.version = first_version;
                         s.versions_done = files.len() < PAGE_SIZE;
                         s.versions = files;
@@ -79,7 +88,7 @@ impl ModpackInstaller {
                     });
                 }
                 Err(e) => {
-                    self.update_if_open_on(&project_id, |s| {
+                    self.update_if_still_open(opening, |s| {
                         s.versions_loading = false;
                         s.versions_error = Some(e);
                     });
@@ -92,11 +101,11 @@ impl ModpackInstaller {
         self.install.set(None);
     }
 
-    /// Apply an answer about `project_id`'s versions, unless the dialog has
-    /// been closed or opened on another pack since it was asked for.
-    fn update_if_open_on(self, project_id: &ProjectId, apply: impl FnOnce(&mut InstallState)) {
+    /// Apply an answer asked for during `opening`, unless the dialog has been
+    /// closed or opened again since, on another pack or the same one.
+    fn update_if_still_open(self, opening: u32, apply: impl FnOnce(&mut InstallState)) {
         self.install.update(|opt| {
-            if let Some(s) = opt.as_mut().filter(|s| s.pack.id == *project_id) {
+            if let Some(s) = opt.as_mut().filter(|s| s.opening == opening) {
                 apply(s);
             }
         });
@@ -111,6 +120,7 @@ impl ModpackInstaller {
             return;
         }
         let project_id = state.pack.id.clone();
+        let opening = state.opening;
         let index = state.versions.len() as u32;
         install.update(|opt| {
             if let Some(s) = opt {
@@ -119,18 +129,18 @@ impl ModpackInstaller {
             }
         });
         leptos::task::spawn_local(async move {
-            match call_list_project_files(project_id.clone(), ProjectFileTarget::Modpack, None, None, index)
+            match call_list_project_files(project_id, ProjectFileTarget::Modpack, None, None, index)
                 .await
             {
                 Ok(mut files) => {
-                    self.update_if_open_on(&project_id, |s| {
+                    self.update_if_still_open(opening, |s| {
                         s.versions_done = files.len() < PAGE_SIZE;
                         s.versions.append(&mut files);
                         s.versions_loading = false;
                     });
                 }
                 Err(e) => {
-                    self.update_if_open_on(&project_id, |s| {
+                    self.update_if_still_open(opening, |s| {
                         s.versions_error = Some(e);
                         s.versions_loading = false;
                     });
