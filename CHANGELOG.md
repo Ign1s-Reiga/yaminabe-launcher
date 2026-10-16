@@ -3,6 +3,14 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.0.2 — 2026-10-16
+
+- Keep showing an instance in the library when its folder holds a file named
+  .installing. Since 1.0.1, such a file hid the instance.
+- Keep the version you picked in the install dialog. If you closed a modpack's
+  dialog and opened it again before its versions had loaded, the earlier
+  opening's list could reset your pick or show some versions twice.
+
 ## 1.0.1 — 2026-10-16
 
 - Stop the library from deleting the folder of an install that has just
