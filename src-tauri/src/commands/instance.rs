@@ -418,10 +418,9 @@ fn clear_interrupted_install(dir: &Path) {
 /// before the marker left when closed part-way, a `.launcher/` holding nothing
 /// but the cache its modpack download is staged in.
 fn is_unfinished_install(dir: &Path) -> bool {
-    if staged_marker(dir).exists() {
-        return true;
-    }
-    if installing_marker(dir).exists() {
+    // A record outweighs either marker. The folder is also the game's, so a
+    // stray `.installing` in it may not be the launcher's.
+    if staged_marker(dir).exists() || installing_marker(dir).exists() {
         return !instance_meta_file(dir).exists();
     }
     let cache = dir.join(ProjectFileTarget::Modpack.directory());
@@ -705,7 +704,8 @@ mod scan_tests {
 
     /// The scan clears a folder whose install was cut short and drops the stray
     /// marker of one that had finished, but leaves an install still running or
-    /// still setting up its marker alone, unlisted until it finishes.
+    /// still setting up its marker alone, unlisted until it finishes. A finished
+    /// instance stays listed with a stray `.installing` beside its record.
     #[test]
     fn an_interrupted_install_is_cleared_and_a_running_one_left_alone() {
         let root = temp_root("interrupted");
@@ -722,6 +722,9 @@ mod scan_tests {
         let starting = root.join("starting");
         std::fs::create_dir_all(starting.join(LAUNCHER_DIR)).expect("mkdir");
         std::fs::write(staged_marker(&starting), b"").expect("write");
+        let stray = root.join("stray");
+        crate::json::write_json(instance_meta_file(&stray), &named("Stray")).expect("write");
+        std::fs::write(staged_marker(&stray), b"").expect("write");
 
         let list = scan_instances(&root).expect("scan");
 
@@ -731,7 +734,7 @@ mod scan_tests {
         assert!(!staged_marker(running.path()).exists());
         assert!(staged_marker(&starting).exists());
         let names: Vec<&str> = list.instances.iter().map(|i| i.name.as_str()).collect();
-        assert_eq!(names, vec!["Finished"]);
+        assert_eq!(names, vec!["Finished", "Stray"]);
         assert!(list.skipped.is_empty());
         drop(running);
         std::fs::remove_dir_all(&root).ok();
