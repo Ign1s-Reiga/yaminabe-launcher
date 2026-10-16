@@ -32,7 +32,8 @@ pub fn version_note_class() -> &'static str {
     }
 }
 
-/// Failure text shown in place of a version list.
+/// Failure text shown in place of a version list, or below the versions it
+/// did load.
 pub fn version_error_class() -> &'static str {
     css! {
         margin: 0;
