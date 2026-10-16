@@ -234,8 +234,8 @@ pub fn create_instance_dir(install_dir: &str, instance_name: &str) -> Result<New
     let marker = File::create(&staged)?;
     marker.lock()?;
     new_dir.marker = Some(marker);
-    // The folder counts as an instance only once `.launcher/` exists, and by
-    // then the staged marker already hides it from the scan.
+    // Only after the lock: the scan reads a folder once `.launcher/` exists,
+    // and takes an unlocked staged marker there for a crash's leftover.
     std::fs::create_dir(new_dir.path.join(LAUNCHER_DIR))?;
     std::fs::rename(&staged, installing_marker(&new_dir.path))?;
     Ok(new_dir)
@@ -420,13 +420,29 @@ fn clear_interrupted_install(dir: &Path) {
 fn is_unfinished_install(dir: &Path) -> bool {
     // A record outweighs either marker. The folder is also the game's, so a
     // stray `.installing` in it may not be the launcher's.
-    if staged_marker(dir).exists() || installing_marker(dir).exists() {
+    if staged_marker_is_held(dir) || installing_marker(dir).exists() {
         return !instance_meta_file(dir).exists();
     }
     let cache = dir.join(ProjectFileTarget::Modpack.directory());
     let Ok(entries) = std::fs::read_dir(dir.join(LAUNCHER_DIR)) else { return false };
     let paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
     paths == [cache]
+}
+
+/// Whether an install still holds the marker it stages in `dir`. The install
+/// locks it before making `.launcher/`, and the scan looks only at folders
+/// that have one, so a marker found unlocked was left by a crash, or is not
+/// the launcher's.
+fn staged_marker_is_held(dir: &Path) -> bool {
+    let Ok(marker) = File::open(staged_marker(dir)) else { return false };
+    match marker.try_lock() {
+        Ok(()) => false,
+        Err(TryLockError::WouldBlock) => true,
+        Err(TryLockError::Error(e)) => {
+            warn!("cannot tell whether an install is still setting up {}: {e}", dir.display());
+            true
+        }
+    }
 }
 
 /// Why an `instance.json` would not load, put the way a person reading the log
@@ -705,7 +721,9 @@ mod scan_tests {
     /// The scan clears a folder whose install was cut short and drops the stray
     /// marker of one that had finished, but leaves an install still running or
     /// still setting up its marker alone, unlisted until it finishes. A finished
-    /// instance stays listed with a stray `.installing` beside its record.
+    /// instance stays listed with a stray `.installing` beside its record, and a
+    /// folder whose install crashed while setting up its marker is kept and
+    /// reported, not hidden.
     #[test]
     fn an_interrupted_install_is_cleared_and_a_running_one_left_alone() {
         let root = temp_root("interrupted");
@@ -721,7 +739,12 @@ mod scan_tests {
         // Caught between making `.launcher/` and moving the marker into it.
         let starting = root.join("starting");
         std::fs::create_dir_all(starting.join(LAUNCHER_DIR)).expect("mkdir");
-        std::fs::write(staged_marker(&starting), b"").expect("write");
+        let starting_marker = std::fs::File::create(staged_marker(&starting)).expect("create");
+        starting_marker.lock().expect("lock");
+        // The same, but the install is gone and its lock with it.
+        let crashed = root.join("crashed");
+        std::fs::create_dir_all(crashed.join(LAUNCHER_DIR)).expect("mkdir");
+        std::fs::write(staged_marker(&crashed), b"").expect("write");
         let stray = root.join("stray");
         crate::json::write_json(instance_meta_file(&stray), &named("Stray")).expect("write");
         std::fs::write(staged_marker(&stray), b"").expect("write");
@@ -733,10 +756,15 @@ mod scan_tests {
         assert!(installing_marker(running.path()).exists());
         assert!(!staged_marker(running.path()).exists());
         assert!(staged_marker(&starting).exists());
+        assert!(staged_marker(&crashed).exists());
         let names: Vec<&str> = list.instances.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, vec!["Finished", "Stray"]);
-        assert!(list.skipped.is_empty());
+        let skipped: Vec<(&str, &str)> = list.skipped.iter()
+            .map(|s| (s.folder.as_str(), s.reason.as_str()))
+            .collect();
+        assert_eq!(skipped, vec![("crashed", "instance.json is missing")]);
         drop(running);
+        drop(starting_marker);
         std::fs::remove_dir_all(&root).ok();
     }
 
