@@ -3,6 +3,16 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.0.3 — 2026-10-16
+
+- Keep the versions already loaded when loading more of them fails, in the
+  install, upgrade and add-mod dialogs, and offer a button to try again.
+- Keep the Back button in the add-mod dialog when a mod's versions cannot be
+  listed, so you can return to the search.
+- Tell you about a folder left by an install that was cut short just as it
+  started, as an instance that cannot be loaded, instead of hiding it. Delete
+  the folder yourself to free its name.
+
 ## 1.0.2 — 2026-10-16
 
 - Keep showing an instance in the library when its folder holds a file named
