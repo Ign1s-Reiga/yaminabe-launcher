@@ -3,7 +3,7 @@ use leptos::prelude::*;
 use leptos::{IntoView, component, view};
 use yaminabe_launcher_shared::datamodels::ProjectFileReleaseType;
 
-use super::format_size;
+use super::{format_size, Button, ButtonSize, ButtonVariant};
 
 /// Scroll container holding [`VersionRow`]s. Hang the caller's `on:scroll` on it
 /// to page in more versions.
@@ -39,6 +39,31 @@ pub fn version_error_class() -> &'static str {
         margin: 0;
         font-size: 0.82rem;
         color: #c0392b;
+    }
+}
+
+/// A page of versions that failed to load, at the end of a version list below
+/// the ones that did: its error, and a button to load that page again.
+#[component]
+pub fn VersionPageError(error: String, on_retry: Callback<()>) -> impl IntoView {
+    let row = css! {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding: 12px 4px;
+    };
+    view! {
+        <div class=row>
+            <p class=version_error_class()>{error}</p>
+            <Button
+                variant=ButtonVariant::Secondary
+                size=ButtonSize::Small
+                on_click=Callback::new(move |_| on_retry.run(()))
+            >
+                "Try again"
+            </Button>
+        </div>
     }
 }
 

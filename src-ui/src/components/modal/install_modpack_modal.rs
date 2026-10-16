@@ -267,13 +267,6 @@ fn InstallModpackModal(
         overflow: hidden;
         text-overflow: ellipsis;
     };
-    let more_error = css! {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 10px;
-        padding: 12px 4px;
-    };
     let version_list = version_list_class();
     let version_note = version_note_class();
     let version_error = version_error_class();
@@ -387,16 +380,7 @@ fn InstallModpackModal(
                                                 <p class=version_note>"Loading more…"</p>
                                             </Show>
                                             {move || versions_error.get().map(|err| view! {
-                                                <div class=more_error>
-                                                    <p class=version_error>{err}</p>
-                                                    <Button
-                                                        variant=ButtonVariant::Secondary
-                                                        size=ButtonSize::Small
-                                                        on_click=Callback::new(move |_| on_load_more.run(()))
-                                                    >
-                                                        "Try again"
-                                                    </Button>
-                                                </div>
+                                                <VersionPageError error=err on_retry=on_load_more />
                                             })}
                                         </div>
                                     }.into_any(),

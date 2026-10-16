@@ -206,10 +206,15 @@ pub fn UpgradeModpackModal(
             return;
         };
         let remaining = list.scroll_height() - list.scroll_top() - list.client_height();
-        if remaining <= 8 {
+        // After a failed page, wait for "Try again" instead of retrying on every scroll.
+        if remaining <= 8 && error.with_untracked(Option::is_none) {
             load_more();
         }
     };
+
+    // Only a failed first page takes the list's place. A later one shows below
+    // the versions already loaded, which can still be picked.
+    let first_page_error = Memo::new(move |_| error.get().filter(|_| files.with(Vec::is_empty)));
 
     view! {
         <ModalOverlay>
@@ -221,7 +226,7 @@ pub fn UpgradeModpackModal(
                     </p>
                     <FormFields>
                         <FormField label="Target Version">
-                            {move || match error.get() {
+                            {move || match first_page_error.get() {
                                 Some(err) => view! { <p class=version_error>{err}</p> }.into_any(),
                                 None => view! {
                                     <div class=version_list on:scroll=on_scroll>
@@ -229,6 +234,12 @@ pub fn UpgradeModpackModal(
                                         <Show when=move || loading.get() && !files.get().is_empty()>
                                             <p class=version_note>"Loading more…"</p>
                                         </Show>
+                                        {move || error.get().map(|err| view! {
+                                            <VersionPageError
+                                                error=err
+                                                on_retry=Callback::new(move |_: ()| load_more())
+                                            />
+                                        })}
                                     </div>
                                 }.into_any(),
                             }}
