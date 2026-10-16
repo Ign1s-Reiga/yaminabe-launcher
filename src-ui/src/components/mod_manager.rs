@@ -198,6 +198,16 @@ pub fn ModManager(
     }
 }
 
+/// What the add-mod dialog shows for the picked mod's versions.
+#[derive(Clone, PartialEq)]
+enum VersionPanel {
+    Loading,
+    /// The first page failed, so there is nothing to list beside the error.
+    Failed(String),
+    Empty,
+    List,
+}
+
 #[component]
 fn AddModModal(
     instance_id: String,
@@ -270,6 +280,20 @@ fn AddModModal(
             }
         });
     };
+
+    // A memo, so a later page loading, arriving or failing doesn't rebuild the
+    // list and lose its scroll position.
+    let panel = Memo::new(move |_| {
+        if !versions.with(Vec::is_empty) {
+            VersionPanel::List
+        } else if let Some(e) = versions_error.get() {
+            VersionPanel::Failed(e)
+        } else if versions_loading.get() {
+            VersionPanel::Loading
+        } else {
+            VersionPanel::Empty
+        }
+    });
 
     let on_details = move |project: ModProjectInfo| {
         let project_id = project.id.clone();
@@ -413,74 +437,78 @@ fn AddModModal(
                                         <div class=summary>{project.summary}</div>
                                     </div>
                                 </div>
-                                {move || {
-                                    if let Some(e) = versions_error.get() {
-                                        view! { <div class=status_area>{e}</div> }.into_any()
-                                    } else if versions_loading.get() && versions.get().is_empty() {
-                                        view! { <div class=status_area>"Loading versions…"</div> }.into_any()
-                                    } else if versions.get().is_empty() {
-                                        view! { <div class=status_area>"No compatible versions found."</div> }.into_any()
-                                    } else {
-                                        view! {
-                                            <div
-                                                class=version_list_class()
-                                                on:scroll=move |ev: leptos::ev::Event| {
-                                                    let Some(list) = ev.target()
-                                                        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-                                                    else { return; };
-                                                    let remaining = list.scroll_height() - list.scroll_top() - list.client_height();
-                                                    if remaining <= 8 {
-                                                        load_versions(pid.get_value(), true);
-                                                    }
+                                {move || match panel.get() {
+                                    VersionPanel::Loading => view! { <div class=status_area>"Loading versions…"</div> }.into_any(),
+                                    VersionPanel::Failed(e) => view! { <div class=status_area>{e}</div> }.into_any(),
+                                    VersionPanel::Empty => view! { <div class=status_area>"No compatible versions found."</div> }.into_any(),
+                                    VersionPanel::List => view! {
+                                        <div
+                                            class=version_list_class()
+                                            on:scroll=move |ev: leptos::ev::Event| {
+                                                let Some(list) = ev.target()
+                                                    .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                                                else { return; };
+                                                let remaining = list.scroll_height() - list.scroll_top() - list.client_height();
+                                                // After a failed page, wait for "Try again" instead of retrying on every scroll.
+                                                if remaining <= 8 && versions_error.with_untracked(Option::is_none) {
+                                                    load_versions(pid.get_value(), true);
                                                 }
-                                            >
-                                                {move || versions.get().into_iter().map(|file| {
-                                                    let value = file.source.version_key()
-                                                        .unwrap_or_default();
-                                                    let picked = value.clone();
-                                                    view! {
-                                                        <VersionRow
-                                                            label=file.display_name
-                                                            size=file.size
-                                                            release_type=file.release_type
-                                                            selected=Signal::derive(move || selected_file_id.get() == value)
-                                                            on_pick=Callback::new(move |_: ()| selected_file_id.set(picked.clone()))
-                                                        />
-                                                    }
-                                                }).collect_view()}
-                                                <Show when=move || versions_loading.get()>
-                                                    <p class=version_note_class()>"Loading more…"</p>
-                                                </Show>
-                                            </div>
-                                            <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
-                                                <Button
-                                                    variant=ButtonVariant::Secondary
-                                                    on_click=Callback::new(move |_| selected_project.set(None))
-                                                >
-                                                    "Back"
-                                                </Button>
-                                                <Button
-                                                    variant=ButtonVariant::Primary
-                                                    disabled=Signal::derive(move || {
-                                                        selected_file_id.get().is_empty()
-                                                            || versions_loading.get()
-                                                            || installing.get().contains(&pid.get_value())
-                                                            || installed.get().contains(&pid.get_value())
-                                                    })
-                                                    on_click=Callback::new(move |_| on_add(pid.get_value()))
-                                                >
-                                                    {move || if installed.get().contains(&pid.get_value()) {
-                                                        "Added"
-                                                    } else if installing.get().contains(&pid.get_value()) {
-                                                        "Adding…"
-                                                    } else {
-                                                        "Add"
-                                                    }}
-                                                </Button>
-                                            </div>
-                                        }.into_any()
-                                    }
+                                            }
+                                        >
+                                            {move || versions.get().into_iter().map(|file| {
+                                                let value = file.source.version_key()
+                                                    .unwrap_or_default();
+                                                let picked = value.clone();
+                                                view! {
+                                                    <VersionRow
+                                                        label=file.display_name
+                                                        size=file.size
+                                                        release_type=file.release_type
+                                                        selected=Signal::derive(move || selected_file_id.get() == value)
+                                                        on_pick=Callback::new(move |_: ()| selected_file_id.set(picked.clone()))
+                                                    />
+                                                }
+                                            }).collect_view()}
+                                            <Show when=move || versions_loading.get()>
+                                                <p class=version_note_class()>"Loading more…"</p>
+                                            </Show>
+                                            {move || versions_error.get().map(|e| view! {
+                                                <VersionPageError
+                                                    error=e
+                                                    on_retry=Callback::new(move |_: ()| load_versions(pid.get_value(), true))
+                                                />
+                                            })}
+                                        </div>
+                                    }.into_any(),
                                 }}
+                                // Outside the panel, so Back is there even when
+                                // nothing could be listed.
+                                <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+                                    <Button
+                                        variant=ButtonVariant::Secondary
+                                        on_click=Callback::new(move |_| selected_project.set(None))
+                                    >
+                                        "Back"
+                                    </Button>
+                                    <Button
+                                        variant=ButtonVariant::Primary
+                                        disabled=Signal::derive(move || {
+                                            selected_file_id.get().is_empty()
+                                                || versions_loading.get()
+                                                || installing.get().contains(&pid.get_value())
+                                                || installed.get().contains(&pid.get_value())
+                                        })
+                                        on_click=Callback::new(move |_| on_add(pid.get_value()))
+                                    >
+                                        {move || if installed.get().contains(&pid.get_value()) {
+                                            "Added"
+                                        } else if installing.get().contains(&pid.get_value()) {
+                                            "Adding…"
+                                        } else {
+                                            "Add"
+                                        }}
+                                    </Button>
+                                </div>
                             </div>
                         }
                     })}

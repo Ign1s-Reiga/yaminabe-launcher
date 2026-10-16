@@ -295,10 +295,17 @@ fn InstallModpackModal(
             return;
         };
         let remaining = list.scroll_height() - list.scroll_top() - list.client_height();
-        if remaining <= 8 {
+        // After a failed page, wait for "Try again" instead of retrying on every scroll.
+        if remaining <= 8 && versions_error.with_untracked(Option::is_none) {
             on_load_more.run(());
         }
     };
+
+    // Only a failed first page takes the list's place. A later one shows below
+    // the versions already loaded, which can still be picked and installed.
+    let first_page_error = Memo::new(move |_| {
+        versions_error.get().filter(|_| versions.with(Vec::is_empty))
+    });
 
     let rows = move || {
         let list = versions.get();
@@ -362,7 +369,7 @@ fn InstallModpackModal(
                                 />
                             </FormField>
                             <FormField label="Modpack Version">
-                                {move || match versions_error.get() {
+                                {move || match first_page_error.get() {
                                     Some(err) => view! { <p class=version_error>{err}</p> }.into_any(),
                                     None => view! {
                                         // The form reads the pick by name, so the
@@ -373,6 +380,9 @@ fn InstallModpackModal(
                                             <Show when=move || loading.get() && !versions.get().is_empty()>
                                                 <p class=version_note>"Loading more…"</p>
                                             </Show>
+                                            {move || versions_error.get().map(|err| view! {
+                                                <VersionPageError error=err on_retry=on_load_more />
+                                            })}
                                         </div>
                                     }.into_any(),
                                 }}
