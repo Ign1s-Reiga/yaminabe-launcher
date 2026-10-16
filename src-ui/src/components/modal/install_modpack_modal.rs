@@ -113,15 +113,14 @@ impl ModpackInstaller {
 
     fn load_more_versions(self) {
         let install = self.install;
-        let Some(state) = install.get_untracked() else {
+        // Read in place: this runs on every scroll event near the list's end.
+        let Some((project_id, opening, index)) = install.with_untracked(|opt| {
+            opt.as_ref()
+                .filter(|s| !s.versions_loading && !s.versions_done)
+                .map(|s| (s.pack.id.clone(), s.opening, s.versions.len() as u32))
+        }) else {
             return;
         };
-        if state.versions_loading || state.versions_done {
-            return;
-        }
-        let project_id = state.pack.id.clone();
-        let opening = state.opening;
-        let index = state.versions.len() as u32;
         install.update(|opt| {
             if let Some(s) = opt {
                 s.versions_loading = true;
@@ -271,19 +270,22 @@ fn InstallModpackModal(
     let version_note = version_note_class();
     let version_error = version_error_class();
 
-    // Split the install state into its own memos so picking a version only
-    // re-runs the row classes. Re-rendering the whole list would reset its
-    // scroll position on every click.
+    // Split the install state into memos, each reading only its own field, so
+    // picking a version only re-runs the row classes. Re-rendering the whole
+    // list would reset its scroll position on every click.
+    let pack = Memo::new(move |_| install.with(|s| s.as_ref().map(|s| s.pack.clone())));
     let versions = Memo::new(move |_| {
-        install.get().map(|s| s.versions).unwrap_or_default()
+        install.with(|s| s.as_ref().map(|s| s.versions.clone()).unwrap_or_default())
     });
     let selected = Memo::new(move |_| {
-        install.get().map(|s| s.version).unwrap_or_default()
+        install.with(|s| s.as_ref().map(|s| s.version.clone()).unwrap_or_default())
     });
     let loading = Memo::new(move |_| {
-        install.get().map(|s| s.versions_loading).unwrap_or(true)
+        install.with(|s| s.as_ref().is_none_or(|s| s.versions_loading))
     });
-    let versions_error = Memo::new(move |_| install.get().and_then(|s| s.versions_error));
+    let versions_error = Memo::new(move |_| {
+        install.with(|s| s.as_ref().and_then(|s| s.versions_error.clone()))
+    });
 
     let on_scroll = move |ev: leptos::ev::Event| {
         let Some(list) = ev
@@ -334,8 +336,7 @@ fn InstallModpackModal(
                     <ModalBody>
                         <h2 style="margin: 0 0 20px 0;">"Configure Instance"</h2>
 
-                        {move || install.get().map(|s| {
-                            let pack = s.pack;
+                        {move || pack.get().map(|pack| {
                             let logo_view = if let Some(url) = pack.logo_url.clone() {
                                 view! { <img class=pack_strip_logo src=url alt=""/> }.into_any()
                             } else {
@@ -394,9 +395,7 @@ fn InstallModpackModal(
                         <Button
                             variant=ButtonVariant::Primary
                             button_type="submit"
-                            disabled=Signal::derive(move || {
-                                install.get().map(|s| s.versions_loading).unwrap_or(true)
-                            })
+                            disabled=loading
                         >
                             "Install →"
                         </Button>
