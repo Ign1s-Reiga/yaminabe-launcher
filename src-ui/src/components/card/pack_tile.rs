@@ -32,22 +32,24 @@ pub fn PackTile(
             background-color: rgba(58, 158, 95, 0.04);
         }
     };
-    let logo = css! {
-        width: 100%;
-        aspect-ratio: 1 / 1;
-        border-radius: 8px;
-        object-fit: cover;
-        background-color: var(--secondary-color);
-    };
-    let logo_placeholder = css! {
+    // The box holds the square, not the image, so the tile keeps its size
+    // whether the image has loaded, is still loading or failed.
+    let logo_box = css! {
         display: flex;
         align-items: center;
         justify-content: center;
         width: 100%;
         aspect-ratio: 1 / 1;
         border-radius: 8px;
+        overflow: hidden;
         background-color: var(--secondary-color);
         font-size: 1.6rem;
+    };
+    let logo = css! {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
     };
     let footer = css! {
         display: flex;
@@ -72,7 +74,7 @@ pub fn PackTile(
 
     let logo_view = match pack.logo_url.clone() {
         Some(url) => view! { <img class=logo src=url alt="" /> }.into_any(),
-        None => view! { <div class=logo_placeholder>"📦"</div> }.into_any(),
+        None => "📦".into_any(),
     };
     let count = format!("{} downloads", fmt_downloads(pack.download_count));
     let platform = show_platform.then(|| view! { <div class=detail>{pack.id.platform().to_string()}</div> });
@@ -97,7 +99,7 @@ pub fn PackTile(
                 }
             }
         >
-            {logo_view}
+            <div class=logo_box>{logo_view}</div>
             <div class=footer>
                 <div class=text>
                     <div class=name>{title}</div>
