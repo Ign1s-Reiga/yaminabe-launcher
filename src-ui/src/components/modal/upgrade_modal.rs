@@ -110,10 +110,9 @@ pub fn UpgradeModpackModal(
         });
     };
 
-    // Loaded, with nothing above the installed version to offer.
-    let up_to_date = Signal::derive(move || {
-        !loading.get() && error.get().is_none() && current_index.get() == Some(0)
-    });
+    // Nothing above the installed version to offer. The list is newest-first,
+    // so a later page still loading or failing below it can't change that.
+    let up_to_date = Signal::derive(move || current_index.get() == Some(0));
     let can_upgrade = Signal::derive(move || {
         let picked = selected.get();
         !picked.is_empty() && picked != current_version.get_value()
