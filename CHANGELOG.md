@@ -3,12 +3,14 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
-## 1.0.3 — 2026-10-16
+## 1.0.3 — 2026-10-19
 
 - Keep the versions already loaded when loading more of them fails, in the
   install, upgrade and add-mod dialogs, and offer a button to try again.
 - Keep the Back button in the add-mod dialog when a mod's versions cannot be
   listed, so you can return to the search.
+- Keep the modpack tiles on Home and among your bookmarks the same size
+  whether or not their pictures have loaded.
 - Tell you about a folder left by an install that was cut short just as it
   started, as an instance that cannot be loaded, instead of hiding it. Delete
   the folder yourself to free its name.
