@@ -9,6 +9,11 @@ each release is a `## <version> — <date>` heading followed by bullet points.
   install, upgrade and add-mod dialogs, and offer a button to try again.
 - Keep the Back button in the add-mod dialog when a mod's versions cannot be
   listed, so you can return to the search.
+- Add the mod you picked in the add-mod dialog. If you went back and picked
+  another mod while the first one's versions were still loading, its list
+  could fill with the first mod's versions, and Add installed that mod.
+- Keep saying in the upgrade dialog that an instance is already on the
+  newest version while more versions load, or when they fail to load.
 - Keep the modpack tiles on Home and among your bookmarks the same size
   whether or not their pictures have loaded.
 - Tell you about a folder left by an install that was cut short just as it
