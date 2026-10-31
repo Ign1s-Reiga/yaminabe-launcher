@@ -32,8 +32,7 @@ pub fn version_note_class() -> &'static str {
     }
 }
 
-/// Failure text shown in place of a version list, or below the versions it
-/// did load.
+/// Failure text of a page of versions that did not load.
 pub fn version_error_class() -> &'static str {
     css! {
         margin: 0;
@@ -42,8 +41,9 @@ pub fn version_error_class() -> &'static str {
     }
 }
 
-/// A page of versions that failed to load, at the end of a version list below
-/// the ones that did: its error, and a button to load that page again.
+/// A page of versions that failed to load: its error, and a button to load that
+/// page again. A first page shows in place of the list, a later one at its end
+/// below the versions that did load.
 #[component]
 pub fn VersionPageError(error: String, on_retry: Callback<()>) -> impl IntoView {
     let row = css! {

@@ -25,7 +25,7 @@ pub fn UpgradeModpackModal(
     on_close: Callback<()>,
 ) -> impl IntoView {
     let files: RwSignal<Vec<ProjectFileInfo>> = RwSignal::new(vec![]);
-    let loading: RwSignal<bool> = RwSignal::new(true);
+    let loading: RwSignal<bool> = RwSignal::new(false);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
     let done: RwSignal<bool> = RwSignal::new(false);
     let selected: RwSignal<String> = RwSignal::new(String::new());
@@ -47,40 +47,9 @@ pub fn UpgradeModpackModal(
 
     let is_older = move |index: usize| current_index.get().is_some_and(|current| index >= current);
 
-    leptos::task::spawn_local(async move {
-        match call_list_project_files(
-            project_id.get_value(),
-            ProjectFileTarget::Modpack,
-            None,
-            None,
-            0,
-        )
-        .await
-        {
-            Ok(list) => {
-                // The list is newest-first, so the newest upgrade target is the
-                // top of it — unless the top is what is already installed.
-                let installed = current_version.get_value();
-                let newest = list
-                    .first()
-                    .filter(|file| {
-                        file.source.version_key().as_deref() != Some(installed.as_str())
-                    })
-                    .and_then(|file| file.source.version_key())
-                    .unwrap_or_default();
-                selected.set(newest);
-                done.set(list.len() < PAGE_SIZE);
-                files.set(list);
-                loading.set(false);
-            }
-            Err(e) => {
-                error.set(Some(e));
-                loading.set(false);
-            }
-        }
-    });
-
-    let load_more = move || {
+    // With nothing loaded yet, on opening or after that failed, the next page is
+    // the first one.
+    let load_versions = move || {
         if loading.get_untracked() || done.get_untracked() {
             return;
         }
@@ -98,6 +67,20 @@ pub fn UpgradeModpackModal(
             .await
             {
                 Ok(mut list) => {
+                    // The list is newest-first, so the newest upgrade target is
+                    // the top of the first page — unless that is what is already
+                    // installed.
+                    if index == 0 {
+                        let installed = current_version.get_value();
+                        let newest = list
+                            .first()
+                            .filter(|file| {
+                                file.source.version_key().as_deref() != Some(installed.as_str())
+                            })
+                            .and_then(|file| file.source.version_key())
+                            .unwrap_or_default();
+                        selected.set(newest);
+                    }
                     done.set(list.len() < PAGE_SIZE);
                     files.update(|existing| existing.append(&mut list));
                     loading.set(false);
@@ -109,6 +92,7 @@ pub fn UpgradeModpackModal(
             }
         });
     };
+    load_versions();
 
     // Nothing above the installed version to offer. The list is newest-first,
     // so a later page still loading or failing below it can't change that.
@@ -156,7 +140,6 @@ pub fn UpgradeModpackModal(
     };
     let version_list = version_list_class();
     let version_note = version_note_class();
-    let version_error = version_error_class();
 
     let rows = move || {
         let list = files.get();
@@ -207,7 +190,7 @@ pub fn UpgradeModpackModal(
         let remaining = list.scroll_height() - list.scroll_top() - list.client_height();
         // After a failed page, wait for "Try again" instead of retrying on every scroll.
         if remaining <= 8 && error.with_untracked(Option::is_none) {
-            load_more();
+            load_versions();
         }
     };
 
@@ -226,7 +209,12 @@ pub fn UpgradeModpackModal(
                     <FormFields>
                         <FormField label="Target Version">
                             {move || match first_page_error.get() {
-                                Some(err) => view! { <p class=version_error>{err}</p> }.into_any(),
+                                Some(err) => view! {
+                                    <VersionPageError
+                                        error=err
+                                        on_retry=Callback::new(move |_: ()| load_versions())
+                                    />
+                                }.into_any(),
                                 None => view! {
                                     <div class=version_list on:scroll=on_scroll>
                                         {rows}
@@ -236,7 +224,7 @@ pub fn UpgradeModpackModal(
                                         {move || error.get().map(|err| view! {
                                             <VersionPageError
                                                 error=err
-                                                on_retry=Callback::new(move |_: ()| load_more())
+                                                on_retry=Callback::new(move |_: ()| load_versions())
                                             />
                                         })}
                                     </div>
