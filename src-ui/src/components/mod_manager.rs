@@ -229,10 +229,19 @@ fn AddModModal(
     let installing: RwSignal<HashSet<ProjectId>> = RwSignal::new(HashSet::new());
     let installed: RwSignal<HashSet<ProjectId>> = RwSignal::new(HashSet::new());
 
+    // Numbers each mod whose versions are opened, so versions asked for by an
+    // earlier one are dropped when they arrive instead of filling this one's list.
+    let opening = StoredValue::new(0u32);
+
     let load_versions = move |project_id: ProjectId, append: bool| {
-        if versions_loading.get_untracked() || (append && versions_done.get_untracked()) {
+        // Another mod always starts afresh; only a further page waits its turn.
+        if append && (versions_loading.get_untracked() || versions_done.get_untracked()) {
             return;
         }
+        if !append {
+            opening.set_value(opening.get_value() + 1);
+        }
+        let asked_by = opening.get_value();
         let index = if append {
             versions.get_untracked().len() as u32
         } else {
@@ -248,15 +257,19 @@ fn AddModModal(
         let game_version = Some(game_version.get_value());
         let mod_loader = Some(mod_loader.get_value());
         leptos::task::spawn_local(async move {
-            match call_list_project_files(
+            let result = call_list_project_files(
                 project_id,
                 ProjectFileTarget::Mod,
                 game_version,
                 mod_loader,
                 index,
             )
-            .await
-            {
+            .await;
+            // Also covers the dialog having closed meanwhile.
+            if opening.try_get_value() != Some(asked_by) {
+                return;
+            }
+            match result {
                 Ok(mut files) => {
                     if files.len() < 50 {
                         versions_done.set(true);
