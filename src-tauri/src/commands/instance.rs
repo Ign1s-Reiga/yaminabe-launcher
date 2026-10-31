@@ -435,19 +435,27 @@ fn staged_marker_is_held(dir: &Path) -> bool {
 /// What the lock on an install's marker says about that install.
 #[derive(PartialEq)]
 enum MarkerLock {
-    /// There is no marker, or it cannot be opened.
+    /// There is no marker.
     Missing,
     /// Unlocked: the lock went with the process that took it.
     Free,
-    /// Locked by an install still running. A lock that cannot be checked counts
-    /// too, so that no folder is cleared or reported broken on a guess.
+    /// Locked by an install still running. A marker that cannot be opened, or
+    /// whose lock cannot be checked, counts too, so that no folder is cleared or
+    /// reported broken on a guess.
     Held,
 }
 
 /// Check the lock on the marker at `path`. The marker is closed again before
 /// this returns, so a free one can be removed straight away.
 fn marker_lock(path: &Path) -> MarkerLock {
-    let Ok(marker) = File::open(path) else { return MarkerLock::Missing };
+    let marker = match File::open(path) {
+        Ok(marker) => marker,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return MarkerLock::Missing,
+        Err(e) => {
+            warn!("cannot open {} to tell whether an install holds it: {e}", path.display());
+            return MarkerLock::Held;
+        }
+    };
     match marker.try_lock() {
         Ok(()) => MarkerLock::Free,
         Err(TryLockError::WouldBlock) => MarkerLock::Held,
