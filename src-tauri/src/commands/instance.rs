@@ -393,15 +393,10 @@ fn scan_instances(root: &Path) -> Result<InstanceList, Error> {
 /// marker is stray.
 fn clear_interrupted_install(dir: &Path) {
     let marker_path = installing_marker(dir);
-    let Ok(marker) = File::open(&marker_path) else { return };
-    match marker.try_lock() {
-        Ok(()) => drop(marker),
-        // An install in this launcher or another is still running.
-        Err(TryLockError::WouldBlock) => return,
-        Err(TryLockError::Error(e)) => {
-            warn!("cannot tell whether an install is still filling {}: {e}", dir.display());
-            return;
-        }
+    // Only a free marker is a leftover. A held one is an install, in this
+    // launcher or another, that is still running.
+    if marker_lock(&marker_path) != MarkerLock::Free {
+        return;
     }
     if instance_meta_file(dir).exists() {
         if let Err(e) = std::fs::remove_file(&marker_path) {
@@ -434,13 +429,31 @@ fn is_unfinished_install(dir: &Path) -> bool {
 /// that have one, so a marker found unlocked was left by a crash, or is not
 /// the launcher's.
 fn staged_marker_is_held(dir: &Path) -> bool {
-    let Ok(marker) = File::open(staged_marker(dir)) else { return false };
+    marker_lock(&staged_marker(dir)) == MarkerLock::Held
+}
+
+/// What the lock on an install's marker says about that install.
+#[derive(PartialEq)]
+enum MarkerLock {
+    /// There is no marker, or it cannot be opened.
+    Missing,
+    /// Unlocked: the lock went with the process that took it.
+    Free,
+    /// Locked by an install still running. A lock that cannot be checked counts
+    /// too, so that no folder is cleared or reported broken on a guess.
+    Held,
+}
+
+/// Check the lock on the marker at `path`. The marker is closed again before
+/// this returns, so a free one can be removed straight away.
+fn marker_lock(path: &Path) -> MarkerLock {
+    let Ok(marker) = File::open(path) else { return MarkerLock::Missing };
     match marker.try_lock() {
-        Ok(()) => false,
-        Err(TryLockError::WouldBlock) => true,
+        Ok(()) => MarkerLock::Free,
+        Err(TryLockError::WouldBlock) => MarkerLock::Held,
         Err(TryLockError::Error(e)) => {
-            warn!("cannot tell whether an install is still setting up {}: {e}", dir.display());
-            true
+            warn!("cannot tell whether an install holds {}: {e}", path.display());
+            MarkerLock::Held
         }
     }
 }
