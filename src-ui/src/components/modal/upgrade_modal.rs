@@ -140,43 +140,39 @@ pub fn UpgradeModpackModal(
     let version_list = version_list_class();
     let version_note = version_note_class();
 
-    let rows = move || {
-        let list = files.get();
-        if list.is_empty() {
+    let empty_note = move || {
+        files.with(Vec::is_empty).then(|| {
             let note = if loading.get() { "Loading versions…" } else { "No versions available." };
-            return view! { <p class=version_note>{note}</p> }.into_any();
+            view! { <p class=version_note>{note}</p> }
+        })
+    };
+
+    let row = move |(index, file): (usize, ProjectFileInfo)| {
+        let key = file.source.version_key().unwrap_or_default();
+        let is_current = key == current_version.get_value();
+        // The installed version and anything below it cannot be upgraded to.
+        let older = Signal::derive(move || is_older(index));
+        let note = Signal::derive(move || {
+            if is_current {
+                "current"
+            } else if older.get() {
+                "older"
+            } else {
+                ""
+            }
+        });
+        let picked = key.clone();
+        view! {
+            <VersionRow
+                label=file.display_name
+                size=file.size
+                release_type=file.release_type
+                note=note
+                disabled=older
+                selected=Signal::derive(move || selected.get() == key)
+                on_pick=Callback::new(move |_: ()| selected.set(picked.clone()))
+            />
         }
-        let installed = current_version.get_value();
-        list.into_iter()
-            .enumerate()
-            .map(|(index, file)| {
-                let key = file.source.version_key().unwrap_or_default();
-                let is_current = key == installed;
-                // The installed version and anything below it cannot be
-                // upgraded to.
-                let older = is_older(index);
-                let note = if is_current {
-                    "current"
-                } else if older {
-                    "older"
-                } else {
-                    ""
-                };
-                let picked = key.clone();
-                view! {
-                    <VersionRow
-                        label=file.display_name
-                        size=file.size
-                        release_type=file.release_type
-                        note=note
-                        disabled=older
-                        selected=Signal::derive(move || selected.get() == key)
-                        on_pick=Callback::new(move |_: ()| selected.set(picked.clone()))
-                    />
-                }
-            })
-            .collect_view()
-            .into_any()
     };
 
     let on_scroll = move |ev: leptos::ev::Event| {
@@ -216,7 +212,12 @@ pub fn UpgradeModpackModal(
                                 }.into_any(),
                                 None => view! {
                                     <div class=version_list on:scroll=on_scroll>
-                                        {rows}
+                                        {empty_note}
+                                        <For
+                                            each=move || files.get().into_iter().enumerate()
+                                            key=version_row_key
+                                            children=row
+                                        />
                                         <Show when=move || loading.get() && !files.with(Vec::is_empty)>
                                             <p class=version_note>"Loading more…"</p>
                                         </Show>

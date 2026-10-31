@@ -473,20 +473,24 @@ fn AddModModal(
                                                 }
                                             }
                                         >
-                                            {move || versions.get().into_iter().map(|file| {
-                                                let value = file.source.version_key()
-                                                    .unwrap_or_default();
-                                                let picked = value.clone();
-                                                view! {
-                                                    <VersionRow
-                                                        label=file.display_name
-                                                        size=file.size
-                                                        release_type=file.release_type
-                                                        selected=Signal::derive(move || selected_file_id.get() == value)
-                                                        on_pick=Callback::new(move |_: ()| selected_file_id.set(picked.clone()))
-                                                    />
+                                            <For
+                                                each=move || versions.get().into_iter().enumerate()
+                                                key=version_row_key
+                                                children=move |(_, file): (usize, ProjectFileInfo)| {
+                                                    let value = file.source.version_key()
+                                                        .unwrap_or_default();
+                                                    let picked = value.clone();
+                                                    view! {
+                                                        <VersionRow
+                                                            label=file.display_name
+                                                            size=file.size
+                                                            release_type=file.release_type
+                                                            selected=Signal::derive(move || selected_file_id.get() == value)
+                                                            on_pick=Callback::new(move |_: ()| selected_file_id.set(picked.clone()))
+                                                        />
+                                                    }
                                                 }
-                                            }).collect_view()}
+                                            />
                                             <Show when=move || versions_loading.get()>
                                                 <p class=version_note_class()>"Loading more…"</p>
                                             </Show>

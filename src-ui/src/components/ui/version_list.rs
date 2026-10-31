@@ -1,7 +1,7 @@
 use bamboo_css_macro::{css, cx};
 use leptos::prelude::*;
 use leptos::{IntoView, component, view};
-use yaminabe_launcher_shared::datamodels::ProjectFileReleaseType;
+use yaminabe_launcher_shared::datamodels::{ProjectFileInfo, ProjectFileReleaseType};
 
 use super::{format_size, Button, ButtonSize, ButtonVariant};
 
@@ -67,6 +67,13 @@ pub fn VersionPageError(error: String, on_retry: Callback<()>) -> impl IntoView 
     }
 }
 
+/// The key of a version list's row in a `<For>` over `(position, file)` pairs,
+/// so that a page arriving only adds its own rows. The position is in it as a
+/// version uploaded meanwhile can push one onto the next page and list it twice.
+pub fn version_row_key((index, file): &(usize, ProjectFileInfo)) -> (usize, Option<String>) {
+    (*index, file.source.version_key())
+}
+
 /// One selectable version: its name, an optional note ("current", "installed"),
 /// its size, and a release-type pill coloured so a beta or alpha stands out.
 ///
@@ -77,7 +84,7 @@ pub fn VersionRow(
     label: String,
     size: u64,
     release_type: ProjectFileReleaseType,
-    #[prop(optional)] note: &'static str,
+    #[prop(optional, into)] note: Signal<&'static str>,
     #[prop(optional, into)] disabled: Signal<bool>,
     #[prop(into)] selected: Signal<bool>,
     on_pick: Callback<()>,

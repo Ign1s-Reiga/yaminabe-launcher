@@ -289,33 +289,30 @@ fn InstallModpackModal(
         versions_error.get().filter(|_| versions.with(Vec::is_empty))
     });
 
-    let rows = move || {
-        let list = versions.get();
-        if list.is_empty() {
+    let empty_note = move || {
+        versions.with(Vec::is_empty).then(|| {
             let note = if loading.get() { "Loading versions…" } else { "No versions available." };
-            return view! { <p class=version_note>{note}</p> }.into_any();
+            view! { <p class=version_note>{note}</p> }
+        })
+    };
+
+    let row = move |(_, file): (usize, ProjectFileInfo)| {
+        let value = file.source.version_key().unwrap_or_default();
+        let picked = value.clone();
+        view! {
+            <VersionRow
+                label=file.display_name
+                size=file.size
+                release_type=file.release_type
+                selected=Signal::derive(move || selected.get() == value)
+                on_pick=Callback::new(move |_: ()| {
+                    let value = picked.clone();
+                    install.update(|state| {
+                        if let Some(state) = state { state.version = value; }
+                    });
+                })
+            />
         }
-        list.into_iter()
-            .map(|file| {
-                let value = file.source.version_key().unwrap_or_default();
-                let picked = value.clone();
-                view! {
-                    <VersionRow
-                        label=file.display_name
-                        size=file.size
-                        release_type=file.release_type
-                        selected=Signal::derive(move || selected.get() == value)
-                        on_pick=Callback::new(move |_: ()| {
-                            let value = picked.clone();
-                            install.update(|state| {
-                                if let Some(state) = state { state.version = value; }
-                            });
-                        })
-                    />
-                }
-            })
-            .collect_view()
-            .into_any()
     };
 
     view! {
@@ -360,7 +357,12 @@ fn InstallModpackModal(
                                         // selection rides along in a hidden field.
                                         <input type="hidden" name="version" prop:value=move || selected.get() />
                                         <div class=version_list on:scroll=on_scroll>
-                                            {rows}
+                                            {empty_note}
+                                            <For
+                                                each=move || versions.get().into_iter().enumerate()
+                                                key=version_row_key
+                                                children=row
+                                            />
                                             <Show when=move || loading.get() && !versions.with(Vec::is_empty)>
                                                 <p class=version_note>"Loading more…"</p>
                                             </Show>
