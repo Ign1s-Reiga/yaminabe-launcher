@@ -405,7 +405,8 @@ fn InstallModpackModal(
                         <Button
                             variant=ButtonVariant::Primary
                             button_type="submit"
-                            disabled=loading
+                            // No pick while no version has loaded, so nothing to install.
+                            disabled=Signal::derive(move || loading.get() || selected.with(String::is_empty))
                         >
                             "Install →"
                         </Button>
