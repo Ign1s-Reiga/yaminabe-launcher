@@ -39,10 +39,10 @@ pub fn UpgradeModpackModal(
     // looks like — either way nothing loaded so far is older than it.
     let current_index = Memo::new(move |_| {
         let installed = current_version.get_value();
-        files
-            .get()
-            .iter()
-            .position(|file| file.source.version_key().as_deref() == Some(installed.as_str()))
+        files.with(|list| {
+            list.iter()
+                .position(|file| file.source.version_key().as_deref() == Some(installed.as_str()))
+        })
     });
 
     let is_older = move |index: usize| current_index.get().is_some_and(|current| index >= current);
@@ -53,7 +53,7 @@ pub fn UpgradeModpackModal(
         if loading.get_untracked() || done.get_untracked() {
             return;
         }
-        let index = files.get_untracked().len() as u32;
+        let index = files.with_untracked(Vec::len) as u32;
         loading.set(true);
         error.set(None);
         leptos::task::spawn_local(async move {
@@ -109,12 +109,11 @@ pub fn UpgradeModpackModal(
         }
         // The chosen file already carries the right source for its platform, so
         // it is taken from the list rather than rebuilt from the ids.
-        let Some(source) = files
-            .get_untracked()
-            .into_iter()
-            .find(|file| file.source.version_key().as_deref() == Some(picked.as_str()))
-            .map(|file| file.source)
-        else {
+        let Some(source) = files.with_untracked(|list| {
+            list.iter()
+                .find(|file| file.source.version_key().as_deref() == Some(picked.as_str()))
+                .map(|file| file.source.clone())
+        }) else {
             return;
         };
         let iid = instance_id.get_value();
@@ -218,7 +217,7 @@ pub fn UpgradeModpackModal(
                                 None => view! {
                                     <div class=version_list on:scroll=on_scroll>
                                         {rows}
-                                        <Show when=move || loading.get() && !files.get().is_empty()>
+                                        <Show when=move || loading.get() && !files.with(Vec::is_empty)>
                                             <p class=version_note>"Loading more…"</p>
                                         </Show>
                                         {move || error.get().map(|err| view! {
