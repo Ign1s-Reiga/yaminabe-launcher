@@ -273,12 +273,12 @@ fn AddModModal(
                 return;
             }
             match result {
-                Ok(mut files) => {
+                Ok(files) => {
                     if files.len() < 50 {
                         versions_done.set(true);
                     }
                     if append {
-                        versions.update(|existing| existing.append(&mut files));
+                        versions.update(|existing| append_page(existing, files));
                     } else {
                         let first_id = files
                             .first()

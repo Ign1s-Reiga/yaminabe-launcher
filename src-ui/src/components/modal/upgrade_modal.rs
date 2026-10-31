@@ -66,7 +66,7 @@ pub fn UpgradeModpackModal(
             )
             .await
             {
-                Ok(mut list) => {
+                Ok(list) => {
                     // The list is newest-first, so the newest upgrade target is
                     // the top of the first page — unless that is what is already
                     // installed.
@@ -82,7 +82,7 @@ pub fn UpgradeModpackModal(
                         selected.set(newest);
                     }
                     done.set(list.len() < PAGE_SIZE);
-                    files.update(|existing| existing.append(&mut list));
+                    files.update(|existing| append_page(existing, list));
                     loading.set(false);
                 }
                 Err(e) => {
