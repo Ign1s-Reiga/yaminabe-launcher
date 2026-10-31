@@ -243,7 +243,7 @@ fn AddModModal(
         }
         let asked_by = opening.get_value();
         let index = if append {
-            versions.get_untracked().len() as u32
+            versions.with_untracked(Vec::len) as u32
         } else {
             0
         };
@@ -321,11 +321,11 @@ fn AddModModal(
             return;
         }
         let version_key = selected_file_id.get_untracked();
-        let Some(file) = versions
-            .get_untracked()
-            .into_iter()
-            .find(|file| file.source.version_key().as_deref() == Some(version_key.as_str()))
-        else {
+        let Some(file) = versions.with_untracked(|list| {
+            list.iter()
+                .find(|file| file.source.version_key().as_deref() == Some(version_key.as_str()))
+                .cloned()
+        }) else {
             return;
         };
         installing.update(|s| {

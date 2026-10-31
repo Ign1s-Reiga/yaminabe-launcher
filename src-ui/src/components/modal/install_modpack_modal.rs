@@ -377,7 +377,7 @@ fn InstallModpackModal(
                                         <input type="hidden" name="version" prop:value=move || selected.get() />
                                         <div class=version_list on:scroll=on_scroll>
                                             {rows}
-                                            <Show when=move || loading.get() && !versions.get().is_empty()>
+                                            <Show when=move || loading.get() && !versions.with(Vec::is_empty)>
                                                 <p class=version_note>"Loading more…"</p>
                                             </Show>
                                             {move || versions_error.get().map(|err| view! {
