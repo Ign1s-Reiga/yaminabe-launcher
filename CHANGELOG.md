@@ -3,6 +3,14 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.0.4 — 2026-10-31
+
+- Offer a button to try again in the install, upgrade and add-mod dialogs when
+  their first versions fail to load, too. Until now, you had to close the
+  dialog and open it again.
+- Keep Install greyed out in the install dialog until there is a version to
+  install. When none could be loaded, it looked usable but did nothing.
+
 ## 1.0.3 — 2026-10-19
 
 - Keep the versions already loaded when loading more of them fails, in the
