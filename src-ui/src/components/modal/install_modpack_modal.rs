@@ -57,44 +57,19 @@ impl ModpackInstaller {
 
     /// Open the dialog on `pack` and fetch its first page of versions.
     pub fn open(self, pack: ModProjectInfo) {
-        let install = self.install;
         self.install_name.set(usable_instance_name(&pack.name));
-        let project_id = pack.id.clone();
         let opening = self.openings.get_value() + 1;
         self.openings.set_value(opening);
-        install.set(Some(InstallState {
+        self.install.set(Some(InstallState {
             opening,
             pack,
             version: String::new(),
             versions: vec![],
-            versions_loading: true,
+            versions_loading: false,
             versions_error: None,
             versions_done: false,
         }));
-        leptos::task::spawn_local(async move {
-            match call_list_project_files(project_id, ProjectFileTarget::Modpack, None, None, 0)
-                .await
-            {
-                Ok(files) => {
-                    let first_version = files
-                        .first()
-                        .and_then(|f| f.source.version_key())
-                        .unwrap_or_default();
-                    self.update_if_still_open(opening, |s| {
-                        s.version = first_version;
-                        s.versions_done = files.len() < PAGE_SIZE;
-                        s.versions = files;
-                        s.versions_loading = false;
-                    });
-                }
-                Err(e) => {
-                    self.update_if_still_open(opening, |s| {
-                        s.versions_loading = false;
-                        s.versions_error = Some(e);
-                    });
-                }
-            }
-        });
+        self.load_versions();
     }
 
     fn close(self) {
@@ -111,7 +86,9 @@ impl ModpackInstaller {
         });
     }
 
-    fn load_more_versions(self) {
+    /// Fetch the next page of versions. With none loaded yet, on opening or after
+    /// that failed, it is the first page, and picks the newest version.
+    fn load_versions(self) {
         let install = self.install;
         // Read in place: this runs on every scroll event near the list's end.
         let Some((project_id, opening, index)) = install.with_untracked(|opt| {
@@ -133,6 +110,12 @@ impl ModpackInstaller {
             {
                 Ok(mut files) => {
                     self.update_if_still_open(opening, |s| {
+                        if index == 0 {
+                            s.version = files
+                                .first()
+                                .and_then(|f| f.source.version_key())
+                                .unwrap_or_default();
+                        }
                         s.versions_done = files.len() < PAGE_SIZE;
                         s.versions.append(&mut files);
                         s.versions_loading = false;
@@ -206,7 +189,7 @@ pub fn ModpackInstallDialog(installer: ModpackInstaller) -> impl IntoView {
                 install=installer.install
                 install_name=installer.install_name
                 on_submit=Callback::new(move |ev: SubmitEvent| installer.submit(ev))
-                on_load_more=Callback::new(move |_: ()| installer.load_more_versions())
+                on_load_versions=Callback::new(move |_: ()| installer.load_versions())
                 on_close=Callback::new(move |_: ()| installer.close())
             />
         </Show>
@@ -218,7 +201,7 @@ fn InstallModpackModal(
     install: RwSignal<Option<InstallState>>,
     install_name: RwSignal<String>,
     on_submit: Callback<SubmitEvent>,
-    on_load_more: Callback<()>,
+    on_load_versions: Callback<()>,
     on_close: Callback<()>,
 ) -> impl IntoView {
     let pack_strip = css! {
@@ -268,7 +251,6 @@ fn InstallModpackModal(
     };
     let version_list = version_list_class();
     let version_note = version_note_class();
-    let version_error = version_error_class();
 
     // Split the install state into memos, each reading only its own field, so
     // picking a version only re-runs the row classes. Re-rendering the whole
@@ -297,7 +279,7 @@ fn InstallModpackModal(
         let remaining = list.scroll_height() - list.scroll_top() - list.client_height();
         // After a failed page, wait for "Try again" instead of retrying on every scroll.
         if remaining <= 8 && versions_error.with_untracked(Option::is_none) {
-            on_load_more.run(());
+            on_load_versions.run(());
         }
     };
 
@@ -370,7 +352,9 @@ fn InstallModpackModal(
                             </FormField>
                             <FormField label="Modpack Version">
                                 {move || match first_page_error.get() {
-                                    Some(err) => view! { <p class=version_error>{err}</p> }.into_any(),
+                                    Some(err) => view! {
+                                        <VersionPageError error=err on_retry=on_load_versions />
+                                    }.into_any(),
                                     None => view! {
                                         // The form reads the pick by name, so the
                                         // selection rides along in a hidden field.
@@ -381,7 +365,7 @@ fn InstallModpackModal(
                                                 <p class=version_note>"Loading more…"</p>
                                             </Show>
                                             {move || versions_error.get().map(|err| view! {
-                                                <VersionPageError error=err on_retry=on_load_more />
+                                                <VersionPageError error=err on_retry=on_load_versions />
                                             })}
                                         </div>
                                     }.into_any(),

@@ -452,7 +452,12 @@ fn AddModModal(
                                 </div>
                                 {move || match panel.get() {
                                     VersionPanel::Loading => view! { <div class=status_area>"Loading versions…"</div> }.into_any(),
-                                    VersionPanel::Failed(e) => view! { <div class=status_area>{e}</div> }.into_any(),
+                                    VersionPanel::Failed(e) => view! {
+                                        <VersionPageError
+                                            error=e
+                                            on_retry=Callback::new(move |_: ()| load_versions(pid.get_value(), false))
+                                        />
+                                    }.into_any(),
                                     VersionPanel::Empty => view! { <div class=status_area>"No compatible versions found."</div> }.into_any(),
                                     VersionPanel::List => view! {
                                         <div
