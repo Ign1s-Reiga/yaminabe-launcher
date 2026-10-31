@@ -233,27 +233,30 @@ fn AddModModal(
     // earlier one are dropped when they arrive instead of filling this one's list.
     let opening = StoredValue::new(0u32);
 
+    // Forget the versions listed, and any still on their way. Moving `opening`
+    // on and resetting what a reply would have set go together, so a dropped
+    // reply leaves nothing loading.
+    let clear_versions = move || {
+        opening.set_value(opening.get_value() + 1);
+        versions.set(vec![]);
+        selected_file_id.set(String::new());
+        versions_loading.set(false);
+        versions_error.set(None);
+        versions_done.set(false);
+    };
+
     let load_versions = move |project_id: ProjectId, append: bool| {
         // Another mod always starts afresh; only a further page waits its turn.
         if append && (versions_loading.get_untracked() || versions_done.get_untracked()) {
             return;
         }
         if !append {
-            opening.set_value(opening.get_value() + 1);
+            clear_versions();
         }
         let asked_by = opening.get_value();
-        let index = if append {
-            versions.with_untracked(Vec::len) as u32
-        } else {
-            0
-        };
+        let index = versions.with_untracked(Vec::len) as u32;
         versions_loading.set(true);
         versions_error.set(None);
-        if !append {
-            versions.set(vec![]);
-            selected_file_id.set(String::new());
-            versions_done.set(false);
-        }
         let game_version = Some(game_version.get_value());
         let mod_loader = Some(mod_loader.get_value());
         leptos::task::spawn_local(async move {
@@ -504,7 +507,10 @@ fn AddModModal(
                                 <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
                                     <Button
                                         variant=ButtonVariant::Secondary
-                                        on_click=Callback::new(move |_| selected_project.set(None))
+                                        on_click=Callback::new(move |_| {
+                                            selected_project.set(None);
+                                            clear_versions();
+                                        })
                                     >
                                         "Back"
                                     </Button>
