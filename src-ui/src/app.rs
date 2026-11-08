@@ -10,6 +10,8 @@ use crate::pages::{
     instance_detail::InstanceDetailPage,
     play::PlayPage,
 };
+use crate::accounts::Accounts;
+use crate::components::account_switcher::AccountSwitcher;
 use crate::components::ui::{ToastHost, Toasts};
 use crate::ipc;
 use crate::signal_ext::VecSignalExt;
@@ -42,6 +44,7 @@ styled!(MainView, main, {
     scrollbar-color: darkgrey var(--background-color);
 });
 styled!(MainViewNavbar, nav, {
+    position: relative;
     padding: 10px 128px;
     background-color: var(--primary-color);
     gap: 16px;
@@ -79,6 +82,7 @@ pub fn App() -> impl IntoView {
 
     provide_context(instances);
     provide_context(refresh);
+    Accounts::provide();
 
     // Id of the most recently launched instance, seeded from persisted settings
     // and kept fresh by `PlayPage` on each launch. Drives the navbar's
@@ -180,6 +184,7 @@ pub fn App() -> impl IntoView {
                     <InstantPlayButton last_played=last_played instances=instances />
                     <NavigationButton href="/search" icon=MAGNIFYING_GLASS label="Search"/>
                     <NavigationButton href="/settings" icon=GEAR_SIX label="Settings" badge=update_offered/>
+                    <AccountSwitcher />
                 </MainViewNavbar>
                 <ActivityDock jobs=install_jobs registry=running_registry expanded=dock_expanded />
                 <ToastHost />

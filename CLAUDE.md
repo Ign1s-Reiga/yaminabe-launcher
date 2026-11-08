@@ -78,6 +78,8 @@ src-ui/src/
 ├── app.rs                   # Router, install-sidebar wiring, navbar
 ├── ipc.rs                   # `call` / `call_noargs` / `on_event` wrappers around Tauri
 ├── curseforge.rs            # Frontend wrappers around CurseForge backend commands
+├── accounts.rs              # `Accounts`: saved Microsoft accounts + the selected one,
+│                            # shared by the navbar switcher and Settings
 ├── bookmarks.rs             # `Bookmarks`: the bookmarked modpacks + their IPC calls
 ├── pages.rs / pages/
 │   ├── home.rs              # `/`
@@ -90,6 +92,7 @@ src-ui/src/
 ├── components.rs / components/
 │   ├── ui.rs / ui/          # Atomic UI primitives (Button, IconButton, BadgeIconButton, Modal,
 │   │                        # Input, TabBar, Segmented, Skeletons)
+│   ├── account_switcher.rs  # Navbar's right-end account switcher (drop-up menu)
 │   ├── activity_dock.rs     # Bottom-right floating dock (collapsible) listing
 │   │                        # install jobs + running instances; also owns the
 │   │                        # running-instance data model (RunStatus, registry,

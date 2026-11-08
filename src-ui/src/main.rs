@@ -2,6 +2,7 @@ pub mod components;
 pub mod pages;
 pub mod app;
 pub mod ipc;
+pub mod accounts;
 pub mod bookmarks;
 pub mod changelog;
 pub mod curseforge;
