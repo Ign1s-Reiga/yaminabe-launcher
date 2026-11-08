@@ -7,6 +7,7 @@ use phosphor_leptos::{Icon, IconWeight, CHECK_CIRCLE, PLUS, TRASH, WARNING};
 use serde::Serialize;
 use yaminabe_launcher_shared::datamodels::{AccountSession, AccountSummary, AppSettings};
 
+use crate::accounts::Accounts;
 use crate::components::activity_dock::{InstallJob, RunningRegistry};
 use crate::components::modal::login_modal::LoginModal;
 use crate::components::settings::{SaveState, SettingsSection, SettingsProp};
@@ -181,7 +182,8 @@ pub fn SettingsPage() -> impl IntoView {
 #[component]
 fn AccountsSection() -> impl IntoView {
     // Bump this counter after any backend mutation to refetch both resources.
-    let refresh: RwSignal<u32> = RwSignal::new(0);
+    // It is the shared store's, so the navbar's account switcher follows too.
+    let refresh: RwSignal<u32> = use_context::<Accounts>().expect("accounts").revision;
     let show_modal: RwSignal<bool> = RwSignal::new(false);
     // The account the open login modal signs in again; `None` adds a new one.
     let relogin_name: RwSignal<Option<String>> = RwSignal::new(None);

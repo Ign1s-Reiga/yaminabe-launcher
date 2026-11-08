@@ -1,3 +1,4 @@
+pub mod account_switcher;
 pub mod activity_dock;
 pub mod bookmark_toggle;
 pub mod log_viewer;
