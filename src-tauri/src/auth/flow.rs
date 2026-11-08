@@ -1,5 +1,6 @@
 use qrcode::render::svg;
 use qrcode::QrCode;
+use std::time::Duration;
 use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
 use yaminabe_launcher_shared::error::Error;
@@ -21,6 +22,11 @@ const XBL_AUTH_URL: &str = "https://user.auth.xboxlive.com/user/authenticate";
 const XSTS_AUTH_URL: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
 const MC_LOGIN_URL: &str = "https://api.minecraftservices.com/authentication/login_with_xbox";
 const MC_PROFILE_URL: &str = "https://api.minecraftservices.com/minecraft/profile";
+
+/// How long a profile lookup may take. The launch checks the saved sign-in this
+/// way, and the shared client has no timeout of its own, so a network that
+/// never answers would otherwise hold the launch at that check for good.
+const PROFILE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Deserialize)]
 pub(crate) struct DeviceCodeResponse {
@@ -313,9 +319,19 @@ async fn mc_login_with_xbox(
 /// services turned the token down; an `Error::Auth` means the account cannot
 /// play at all, and any other error that the services could not be asked.
 async fn mc_fetch_profile(client: &Client, mc_access_token: &str) -> Result<Option<McProfile>, Error> {
+    profile_lookup(client, MC_PROFILE_URL, mc_access_token, PROFILE_TIMEOUT).await
+}
+
+async fn profile_lookup(
+    client: &Client,
+    url: &str,
+    mc_access_token: &str,
+    timeout: Duration,
+) -> Result<Option<McProfile>, Error> {
     let resp = client
-        .get(MC_PROFILE_URL)
+        .get(url)
         .bearer_auth(mc_access_token)
+        .timeout(timeout)
         .send()
         .await?;
     match resp.status().as_u16() {
@@ -434,7 +450,9 @@ pub async fn refresh_account_tokens(
 
 #[cfg(test)]
 mod tests {
-    use super::{session_from_lookup, McProfile, Session};
+    use super::{profile_lookup, session_from_lookup, McProfile, Session};
+    use std::time::{Duration, Instant};
+    use tokio::net::TcpListener;
     use yaminabe_launcher_shared::error::Error;
 
     #[test]
@@ -459,5 +477,23 @@ mod tests {
     fn an_account_without_the_game_fails() {
         let lookup = Err(Error::Auth("does not own Minecraft".into()));
         assert!(matches!(session_from_lookup(lookup), Err(Error::Auth(_))));
+    }
+
+    #[tokio::test]
+    async fn a_server_that_never_answers_leaves_the_token_unchecked() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let url = format!("http://{}/minecraft/profile", listener.local_addr().expect("addr"));
+        // Accept the connection and hold it open without ever replying.
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept");
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            drop(socket);
+        });
+        let started = Instant::now();
+        let lookup = profile_lookup(&reqwest::Client::new(), &url, "token", Duration::from_millis(200)).await;
+        assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+        assert!(matches!(&lookup, Err(Error::NetworkError(e)) if e.is_timeout()), "got {lookup:?}");
+        assert!(matches!(session_from_lookup(lookup), Ok(Session::Unchecked(_))));
+        server.abort();
     }
 }
