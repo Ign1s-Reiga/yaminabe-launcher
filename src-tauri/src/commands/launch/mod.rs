@@ -12,11 +12,8 @@ use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::ipc::LogLine;
 use yaminabe_launcher_shared::datamodels::ClientManifest;
 use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, ActivityGuard, AppState, InstanceActivity};
-use crate::auth::{
-    hydrate_account, persist_account, refresh_account_tokens, MinecraftAccount,
-    MinecraftAccountRecord,
-};
-use crate::auth::flow::{check_session, Session};
+use crate::auth::{hydrate_account, persist_account, MinecraftAccount, MinecraftAccountRecord};
+use crate::auth::session::{renew_session, Renewal};
 use crate::commands::instance::{find_instance_dir, instance_meta_file};
 use crate::commands::java::download_java_runtime;
 use crate::install_task::version_manifest_path;
@@ -342,60 +339,32 @@ async fn resolve_account(
     let mut auth_account: Option<MinecraftAccount> = match auth_record {
         Some(record) => Some(hydrate_account(&record).map_err(|e| Error::Auth(format!(
             "Stored credentials for {} are missing or unreadable ({e}). \
-             Re-add the account from Settings → Accounts.",
+             Sign in again from Settings → Accounts.",
             record.username
         )))?),
         None => None,
     };
 
     if let Some(account) = auth_account.as_mut() {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        // A token near expiry is refreshed outright; 300 s headroom covers the
-        // library/asset prefetch that follows. Any other is checked first.
-        let expiring = account.mc_access_token.is_empty() || account.expires_at - now < 300;
-        let refresh = expiring || {
-            emit_log(app, instance_id, format!("Checking the Microsoft sign-in for {}...", account.username));
-            match check_session(&state.http_client, &account.mc_access_token).await? {
-                Session::Valid(profile) => {
-                    // The name can change on minecraft.net while the token stays good.
-                    if profile.name != account.username {
-                        account.username = profile.name;
-                        let mut store = state.account_store.lock().unwrap();
-                        store.upsert(MinecraftAccountRecord::from_account(account));
-                        if let Err(e) = store.save() {
-                            emit_log(app, instance_id, format!("warning: failed to save the new player name: {e}"));
-                        }
-                    }
-                    false
-                }
-                Session::Rejected => {
-                    emit_log(app, instance_id, "Minecraft services no longer accept the saved sign-in.");
-                    true
-                }
-                Session::Unchecked(e) => {
-                    emit_log(app, instance_id, format!(
-                        "warning: could not check the sign-in ({e}); launching with it as saved."
-                    ));
-                    false
+        let renewal = renew_session(&state.http_client, account, |line| emit_log(app, instance_id, line)).await;
+        match renewal {
+            Ok(Renewal::Current) => {}
+            Ok(Renewal::Updated) => {
+                // Failure is non-fatal: `account` still holds good tokens for
+                // this launch.
+                let mut store = state.account_store.lock().unwrap();
+                if let Err(e) = persist_account(&mut store, account) {
+                    emit_log(app, instance_id, format!("warning: failed to persist refreshed tokens: {e}"));
                 }
             }
-        };
-        if refresh {
-            emit_log(app, instance_id, format!("Refreshing Microsoft credentials for {}...", account.username));
-            refresh_account_tokens(&state.http_client, account).await.map_err(|e| Error::Auth(format!(
-                "Could not refresh credentials for {}: {e}. \
-                 Re-add the account from Settings → Accounts.",
+            Ok(Renewal::Unchecked(e)) => emit_log(app, instance_id, format!(
+                "warning: could not check the sign-in ({e}); launching with it as saved."
+            )),
+            Err(e) => return Err(Error::Auth(format!(
+                "The sign-in for {} could not be renewed: {e}. \
+                 Sign in again from Settings → Accounts.",
                 account.username
-            )))?;
-            // Persist refreshed tokens; failure is non-fatal — `account` still
-            // holds valid tokens for this launch.
-            let mut store = state.account_store.lock().unwrap();
-            if let Err(e) = persist_account(&mut store, account) {
-                emit_log(app, instance_id, format!("warning: failed to persist refreshed tokens: {e}"));
-            }
+            ))),
         }
         emit_log(app, instance_id, format!("Signed in as {}.", account.username));
     } else if launch_mode == LaunchMode::Offline {

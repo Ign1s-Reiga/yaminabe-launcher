@@ -26,6 +26,9 @@ thread_local! {
 pub fn LoginModal(
     on_close: Callback<()>,
     on_success: Callback<AccountSummary>,
+    /// The saved account being signed in again, if any, named in the heading.
+    #[prop(default = None)]
+    account_name: Option<String>,
 ) -> impl IntoView {
     let phase: RwSignal<LoginPhase> = RwSignal::new(LoginPhase::Starting);
 
@@ -129,8 +132,14 @@ pub fn LoginModal(
         <ModalOverlay>
             <ModalBox>
                 <ModalBody>
-                    <h2 style="margin: 0 0 6px 0;">"Sign in with Microsoft"</h2>
+                    <h2 style="margin: 0 0 6px 0;">
+                        {match &account_name {
+                            Some(name) => format!("Sign in again as {name}"),
+                            None => "Sign in with Microsoft".to_string(),
+                        }}
+                    </h2>
                     <p style="margin: 0 0 24px 0; font-size: 0.85rem; opacity: 0.6;">
+                        {account_name.is_some().then_some("Use the Microsoft account this profile belongs to. ")}
                         "Scan the QR code with your phone, then enter the code below."
                     </p>
 

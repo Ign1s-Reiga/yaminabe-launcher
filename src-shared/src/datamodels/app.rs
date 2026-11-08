@@ -125,6 +125,19 @@ pub struct AccountSummary {
     pub username: String,
 }
 
+/// Whether a saved account can still sign in to Minecraft without the user.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AccountSession {
+    /// Accepted as saved, or renewed on the way.
+    Valid,
+    /// The saved sign-in can no longer be renewed, for the reason given, so the
+    /// user has to sign in again.
+    NeedsSignIn(String),
+    /// Minecraft services or Microsoft could not be reached to tell.
+    Unchecked,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LaunchMode {

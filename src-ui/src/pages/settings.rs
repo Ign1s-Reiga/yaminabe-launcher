@@ -1,9 +1,11 @@
+use std::collections::HashMap;
+
 use bamboo_css_macro::{css, styled};
 use leptos::prelude::*;
 use leptos::{component, IntoView, view};
-use phosphor_leptos::{Icon, IconWeight, CHECK_CIRCLE, PLUS, TRASH};
+use phosphor_leptos::{Icon, IconWeight, CHECK_CIRCLE, PLUS, TRASH, WARNING};
 use serde::Serialize;
-use yaminabe_launcher_shared::datamodels::{AccountSummary, AppSettings};
+use yaminabe_launcher_shared::datamodels::{AccountSession, AccountSummary, AppSettings};
 
 use crate::components::activity_dock::{InstallJob, RunningRegistry};
 use crate::components::modal::login_modal::LoginModal;
@@ -171,14 +173,20 @@ pub fn SettingsPage() -> impl IntoView {
 }
 
 /// Lists configured Microsoft accounts, lets the user select one as active,
-/// remove any of them, and add a new one via QR-code login. Backs onto the
-/// `get_accounts`, `get_selected_account`, `set_selected_account`,
-/// `remove_account`, and `start_microsoft_login` IPC commands.
+/// remove any of them, and add a new one via QR-code login. Each account's
+/// sign-in is checked once here, and one that can no longer be renewed is
+/// marked, with a way to sign it in again. Backs onto the `get_accounts`,
+/// `get_selected_account`, `set_selected_account`, `remove_account`,
+/// `check_account_session`, and `start_microsoft_login` IPC commands.
 #[component]
 fn AccountsSection() -> impl IntoView {
     // Bump this counter after any backend mutation to refetch both resources.
     let refresh: RwSignal<u32> = RwSignal::new(0);
     let show_modal: RwSignal<bool> = RwSignal::new(false);
+    // The account the open login modal signs in again; `None` adds a new one.
+    let relogin_name: RwSignal<Option<String>> = RwSignal::new(None);
+    // Each account's sign-in by UUID, `None` while its check is out.
+    let sessions: RwSignal<HashMap<String, Option<AccountSession>>> = RwSignal::new(HashMap::new());
 
     let accounts = LocalResource::new(move || {
         refresh.track();
@@ -195,6 +203,34 @@ fn AccountsSection() -> impl IntoView {
                 .await
                 .ok()
                 .flatten()
+        }
+    });
+
+    // Check each account once, not again every time the list is refetched.
+    Effect::new(move |_| {
+        let Some(list) = accounts.get() else { return };
+        for acc in list {
+            let uuid = acc.uuid;
+            if sessions.with_untracked(|known| known.contains_key(&uuid)) {
+                continue;
+            }
+            sessions.update(|known| {
+                known.insert(uuid.clone(), None);
+            });
+            leptos::task::spawn_local(async move {
+                let args = AccountArgs { uuid: uuid.clone() };
+                let session = match ipc::call::<_, AccountSession>("check_account_session", args).await {
+                    Ok(session) => session,
+                    Err(e) => {
+                        log::warn!("check_account_session failed: {e}");
+                        AccountSession::Unchecked
+                    }
+                };
+                // Leaving Settings meanwhile disposed the map.
+                sessions.try_update(|known| {
+                    known.insert(uuid, Some(session));
+                });
+            });
         }
     });
 
@@ -218,6 +254,12 @@ fn AccountsSection() -> impl IntoView {
     };
     let meta = css! {
         flex: 1;
+        min-width: 0;
+    };
+    let name_line = css! {
+        display: flex;
+        align-items: center;
+        gap: 8px;
         min-width: 0;
     };
     let name = css! {
@@ -247,6 +289,22 @@ fn AccountsSection() -> impl IntoView {
         background-color: rgb(58 158 95 / 0.12);
         border-radius: 999px;
     };
+    // The pill's shape in the amber of a beta version badge, mixed toward the
+    // text colour so it stays legible on the light theme as well as the dark.
+    let expired_pill = css! {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        flex-shrink: 0;
+        font-size: 0.68rem;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        text-transform: uppercase;
+        color: color-mix(in srgb, #d4a017 55%, var(--text-color));
+        padding: 3px 8px;
+        background-color: rgba(212, 160, 23, 0.14);
+        border-radius: 999px;
+    };
     let actions = css! {
         display: flex;
         gap: 6px;
@@ -264,7 +322,10 @@ fn AccountsSection() -> impl IntoView {
         margin-top: 6px;
     };
 
-    let open_modal = Callback::new(move |_| show_modal.set(true));
+    let open_modal = Callback::new(move |_| {
+        relogin_name.set(None);
+        show_modal.set(true);
+    });
 
     view! {
         <p style="font-size: 0.8rem; opacity: 0.55; margin: 0 0 16px 0;">
@@ -285,14 +346,46 @@ fn AccountsSection() -> impl IntoView {
                     let is_selected = selected_uuid.as_deref() == Some(acc_uuid.as_str());
                     let acc_uuid_for_use = acc_uuid.clone();
                     let acc_uuid_for_remove = acc_uuid.clone();
+                    let acc_uuid_for_session = acc_uuid.clone();
+                    // Why the sign-in can no longer be renewed, when it can't.
+                    let expired = Memo::new(move |_| sessions.with(|known| {
+                        match known.get(&acc_uuid_for_session) {
+                            Some(Some(AccountSession::NeedsSignIn(reason))) => Some(reason.clone()),
+                            _ => None,
+                        }
+                    }));
+                    let username = acc.username.clone();
                     view! {
                         <div class=row>
                             <img class=avatar src=avatar_url alt="" />
                             <div class=meta>
-                                <div class=name>{acc.username}</div>
+                                <div class=name_line>
+                                    <div class=name>{acc.username}</div>
+                                    {move || expired.get().map(|reason| view! {
+                                        <span class=expired_pill title=reason>
+                                            <Icon icon=WARNING size="14px" weight=IconWeight::Fill />
+                                            "Sign-in expired"
+                                        </span>
+                                    })}
+                                </div>
                                 <div class=uuid_mono>{acc_uuid}</div>
                             </div>
                             <div class=actions>
+                                <Show when=move || expired.with(Option::is_some) fallback=|| ()>
+                                    <Button
+                                        variant=ButtonVariant::Secondary
+                                        size=ButtonSize::Big
+                                        on_click={
+                                            let username = username.clone();
+                                            Callback::new(move |_| {
+                                                relogin_name.set(Some(username.clone()));
+                                                show_modal.set(true);
+                                            })
+                                        }
+                                    >
+                                        "Sign in again"
+                                    </Button>
+                                </Show>
                                 {if is_selected {
                                     view! {
                                         <span class=pill>
@@ -354,8 +447,14 @@ fn AccountsSection() -> impl IntoView {
 
         <Show when=move || show_modal.get() fallback=|| ()>
             <LoginModal
+                account_name=relogin_name.get_untracked()
                 on_close=Callback::new(move |_| show_modal.set(false))
-                on_success=Callback::new(move |_summary: AccountSummary| {
+                on_success=Callback::new(move |summary: AccountSummary| {
+                    // A fresh sign-in needs no check. One into another Microsoft
+                    // account adds that account and leaves the expired one marked.
+                    sessions.update(|known| {
+                        known.insert(summary.uuid, Some(AccountSession::Valid));
+                    });
                     refresh.update(|n| *n += 1);
                 })
             />
@@ -489,6 +588,11 @@ struct SelectArgs {
 
 #[derive(Serialize)]
 struct RemoveArgs {
+    uuid: String,
+}
+
+#[derive(Serialize)]
+struct AccountArgs {
     uuid: String,
 }
 
