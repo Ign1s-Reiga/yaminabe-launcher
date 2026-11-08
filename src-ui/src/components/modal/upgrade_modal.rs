@@ -57,21 +57,23 @@ pub fn UpgradeModpackModal(
         loading.set(true);
         error.set(None);
         leptos::task::spawn_local(async move {
-            match call_list_project_files(
+            let result = call_list_project_files(
                 project_id.get_value(),
                 ProjectFileTarget::Modpack,
                 None,
                 None,
                 index,
             )
-            .await
-            {
+            .await;
+            // Closing the dialog meanwhile disposed its values, and reading one
+            // would panic.
+            let Some(installed) = current_version.try_get_value() else { return };
+            match result {
                 Ok(mut list) => {
                     // The list is newest-first, so the newest upgrade target is
                     // the top of the first page — unless that is what is already
                     // installed.
                     if index == 0 {
-                        let installed = current_version.get_value();
                         let newest = list
                             .first()
                             .filter(|file| {
