@@ -3,6 +3,22 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.1.0 — 2026-11-08
+
+- Check your Microsoft sign-in with Minecraft's servers before each online
+  launch, and renew it when they no longer accept it. Until now, a sign-in
+  turned down before it was due to expire was handed to the game, which then
+  could not join servers. A new player name is picked up on the way. When the
+  servers cannot be reached, the launch goes ahead with the saved sign-in.
+- Keep the launcher working when you close the upgrade dialog before its
+  versions have loaded. Until now, it could stop responding.
+- List each version once in the install, upgrade and add-mod dialogs. When a
+  version was published while you scrolled, the last one of a page could show
+  up twice.
+- Keep a folder that is still installing out of the library when another
+  program, such as an antivirus, holds its install marker open. Until now, it
+  could show up as an instance that cannot be loaded.
+
 ## 1.0.4 — 2026-10-31
 
 - Offer a button to try again in the install, upgrade and add-mod dialogs when
