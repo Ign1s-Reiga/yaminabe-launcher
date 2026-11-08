@@ -309,23 +309,19 @@ async fn mc_login_with_xbox(
         .map_err(|e| Error::Auth(format!("Minecraft services rejected the Xbox token: {e}")))
 }
 
-/// Look up the profile `mc_access_token` belongs to. `Ok(None)` means Minecraft
-/// services turned the token down; an `Error::Auth` means the account cannot
-/// play at all, and any other error that the services could not be asked.
-async fn mc_fetch_profile(client: &Client, mc_access_token: &str) -> Result<Option<McProfile>, Error> {
+/// Look up the profile `mc_access_token` belongs to. An `Error::Auth` means the
+/// account cannot play at all; a refusal comes back as `HttpRequestRejected`,
+/// carrying the server's status and reason.
+async fn mc_fetch_profile(client: &Client, mc_access_token: &str) -> Result<McProfile, Error> {
     let resp = client
         .get(MC_PROFILE_URL)
         .bearer_auth(mc_access_token)
         .send()
         .await?;
-    match resp.status().as_u16() {
-        401 | 403 => return Ok(None),
-        404 => {
-            return Err(Error::Auth(
-                "Signed-in Microsoft account does not own Minecraft: Java Edition.".into(),
-            ));
-        }
-        _ => {}
+    if resp.status().as_u16() == 404 {
+        return Err(Error::Auth(
+            "Signed-in Microsoft account does not own Minecraft: Java Edition.".into(),
+        ));
     }
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
@@ -334,7 +330,6 @@ async fn mc_fetch_profile(client: &Client, mc_access_token: &str) -> Result<Opti
     }
     resp.json::<McProfile>()
         .await
-        .map(Some)
         .map_err(Error::InvalidResponse)
 }
 
@@ -356,10 +351,10 @@ pub(crate) async fn check_session(client: &Client, mc_access_token: &str) -> Res
     session_from_lookup(mc_fetch_profile(client, mc_access_token).await)
 }
 
-fn session_from_lookup(lookup: Result<Option<McProfile>, Error>) -> Result<Session, Error> {
+fn session_from_lookup(lookup: Result<McProfile, Error>) -> Result<Session, Error> {
     match lookup {
-        Ok(Some(profile)) => Ok(Session::Valid(profile)),
-        Ok(None) => Ok(Session::Rejected),
+        Ok(profile) => Ok(Session::Valid(profile)),
+        Err(Error::HttpRequestRejected(401 | 403, _)) => Ok(Session::Rejected),
         Err(e @ Error::Auth(_)) => Err(e),
         Err(e) => Ok(Session::Unchecked(e)),
     }
@@ -381,19 +376,25 @@ pub(crate) async fn finalize_minecraft_login(
 
     let xsts = xsts_authorize(client, &xbl.token).await?;
     let mc = mc_login_with_xbox(client, &user_hash, &xsts.token).await?;
-    let profile = match mc_fetch_profile(client, &mc.access_token).await {
-        Ok(Some(profile)) => profile,
-        Ok(None) => return Err(Error::Auth("Profile lookup rejected the new Minecraft token.".into())),
-        Err(Error::HttpRequestRejected(status, text)) => {
-            return Err(Error::Auth(format!("Profile lookup rejected ({status}): {text}")));
-        }
-        Err(e) => return Err(e),
-    };
+    let profile = mc_fetch_profile(client, &mc.access_token)
+        .await
+        .map_err(login_profile_error)?;
     // The XSTS response's DisplayClaims.xui[0].xid is unreliable for the
     // Minecraft relying party (frequently absent), so the authoritative
     // source for ${auth_xuid} is the MC access token's JWT payload.
     let xuid = xuid_from_mc_token(&mc.access_token).unwrap_or_default();
     Ok((profile, mc, xuid))
+}
+
+/// A refused profile lookup during login or refresh is an authentication
+/// failure, reported with the server's status and reason.
+fn login_profile_error(e: Error) -> Error {
+    match e {
+        Error::HttpRequestRejected(status, text) => {
+            Error::Auth(format!("Profile lookup rejected ({status}): {text}"))
+        }
+        other => other,
+    }
 }
 
 /// Decode the unsigned middle segment of the Minecraft access token JWT and
@@ -434,18 +435,21 @@ pub async fn refresh_account_tokens(
 
 #[cfg(test)]
 mod tests {
-    use super::{session_from_lookup, McProfile, Session};
+    use super::{login_profile_error, session_from_lookup, McProfile, Session};
     use yaminabe_launcher_shared::error::Error;
 
     #[test]
     fn a_turned_down_token_is_rejected() {
-        assert!(matches!(session_from_lookup(Ok(None)), Ok(Session::Rejected)));
+        for status in [401, 403] {
+            let lookup = Err(Error::HttpRequestRejected(status, String::new()));
+            assert!(matches!(session_from_lookup(lookup), Ok(Session::Rejected)));
+        }
     }
 
     #[test]
     fn a_working_token_carries_its_profile() {
         let profile = McProfile { id: "abc".into(), name: "Steve".into() };
-        let session = session_from_lookup(Ok(Some(profile)));
+        let session = session_from_lookup(Ok(profile));
         assert!(matches!(session, Ok(Session::Valid(p)) if p.name == "Steve"));
     }
 
@@ -459,5 +463,11 @@ mod tests {
     fn an_account_without_the_game_fails() {
         let lookup = Err(Error::Auth("does not own Minecraft".into()));
         assert!(matches!(session_from_lookup(lookup), Err(Error::Auth(_))));
+    }
+
+    #[test]
+    fn a_refused_login_keeps_the_server_reason() {
+        let e = login_profile_error(Error::HttpRequestRejected(403, "account restricted".into()));
+        assert!(matches!(&e, Error::Auth(m) if m == "Profile lookup rejected (403): account restricted"), "got {e:?}");
     }
 }
