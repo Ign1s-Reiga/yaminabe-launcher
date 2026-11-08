@@ -4,14 +4,16 @@ use std::time::{Duration, SystemTime};
 use log::warn;
 use tauri::{AppHandle, Emitter, State};
 use tokio::time::sleep;
-use yaminabe_launcher_shared::datamodels::AccountSummary;
+use yaminabe_launcher_shared::datamodels::{AccountSession, AccountSummary};
 use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::ipc::{MsLoginPrompt, MsLoginResult};
 use crate::AppState;
 
 use crate::auth::flow::{finalize_minecraft_login, make_qr_svg, poll_token, request_device_code, require_client_id};
 use crate::auth::model::{format_uuid_dashed, now_epoch_seconds, MinecraftAccount, MinecraftAccountRecord, MinecraftAccountSecret};
+use crate::auth::session::{is_unreachable, renew_session, Renewal};
 use crate::auth::store::{delete_secret, write_secret};
+use crate::auth::{hydrate_account, persist_account};
 
 const EVT_PROMPT: &str = "ms-login-prompt";
 const EVT_RESULT: &str = "ms-login-result";
@@ -83,6 +85,51 @@ pub fn remove_account(uuid: String, state: State<'_, AppState>) -> Result<(), Er
         warn!("failed to delete keyring entry for {normalised}: {e}");
     }
     store.save()
+}
+
+/// Bring a saved account's sign-in up to date, as a launch would, and say
+/// whether the user has to sign in again. Renewed tokens are saved, unless the
+/// account was removed meanwhile.
+#[tauri::command]
+pub async fn check_account_session(
+    uuid: String,
+    state: State<'_, AppState>,
+) -> Result<AccountSession, Error> {
+    let normalised = uuid.replace('-', "");
+    let record = state
+        .account_store
+        .lock()
+        .unwrap()
+        .accounts
+        .iter()
+        .find(|a| a.uuid == normalised)
+        .cloned()
+        .ok_or_else(|| Error::NotExists(format!("account '{normalised}'")))?;
+    let mut account = match hydrate_account(&record) {
+        Ok(account) => account,
+        Err(e) => return Ok(AccountSession::NeedsSignIn(format!("The saved sign-in could not be read: {e}"))),
+    };
+    match renew_session(&state.http_client, &mut account, |_| {}).await {
+        Ok(Renewal::Current) => Ok(AccountSession::Valid),
+        Ok(Renewal::Updated) => {
+            let mut store = state.account_store.lock().unwrap();
+            if store.accounts.iter().any(|a| a.uuid == normalised)
+                && let Err(e) = persist_account(&mut store, &account)
+            {
+                warn!("failed to save the renewed sign-in for {normalised}: {e}");
+            }
+            Ok(AccountSession::Valid)
+        }
+        Ok(Renewal::Unchecked(e)) => {
+            warn!("could not check the sign-in for {normalised}: {e}");
+            Ok(AccountSession::Unchecked)
+        }
+        Err(e) if is_unreachable(&e) => {
+            warn!("could not renew the sign-in for {normalised}: {e}");
+            Ok(AccountSession::Unchecked)
+        }
+        Err(e) => Ok(AccountSession::NeedsSignIn(e.to_string())),
+    }
 }
 
 #[tauri::command]

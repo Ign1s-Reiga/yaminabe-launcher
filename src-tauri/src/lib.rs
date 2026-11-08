@@ -8,8 +8,8 @@ mod mod_repo;
 
 use crate::auth::{AccountStore, load_account_store};
 use crate::commands::auth::{
-    cancel_microsoft_login, get_accounts, get_selected_account, remove_account,
-    set_selected_account, start_microsoft_login,
+    cancel_microsoft_login, check_account_session, get_accounts, get_selected_account,
+    remove_account, set_selected_account, start_microsoft_login,
 };
 use crate::commands::bookmark::{add_bookmark, get_bookmarks, load_bookmarks, remove_bookmark};
 use crate::commands::instance::{
@@ -361,6 +361,7 @@ pub fn run() {
             get_selected_account,
             set_selected_account,
             remove_account,
+            check_account_session,
             checks_updates_on_launch,
             check_for_update,
             install_update,
