@@ -16,6 +16,7 @@ use crate::auth::{
     hydrate_account, persist_account, refresh_account_tokens, MinecraftAccount,
     MinecraftAccountRecord,
 };
+use crate::auth::flow::{check_session, Session};
 use crate::commands::instance::{find_instance_dir, instance_meta_file};
 use crate::commands::java::download_java_runtime;
 use crate::install_task::version_manifest_path;
@@ -327,7 +328,8 @@ pub async fn launch_instance(
 }
 
 /// Resolve the launch identity: hydrate the selected account (if any), refresh
-/// its Minecraft token when near expiry, and emit the matching status lines.
+/// its Minecraft token when near expiry or turned down by Minecraft services,
+/// and emit the matching status lines.
 /// Returns `None` for offline / no selected account. Errors are returned for the
 /// caller to surface via `fail!`.
 async fn resolve_account(
@@ -346,14 +348,42 @@ async fn resolve_account(
         None => None,
     };
 
-    // Refresh the MC token if it's near expiry; 300 s headroom covers the
-    // library/asset prefetch that follows.
     if let Some(account) = auth_account.as_mut() {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        if account.mc_access_token.is_empty() || account.expires_at - now < 300 {
+        // A token near expiry is refreshed outright; 300 s headroom covers the
+        // library/asset prefetch that follows. Any other is checked first.
+        let expiring = account.mc_access_token.is_empty() || account.expires_at - now < 300;
+        let refresh = expiring || {
+            emit_log(app, instance_id, format!("Checking the Microsoft sign-in for {}...", account.username));
+            match check_session(&state.http_client, &account.mc_access_token).await? {
+                Session::Valid(profile) => {
+                    // The name can change on minecraft.net while the token stays good.
+                    if profile.name != account.username {
+                        account.username = profile.name;
+                        let mut store = state.account_store.lock().unwrap();
+                        store.upsert(MinecraftAccountRecord::from_account(account));
+                        if let Err(e) = store.save() {
+                            emit_log(app, instance_id, format!("warning: failed to save the new player name: {e}"));
+                        }
+                    }
+                    false
+                }
+                Session::Rejected => {
+                    emit_log(app, instance_id, "Minecraft services no longer accept the saved sign-in.");
+                    true
+                }
+                Session::Unchecked(e) => {
+                    emit_log(app, instance_id, format!(
+                        "warning: could not check the sign-in ({e}); launching with it as saved."
+                    ));
+                    false
+                }
+            }
+        };
+        if refresh {
             emit_log(app, instance_id, format!("Refreshing Microsoft credentials for {}...", account.username));
             refresh_account_tokens(&state.http_client, account).await.map_err(|e| Error::Auth(format!(
                 "Could not refresh credentials for {}: {e}. \
