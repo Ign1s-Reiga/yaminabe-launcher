@@ -3,6 +3,19 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.2.0 — 2026-11-09
+
+- Switch the account you play as from the right end of the navigation bar. It
+  shows the selected player's head and name, and its menu, which opens upward,
+  lists your accounts, adds a new one, or takes you to Settings.
+- Mark an account in Settings → Accounts whose sign-in can no longer be
+  renewed, and sign it in again from there. A launch that fails for this
+  reason now tells you to do so.
+- Stop a launch from waiting forever at the sign-in check on a network that
+  never answers. After 10 seconds it goes ahead with the saved sign-in.
+- Say again why Minecraft's servers turned a sign-in down when signing in or
+  renewing fails at its last step. Since 1.1.0, the reason was left out.
+
 ## 1.1.0 — 2026-11-08
 
 - Check your Microsoft sign-in with Minecraft's servers before each online
