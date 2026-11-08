@@ -29,18 +29,45 @@ runs:
           yaminabe-launcher
           bamboo-css
 
+    # GitHub release downloads time out now and then (504), so each one is
+    # retried rather than failing the run on the first bad answer.
     - name: Setup Trunk
       shell: pwsh
       run: |
         $base = "https://github.com/trunk-rs/trunk/releases/download/v0.21.14"
         $dir = Join-Path $env:RUNNER_TEMP "trunk"
-        Invoke-WebRequest "$base/trunk-x86_64-pc-windows-msvc.zip" -OutFile "$dir.zip"
-        Invoke-WebRequest "$base/trunk-x86_64-pc-windows-msvc.zip.sha256" -OutFile "$dir.zip.sha256"
+        $retry = @{ MaximumRetryCount = 4; RetryIntervalSec = 15 }
+        Invoke-WebRequest "$base/trunk-x86_64-pc-windows-msvc.zip" -OutFile "$dir.zip" @retry
+        Invoke-WebRequest "$base/trunk-x86_64-pc-windows-msvc.zip.sha256" -OutFile "$dir.zip.sha256" @retry
         $expected = (Get-Content "$dir.zip.sha256" -Raw).Trim().Split(" ")[0]
         $actual = (Get-FileHash "$dir.zip" -Algorithm SHA256).Hash
         if ($actual -ne $expected) { throw "trunk download is $actual, expected $expected" }
         Expand-Archive "$dir.zip" -DestinationPath $dir
         $dir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+    # Left to itself, Trunk downloads the wasm-bindgen that Cargo.lock names on
+    # every build, with no retry. It uses one already on PATH at that version
+    # instead, so it is fetched here, the same way as Trunk.
+    - name: Setup wasm-bindgen
+      shell: pwsh
+      run: |
+        $lock = Get-Content yaminabe-launcher/Cargo.lock -Raw
+        if ($lock -notmatch '(?m)^name = "wasm-bindgen"\r?\nversion = "([^"]+)"') {
+          throw "Cargo.lock names no wasm-bindgen version"
+        }
+        $version = $Matches[1]
+        $name = "wasm-bindgen-$version-x86_64-pc-windows-msvc"
+        $base = "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/$version"
+        $archive = Join-Path $env:RUNNER_TEMP "$name.tar.gz"
+        $retry = @{ MaximumRetryCount = 4; RetryIntervalSec = 15 }
+        Invoke-WebRequest "$base/$name.tar.gz" -OutFile $archive @retry
+        Invoke-WebRequest "$base/$name.tar.gz.sha256sum" -OutFile "$archive.sha256sum" @retry
+        $expected = (Get-Content "$archive.sha256sum" -Raw).Trim().Split(" ")[0]
+        $actual = (Get-FileHash $archive -Algorithm SHA256).Hash
+        if ($actual -ne $expected) { throw "wasm-bindgen download is $actual, expected $expected" }
+        & "$env:SystemRoot\System32\tar.exe" -xzf $archive -C $env:RUNNER_TEMP
+        if ($LASTEXITCODE -ne 0) { throw "could not unpack $archive" }
+        Join-Path $env:RUNNER_TEMP $name | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
     # The collector bundles only fragments that already exist, and the macro
     # writes them while the UI compiles, after the hook has run. On a clean
