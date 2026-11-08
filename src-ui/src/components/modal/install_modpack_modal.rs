@@ -108,7 +108,7 @@ impl ModpackInstaller {
             match call_list_project_files(project_id, ProjectFileTarget::Modpack, None, None, index)
                 .await
             {
-                Ok(mut files) => {
+                Ok(files) => {
                     self.update_if_still_open(opening, |s| {
                         if index == 0 {
                             s.version = files
@@ -117,7 +117,7 @@ impl ModpackInstaller {
                                 .unwrap_or_default();
                         }
                         s.versions_done = files.len() < PAGE_SIZE;
-                        s.versions.append(&mut files);
+                        append_page(&mut s.versions, files);
                         s.versions_loading = false;
                     });
                 }

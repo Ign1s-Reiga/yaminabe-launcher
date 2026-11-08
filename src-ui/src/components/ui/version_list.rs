@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use bamboo_css_macro::{css, cx};
 use leptos::prelude::*;
 use leptos::{IntoView, component, view};
@@ -67,9 +68,16 @@ pub fn VersionPageError(error: String, on_retry: Callback<()>) -> impl IntoView 
     }
 }
 
+/// Add a further page of versions to `list`, leaving out any it already has.
+/// Pages go by offset, so a version uploaded meanwhile pushes the last one of a
+/// page onto the next, which would list it twice.
+pub fn append_page(list: &mut Vec<ProjectFileInfo>, page: Vec<ProjectFileInfo>) {
+    let known: HashSet<Option<String>> = list.iter().map(|file| file.source.version_key()).collect();
+    list.extend(page.into_iter().filter(|file| !known.contains(&file.source.version_key())));
+}
+
 /// The key of a version list's row in a `<For>` over `(position, file)` pairs,
-/// so that a page arriving only adds its own rows. The position is in it as a
-/// version uploaded meanwhile can push one onto the next page and list it twice.
+/// so that a page arriving only adds its own rows.
 pub fn version_row_key((index, file): &(usize, ProjectFileInfo)) -> (usize, Option<String>) {
     (*index, file.source.version_key())
 }
@@ -183,5 +191,38 @@ pub fn VersionRow(
             <span class=size_class>{size}</span>
             <span class=cx!(badge, tone)>{release}</span>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_page;
+    use yaminabe_launcher_shared::datamodels::{
+        DownloadSource, ProjectFileInfo, ProjectFileReleaseType, ProjectFileTarget,
+    };
+
+    fn file(file_id: u32) -> ProjectFileInfo {
+        ProjectFileInfo {
+            source: DownloadSource::CurseForge { project_id: 1, file_id },
+            target: ProjectFileTarget::Modpack,
+            release_type: ProjectFileReleaseType::Release,
+            file_name: format!("{file_id}.zip"),
+            download_url: None,
+            display_name: file_id.to_string(),
+            project_name: String::new(),
+            icon_url: None,
+            sha1: String::new(),
+            size: 0,
+        }
+    }
+
+    /// A page that starts with the last version of the one before, as after an
+    /// upload between the two, adds only the versions not yet listed.
+    #[test]
+    fn a_repeated_version_is_listed_once() {
+        let mut list = vec![file(3), file(2)];
+        append_page(&mut list, vec![file(2), file(1)]);
+        let ids: Vec<String> = list.iter().filter_map(|f| f.source.version_key()).collect();
+        assert_eq!(ids, vec!["3", "2", "1"]);
     }
 }
