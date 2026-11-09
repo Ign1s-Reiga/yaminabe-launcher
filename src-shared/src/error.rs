@@ -69,7 +69,9 @@ impl Error {
     pub fn is_transient(&self) -> bool {
         match self {
             Error::NetworkError(_) | Error::RateLimitExceeded(_) | Error::InvalidResponse(_) => true,
-            Error::HttpRequestRejected(status, _) => *status >= 500 || *status == 429,
+            // 407 and 408 come from a proxy or a slow connection, not from a
+            // verdict on the request.
+            Error::HttpRequestRejected(status, _) => *status >= 500 || matches!(status, 407 | 408 | 429),
             _ => false,
         }
     }
@@ -113,7 +115,9 @@ mod tests {
     #[test]
     fn a_server_that_could_not_answer_is_transient() {
         assert!(Error::HttpRequestRejected(503, String::new()).is_transient());
-        assert!(Error::HttpRequestRejected(429, String::new()).is_transient());
+        for status in [407, 408, 429] {
+            assert!(Error::HttpRequestRejected(status, String::new()).is_transient(), "{status}");
+        }
         assert!(Error::RateLimitExceeded("api.minecraftservices.com".into()).is_transient());
     }
 }

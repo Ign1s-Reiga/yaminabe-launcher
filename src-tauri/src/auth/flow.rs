@@ -390,9 +390,10 @@ pub(crate) async fn check_session(client: &Client, mc_access_token: &str) -> Res
 fn session_from_lookup(lookup: Result<McProfile, Error>) -> Result<Session, Error> {
     match lookup {
         Ok(profile) => Ok(Session::Valid(profile)),
-        Err(e) if e.is_transient() => Ok(Session::Unchecked(e)),
-        Err(Error::HttpRequestRejected(..)) => Ok(Session::Rejected),
-        Err(e) => Err(e),
+        Err(Error::HttpRequestRejected(401 | 403, _)) => Ok(Session::Rejected),
+        Err(e @ Error::GameNotOwned) => Err(e),
+        // Any other answer says nothing sure about the token.
+        Err(e) => Ok(Session::Unchecked(e)),
     }
 }
 
@@ -480,16 +481,18 @@ mod tests {
 
     #[test]
     fn a_turned_down_token_is_rejected() {
-        for status in [400, 401, 403] {
+        for status in [401, 403] {
             let lookup = Err(Error::HttpRequestRejected(status, String::new()));
             assert!(matches!(session_from_lookup(lookup), Ok(Session::Rejected)));
         }
     }
 
     #[test]
-    fn a_rate_limited_lookup_leaves_the_token_unchecked() {
-        let lookup = Err(Error::HttpRequestRejected(429, String::new()));
-        assert!(matches!(session_from_lookup(lookup), Ok(Session::Unchecked(_))));
+    fn an_unexpected_answer_leaves_the_token_unchecked() {
+        for status in [400, 405, 429] {
+            let lookup = Err(Error::HttpRequestRejected(status, String::new()));
+            assert!(matches!(session_from_lookup(lookup), Ok(Session::Unchecked(_))), "{status}");
+        }
     }
 
     #[test]
