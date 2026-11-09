@@ -1,5 +1,5 @@
 use std::sync::atomic::Ordering;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant};
 
 use log::warn;
 use tauri::{AppHandle, Emitter, State};
@@ -9,7 +9,9 @@ use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::ipc::{MsLoginPrompt, MsLoginResult};
 use crate::AppState;
 
-use crate::auth::flow::{finalize_minecraft_login, make_qr_svg, poll_token, request_device_code, require_client_id, Poll};
+use crate::auth::flow::{
+    finalize_minecraft_login, make_qr_svg, poll_token, request_device_code, require_client_id, Poll, PollPace,
+};
 use crate::auth::model::{format_uuid_dashed, now_epoch_seconds, MinecraftAccount, MinecraftAccountRecord, MinecraftAccountSecret};
 use crate::auth::session::{renew_session, save_renewal, Renewal};
 use crate::auth::store::{delete_secret, write_secret};
@@ -18,9 +20,6 @@ use crate::auth::hydrate_account;
 const EVT_PROMPT: &str = "ms-login-prompt";
 const EVT_RESULT: &str = "ms-login-result";
 
-/// The longest the sign-in dialog waits between two polls of the token
-/// endpoint, whatever `slow_down` replies and unclear answers add up to.
-const MAX_POLL_WAIT: u64 = 60;
 
 fn emit_result(app: &AppHandle, kind: &str, message: impl Into<String>, account: Option<AccountSummary>) {
     let payload = MsLoginResult {
@@ -116,7 +115,8 @@ pub async fn check_account_session(
     match renew_session(&state.http_client, &mut account, |_| {}).await {
         Ok(Renewal::Current) => Ok(AccountSession::Valid),
         Ok(renewal @ (Renewal::Updated | Renewal::Renamed)) => {
-            let saved = save_renewal(&mut state.account_store.lock().unwrap(), &account, &record, &renewal);
+            let with_secret = matches!(renewal, Renewal::Updated);
+            let saved = save_renewal(&mut state.account_store.lock().unwrap(), &account, &record, with_secret);
             if let Some(e) = saved.failure {
                 warn!("failed to save the renewed sign-in for {normalised}: {e}");
             }
@@ -191,30 +191,27 @@ pub async fn start_microsoft_login(
     }
 
     // Poll until the token endpoint returns a grant, the user cancels, or the
-    // device code expires. `interval` is honoured, plus 5 s per `slow_down`;
-    // `backoff` spaces out polls that get no clear answer, such as a 429.
-    let expired_msg = "The login request expired before authentication completed.";
-    let started = SystemTime::now();
-    let mut interval = device.interval.max(1) as u64;
-    let mut backoff = 0u64;
-    let mut wait = interval;
+    // device code expires, at the pace `PollPace` sets. `Instant` keeps a
+    // change to the system clock from ending the sign-in early.
+    let expire = || {
+        let msg = "The login request expired before authentication completed.";
+        emit_result(&app, "expired", msg, None);
+        Err(Error::Auth(msg.into()))
+    };
+    let expires_at = Instant::now() + Duration::from_secs(u64::from(device.expires_in));
+    let mut pace = PollPace::new(device.interval);
     let mut waited = 0u64;
     let token = loop {
         if cancel.load(Ordering::SeqCst) {
             emit_result(&app, "cancelled", "Login cancelled.", None);
             return Ok(());
         }
-        if SystemTime::now()
-            .duration_since(started)
-            .map(|d| d.as_secs() >= device.expires_in as u64)
-            .unwrap_or(true)
-        {
-            emit_result(&app, "expired", expired_msg, None);
-            return Err(Error::Auth(expired_msg.into()));
+        if Instant::now() >= expires_at {
+            return expire();
         }
         // Wait in one-second steps, so a cancel or the code's expiry is seen
         // within a second rather than after a whole wait.
-        if waited < wait {
+        if waited < pace.wait() {
             sleep(Duration::from_secs(1)).await;
             waited += 1;
             continue;
@@ -222,28 +219,24 @@ pub async fn start_microsoft_login(
         waited = 0;
         match poll_token(&client, client_id, &device.device_code).await {
             Ok(Poll::Granted(t)) => break t,
-            Ok(Poll::Pending) => backoff = 0,
-            // RFC 8628 §3.5: a slow_down adds 5 s to every later poll.
-            Ok(Poll::SlowDown) => {
-                backoff = 0;
-                interval = interval.saturating_add(5);
+            Ok(Poll::Pending) => pace.answered(),
+            Ok(Poll::SlowDown) => pace.slow_down(),
+            Ok(Poll::Throttled(retry_after)) => {
+                warn!("token poll turned away for coming too often, resting {retry_after:?} s");
+                pace.unclear(retry_after);
             }
-            Ok(Poll::Expired) => {
-                emit_result(&app, "expired", expired_msg, None);
-                return Err(Error::Auth(expired_msg.into()));
-            }
+            Ok(Poll::Expired) => return expire(),
             // One poll that gets no clear answer does not end the sign-in;
             // the code expiring does.
             Err(e) if e.is_inconclusive() => {
                 warn!("token poll got no clear answer, polling again later: {e}");
-                backoff = backoff.saturating_add(5).min(MAX_POLL_WAIT);
+                pace.unclear(None);
             }
             Err(e) => {
                 emit_result(&app, "error", e.to_string(), None);
                 return Err(e);
             }
         }
-        wait = interval.saturating_add(backoff).min(MAX_POLL_WAIT);
     };
 
     let (profile, mc, xuid) = match finalize_minecraft_login(&client, &token.access_token).await {

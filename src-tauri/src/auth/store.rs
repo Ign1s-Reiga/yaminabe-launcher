@@ -92,18 +92,17 @@ pub fn hydrate_account(record: &MinecraftAccountRecord) -> Result<MinecraftAccou
     })
 }
 
-/// Write a fully-formed `MinecraftAccount` back to disk + keyring. The secret
-/// is written first so a failure leaves no orphaned record pointing at a
-/// missing keyring entry.
-pub fn persist_account(store: &mut AccountStore, account: &MinecraftAccount) -> Result<(), Error> {
+/// Write `account`'s tokens to the keyring, leaving its record as it is. A
+/// caller saving both writes this first, so a failure leaves no record
+/// pointing at a missing keyring entry.
+pub fn write_account_secret(account: &MinecraftAccount) -> Result<(), Error> {
     write_secret(
         &account.uuid,
         &MinecraftAccountSecret {
             mc_access_token: account.mc_access_token.clone(),
             ms_refresh_token: account.ms_refresh_token.clone(),
         },
-    )?;
-    save_record(store, account)
+    )
 }
 
 /// Save `account`'s record alone, leaving its keyring entry as it is, for a

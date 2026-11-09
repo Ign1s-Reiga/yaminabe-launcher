@@ -340,24 +340,26 @@ async fn resolve_account(
     app: &AppHandle,
     instance_id: &str,
 ) -> Result<Option<MinecraftAccount>, Error> {
-    let read = auth_record.clone();
-    let mut auth_account: Option<MinecraftAccount> = match auth_record {
-        Some(record) => Some(hydrate_account(&record).map_err(|e| Error::Auth(format!(
+    // The account, with the record it was read from, which a renewal is saved
+    // against.
+    let mut auth: Option<(MinecraftAccount, MinecraftAccountRecord)> = match auth_record {
+        Some(record) => Some((hydrate_account(&record).map_err(|e| Error::Auth(format!(
             "Stored credentials for {} are missing or unreadable ({e}). \
              Sign in again from Settings → Accounts.",
             record.username
-        )))?),
+        )))?, record)),
         None => None,
     };
 
-    if let (Some(account), Some(read)) = (auth_account.as_mut(), read.as_ref()) {
+    if let Some((account, read)) = auth.as_mut() {
         let renewal = renew_session(&state.http_client, account, |line| emit_log(app, instance_id, line)).await;
         match renewal {
             Ok(Renewal::Current) => {}
             Ok(renewal @ (Renewal::Updated | Renewal::Renamed)) => {
                 // Failure is non-fatal: `account` still holds good tokens for
                 // this launch. The store's lock is let go before emitting.
-                let saved = save_renewal(&mut state.account_store.lock().unwrap(), account, read, &renewal);
+                let with_secret = matches!(renewal, Renewal::Updated);
+                let saved = save_renewal(&mut state.account_store.lock().unwrap(), account, read, with_secret);
                 if let Some(e) = saved.failure {
                     emit_log(app, instance_id, format!("warning: failed to save the renewed sign-in: {e}"));
                 }
@@ -399,7 +401,7 @@ async fn resolve_account(
         emit_log(app, instance_id, "No Microsoft account selected — launching as OfflinePlayer.");
     }
 
-    Ok(auth_account)
+    Ok(auth.map(|(account, _)| account))
 }
 
 /// Resolve the Java executable: the instance's configured `jrePath` wins;

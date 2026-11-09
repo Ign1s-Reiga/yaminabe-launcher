@@ -135,8 +135,52 @@ pub(crate) enum Poll {
     Pending,
     /// Microsoft asks for the polls to come less often.
     SlowDown,
+    /// The endpoint turned the poll away for coming too often (429), asking
+    /// for the given number of seconds' rest when it says.
+    Throttled(Option<u64>),
     /// The code expired before the user signed in.
     Expired,
+}
+
+/// The longest extra wait that unclear answers add between two polls.
+const MAX_BACKOFF: u64 = 300;
+
+/// How long the sign-in dialog waits before each poll of the token endpoint:
+/// Microsoft's interval, which it is never shorter than, plus a backoff while
+/// the endpoint gives no clear answer.
+pub(crate) struct PollPace {
+    interval: u64,
+    backoff: u64,
+}
+
+impl PollPace {
+    pub(crate) fn new(interval: u32) -> Self {
+        PollPace { interval: u64::from(interval.max(1)), backoff: 0 }
+    }
+
+    /// Seconds to wait before the next poll.
+    pub(crate) fn wait(&self) -> u64 {
+        self.interval.saturating_add(self.backoff)
+    }
+
+    /// A clear answer takes 5 s off the backoff rather than dropping it, so
+    /// an endpoint that turns away every other poll still gets spaced out.
+    pub(crate) fn answered(&mut self) {
+        self.backoff = self.backoff.saturating_sub(5);
+    }
+
+    /// RFC 8628 §3.5: a `slow_down` adds 5 s to every later poll.
+    pub(crate) fn slow_down(&mut self) {
+        self.interval = self.interval.saturating_add(5);
+        self.answered();
+    }
+
+    /// An unclear answer adds 10 s of backoff, or the rest the server asked
+    /// for if that is longer, up to `MAX_BACKOFF`.
+    pub(crate) fn unclear(&mut self, retry_after: Option<u64>) {
+        let more = self.backoff.saturating_add(10);
+        self.backoff = retry_after.map_or(more, |asked| asked.max(more)).min(MAX_BACKOFF);
+    }
 }
 
 /// Poll the token endpoint once. `Err` ends the sign-in unless it is
@@ -157,6 +201,14 @@ pub(crate) async fn poll_token(
         .send()
         .await?;
 
+    if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let retry_after = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok());
+        return Ok(Poll::Throttled(retry_after));
+    }
     if resp.status().is_success() {
         return Ok(Poll::Granted(
             resp.json::<TokenResponse>()
@@ -486,8 +538,8 @@ pub async fn refresh_account_tokens(
 #[cfg(test)]
 mod tests {
     use super::{
-        login_profile_error, profile_lookup, refused, service_error, session_from_lookup, McProfile, Session,
-        TokenErrorResponse,
+        login_profile_error, profile_lookup, refused, service_error, session_from_lookup, McProfile, PollPace,
+        Session, TokenErrorResponse, MAX_BACKOFF,
     };
     use std::time::{Duration, Instant};
     use tokio::net::TcpListener;
@@ -615,5 +667,45 @@ mod tests {
         let resp = reply_once(http_reply("503 Service Unavailable", body)).await;
         let e = service_error::<TokenErrorResponse>(resp, "url").await.err().expect("not a refusal");
         assert!(matches!(e, Error::HttpRequestRejected(503, _)), "got {e:?}");
+    }
+    #[test]
+    fn polls_keep_microsofts_interval_as_a_floor() {
+        let mut pace = PollPace::new(5);
+        for _ in 0..20 {
+            pace.slow_down();
+        }
+        assert_eq!(pace.wait(), 105);
+        pace.unclear(None);
+        assert_eq!(pace.wait(), 115);
+    }
+
+    #[test]
+    fn unclear_answers_back_off_and_clear_ones_ease_it() {
+        let mut pace = PollPace::new(5);
+        pace.unclear(None);
+        pace.unclear(None);
+        assert_eq!(pace.wait(), 25);
+        pace.answered();
+        assert_eq!(pace.wait(), 20);
+        // Every other poll turned away still builds up a backoff.
+        for _ in 0..6 {
+            pace.unclear(None);
+            pace.answered();
+        }
+        assert_eq!(pace.wait(), 50);
+        // A run of clear answers brings the pace back to Microsoft's.
+        for _ in 0..20 {
+            pace.answered();
+        }
+        assert_eq!(pace.wait(), 5);
+    }
+
+    #[test]
+    fn a_throttled_poll_rests_as_long_as_asked() {
+        let mut pace = PollPace::new(5);
+        pace.unclear(Some(30));
+        assert_eq!(pace.wait(), 35);
+        pace.unclear(Some(10_000));
+        assert_eq!(pace.wait(), 5 + MAX_BACKOFF);
     }
 }
