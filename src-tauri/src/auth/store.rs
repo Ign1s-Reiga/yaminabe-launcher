@@ -103,6 +103,12 @@ pub fn persist_account(store: &mut AccountStore, account: &MinecraftAccount) -> 
             ms_refresh_token: account.ms_refresh_token.clone(),
         },
     )?;
+    save_record(store, account)
+}
+
+/// Save `account`'s record alone, leaving its keyring entry as it is, for a
+/// change that touches no secret, such as a new player name.
+pub fn save_record(store: &mut AccountStore, account: &MinecraftAccount) -> Result<(), Error> {
     store.upsert(MinecraftAccountRecord::from_account(account));
     store.save()
 }

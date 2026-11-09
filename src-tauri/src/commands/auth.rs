@@ -13,7 +13,7 @@ use crate::auth::flow::{finalize_minecraft_login, make_qr_svg, poll_token, reque
 use crate::auth::model::{format_uuid_dashed, now_epoch_seconds, MinecraftAccount, MinecraftAccountRecord, MinecraftAccountSecret};
 use crate::auth::session::{renew_session, Renewal};
 use crate::auth::store::{delete_secret, write_secret};
-use crate::auth::{hydrate_account, persist_account};
+use crate::auth::{hydrate_account, persist_account, save_record, AccountStore};
 
 const EVT_PROMPT: &str = "ms-login-prompt";
 const EVT_RESULT: &str = "ms-login-result";
@@ -89,7 +89,7 @@ pub fn remove_account(uuid: String, state: State<'_, AppState>) -> Result<(), Er
 
 /// Bring a saved account's sign-in up to date, as a launch would, and say
 /// whether the user has to sign in again. Renewed tokens are saved, unless the
-/// account was removed meanwhile.
+/// account was removed or signed in again meanwhile.
 #[tauri::command]
 pub async fn check_account_session(
     uuid: String,
@@ -109,14 +109,29 @@ pub async fn check_account_session(
         Ok(account) => account,
         Err(e) => return Ok(AccountSession::NeedsSignIn(format!("The saved sign-in could not be read: {e}"))),
     };
-    match renew_session(&state.http_client, &mut account, |_| {}).await {
+    let renewal = renew_session(&state.http_client, &mut account, |_| {}).await;
+    // A sign-in made while this check was out saved a record of its own, which
+    // this check's result must not overwrite.
+    let unchanged = |store: &AccountStore| {
+        store.accounts.iter().any(|a| a.uuid == normalised && a.expires_at == record.expires_at)
+    };
+    match renewal {
         Ok(Renewal::Current) => Ok(AccountSession::Valid),
         Ok(Renewal::Updated) => {
             let mut store = state.account_store.lock().unwrap();
-            if store.accounts.iter().any(|a| a.uuid == normalised)
+            if unchanged(&store)
                 && let Err(e) = persist_account(&mut store, &account)
             {
                 warn!("failed to save the renewed sign-in for {normalised}: {e}");
+            }
+            Ok(AccountSession::Valid)
+        }
+        Ok(Renewal::Renamed) => {
+            let mut store = state.account_store.lock().unwrap();
+            if unchanged(&store)
+                && let Err(e) = save_record(&mut store, &account)
+            {
+                warn!("failed to save the new player name for {normalised}: {e}");
             }
             Ok(AccountSession::Valid)
         }
@@ -125,7 +140,7 @@ pub async fn check_account_session(
             Ok(AccountSession::Unchecked)
         }
         Err(Error::GameNotOwned) => Ok(AccountSession::NotOwned),
-        Err(e) if e.is_transient() => {
+        Err(e) if e.is_inconclusive() => {
             warn!("could not renew the sign-in for {normalised}: {e}");
             Ok(AccountSession::Unchecked)
         }
