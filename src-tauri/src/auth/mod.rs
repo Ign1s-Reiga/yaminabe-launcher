@@ -4,4 +4,4 @@ pub mod session;
 pub mod store;
 
 pub use model::{AccountStore, MinecraftAccount, MinecraftAccountRecord};
-pub use store::{hydrate_account, load_account_store, persist_account};
+pub use store::{hydrate_account, load_account_store, persist_account, save_record};

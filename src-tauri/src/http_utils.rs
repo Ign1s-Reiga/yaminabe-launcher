@@ -4,6 +4,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use sha1::{Digest, Sha1};
 use std::path::PathBuf;
+use std::time::Duration;
 use yaminabe_launcher_shared::error::Error;
 
 /// Entry point for the JSON-fetching builder. Default method is GET; chain
@@ -19,6 +20,7 @@ pub fn fetch_json<'a>(client: &'a Client, url: &'a str) -> FetchJson<'a> {
         body: None,
         query: Vec::new(),
         headers: Vec::new(),
+        timeout: None,
     }
 }
 
@@ -33,6 +35,7 @@ pub struct FetchJson<'a> {
     body: Option<RequestBody<'a>>,
     query: Vec<(&'a str, &'a str)>,
     headers: Vec<(&'a str, &'a str)>,
+    timeout: Option<Duration>,
 }
 
 /// At most one request body: a JSON payload or a urlencoded form.
@@ -77,6 +80,12 @@ impl<'a> FetchJson<'a> {
         self
     }
 
+    /// Give up on the request after `timeout`; the client has none of its own.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
     /// Build the request via `client.request(method, url)`, send it, and
     /// decode the response body as JSON. The fact that we construct the
     /// `RequestBuilder` here — not at chain time — is what lets `.method(...)`
@@ -87,6 +96,9 @@ impl<'a> FetchJson<'a> {
 
         if !self.query.is_empty() {
             req = req.query(&self.query);
+        }
+        if let Some(timeout) = self.timeout {
+            req = req.timeout(timeout);
         }
 
         for (name, value) in &self.headers {

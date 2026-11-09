@@ -12,7 +12,7 @@ use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::ipc::LogLine;
 use yaminabe_launcher_shared::datamodels::ClientManifest;
 use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, ActivityGuard, AppState, InstanceActivity};
-use crate::auth::{hydrate_account, persist_account, MinecraftAccount, MinecraftAccountRecord};
+use crate::auth::{hydrate_account, persist_account, save_record, MinecraftAccount, MinecraftAccountRecord};
 use crate::auth::session::{renew_session, Renewal};
 use crate::commands::instance::{find_instance_dir, instance_meta_file};
 use crate::commands::java::download_java_runtime;
@@ -357,17 +357,22 @@ async fn resolve_account(
                     emit_log(app, instance_id, format!("warning: failed to persist refreshed tokens: {e}"));
                 }
             }
+            Ok(Renewal::Renamed) => {
+                let mut store = state.account_store.lock().unwrap();
+                if let Err(e) = save_record(&mut store, account) {
+                    emit_log(app, instance_id, format!("warning: failed to save the new player name: {e}"));
+                }
+            }
             Ok(Renewal::Unchecked(e)) => emit_log(app, instance_id, format!(
                 "warning: could not check the sign-in ({e}); launching with it as saved."
             )),
-            Err(Error::GameNotOwned) => return Err(Error::Auth(format!(
-                "{} does not own Minecraft: Java Edition, so it cannot launch the game. \
-                 Select another account in Settings → Accounts.",
+            Err(e @ Error::GameNotOwned) => return Err(Error::Auth(format!(
+                "{} cannot launch the game. {e} Select another account in Settings → Accounts.",
                 account.username
             ))),
-            Err(e) if e.is_transient() => return Err(Error::Auth(format!(
+            Err(e) if e.is_inconclusive() => return Err(Error::Auth(format!(
                 "The sign-in for {} could not be renewed, because Microsoft or Minecraft \
-                 services did not answer: {e}. Try again in a moment.",
+                 services did not answer as expected: {e}. Try again in a moment.",
                 account.username
             ))),
             Err(e) => return Err(Error::Auth(format!(

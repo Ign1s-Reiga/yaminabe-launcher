@@ -1,7 +1,8 @@
 use qrcode::render::svg;
 use qrcode::QrCode;
 use std::time::Duration;
-use reqwest::{Client, Method};
+use reqwest::{Client, Method, Response};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use yaminabe_launcher_shared::error::Error;
 use crate::http_utils::{fetch_json, rejected_status};
@@ -23,9 +24,13 @@ const XSTS_AUTH_URL: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
 const MC_LOGIN_URL: &str = "https://api.minecraftservices.com/authentication/login_with_xbox";
 const MC_PROFILE_URL: &str = "https://api.minecraftservices.com/minecraft/profile";
 
-/// How long a profile lookup may take. The launch checks the saved sign-in this
-/// way, and the shared client has no timeout of its own, so a network that
-/// never answers would otherwise hold the launch at that check for good.
+/// How long a sign-in request may take. The shared client has no timeout of its
+/// own, so a network that never answers would otherwise hold a launch or a
+/// check for good.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a profile lookup may take. Every launch makes one, so it gets less
+/// time than the other requests.
 const PROFILE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Deserialize)]
@@ -116,9 +121,10 @@ pub(crate) async fn request_device_code(client: &Client, client_id: &str) -> Res
     fetch_json(client, DEVICE_CODE_URL)
         .method(Method::POST)
         .form(&[("client_id", client_id), ("scope", SCOPE)])
+        .timeout(REQUEST_TIMEOUT)
         .send::<DeviceCodeResponse>()
         .await
-        .map_err(|e| Error::Auth(format!("device code request: {e}")))
+        .map_err(|e| refused("device code request", e))
 }
 
 /// Poll the token endpoint. `Ok(Some)` is a real grant, `Ok(None)` means MS
@@ -135,6 +141,7 @@ pub(crate) async fn poll_token(
             ("client_id", client_id),
             ("device_code", device_code),
         ])
+        .timeout(REQUEST_TIMEOUT)
         .send()
         .await?;
 
@@ -146,10 +153,7 @@ pub(crate) async fn poll_token(
         ));
     }
 
-    let err = resp
-        .json::<TokenErrorResponse>()
-        .await
-        .map_err(Error::InvalidResponse)?;
+    let err = service_error::<TokenErrorResponse>(resp, TOKEN_URL).await?;
     match err.error.as_str() {
         // RFC 8628 §3.5: keep polling.
         "authorization_pending" | "slow_down" => Ok(None),
@@ -179,19 +183,11 @@ async fn refresh_access_token(
             ("scope", SCOPE),
             ("refresh_token", refresh_token),
         ])
+        .timeout(REQUEST_TIMEOUT)
         .send()
         .await?;
     if !resp.status().is_success() {
-        let status = resp.status();
-        let rejection = rejected_status(status, TOKEN_URL);
-        if rejection.is_transient() {
-            return Err(rejection);
-        }
-        // An unreadable reason does not make the refusal any less of one.
-        let err = resp
-            .json::<TokenErrorResponse>()
-            .await
-            .map_err(|e| Error::Auth(format!("refresh_token rejected ({status}): {e}")))?;
+        let err = service_error::<TokenErrorResponse>(resp, TOKEN_URL).await?;
         return Err(Error::Auth(format!(
             "refresh_token rejected ({}): {}",
             err.error,
@@ -203,11 +199,23 @@ async fn refresh_access_token(
         .map_err(Error::InvalidResponse)
 }
 
-/// A sign-in step the server refused is an authentication failure. A
-/// transient error is passed on as it is, since it says nothing about the
+/// Read a failed reply from an endpoint that reports its errors as a `T`.
+/// A status that says the server could not answer is passed on first. A body
+/// that is not a `T`, such as a proxy's page or one cut off, did not come from
+/// the service, so it is inconclusive too.
+async fn service_error<T: DeserializeOwned>(resp: Response, url: &str) -> Result<T, Error> {
+    let status = resp.status();
+    if status.is_server_error() || matches!(status.as_u16(), 407 | 408 | 429) {
+        return Err(rejected_status(status, url));
+    }
+    resp.json::<T>().await.map_err(Error::InvalidResponse)
+}
+
+/// A sign-in step the server refused is an authentication failure. An
+/// inconclusive error is passed on as it is, since it says nothing about the
 /// account.
 fn refused(step: &str, e: Error) -> Error {
-    if e.is_transient() {
+    if e.is_inconclusive() {
         e
     } else {
         Error::Auth(format!("{step}: {e}"))
@@ -258,6 +266,7 @@ async fn xbl_authenticate(client: &Client, ms_access_token: &str) -> Result<Xbox
         .method(Method::POST)
         .header("Accept", "application/json")
         .payload(&body)
+        .timeout(REQUEST_TIMEOUT)
         .send::<XboxAuthResponse>()
         .await
         .map_err(|e| refused("Xbox Live authentication", e))
@@ -276,27 +285,18 @@ async fn xsts_authorize(client: &Client, xbl_token: &str) -> Result<XboxAuthResp
         .post(XSTS_AUTH_URL)
         .header("Accept", "application/json")
         .json(&body)
+        .timeout(REQUEST_TIMEOUT)
         .send()
         .await?;
     // XSTS uses HTTP 401 to signal specific user-facing problems via XErr.
     if resp.status().as_u16() == 401 {
-        // An unreadable reason does not make the refusal any less of one.
-        let err = resp
-            .json::<XstsErrorResponse>()
-            .await
-            .map_err(|e| Error::Auth(format!("Xbox Live rejected the account: {e}")))?;
+        let err = service_error::<XstsErrorResponse>(resp, XSTS_AUTH_URL).await?;
         return Err(Error::Auth(xsts_error_message(err.xerr, err.message)));
     }
     if !resp.status().is_success() {
-        let rejection = rejected_status(resp.status(), XSTS_AUTH_URL);
-        if rejection.is_transient() {
-            return Err(rejection);
-        }
         let status = resp.status().as_u16();
         let text = resp.text().await.unwrap_or_default();
-        return Err(Error::Auth(format!(
-            "XSTS authorization rejected ({status}): {text}"
-        )));
+        return Err(refused("XSTS authorization", Error::HttpRequestRejected(status, text)));
     }
     resp.json::<XboxAuthResponse>()
         .await
@@ -332,6 +332,7 @@ async fn mc_login_with_xbox(
         .payload(&Body {
             identity_token: format!("XBL3.0 x={user_hash};{xsts_token}"),
         })
+        .timeout(REQUEST_TIMEOUT)
         .send::<McLoginResponse>()
         .await
         .map_err(|e| refused("Minecraft services rejected the Xbox token", e))
@@ -423,13 +424,12 @@ pub(crate) async fn finalize_minecraft_login(
     Ok((profile, mc, xuid))
 }
 
-/// A refused profile lookup during login or refresh is an authentication
-/// failure, reported with the server's status and reason. A transient error is
-/// passed on as it is.
+/// A profile lookup refused during login or refresh, with a 401 or 403, is an
+/// authentication failure, reported with the server's status and reason.
+/// Anything else is passed on as it is.
 fn login_profile_error(e: Error) -> Error {
     match e {
-        e if e.is_transient() => e,
-        Error::HttpRequestRejected(status, text) => {
+        Error::HttpRequestRejected(status @ (401 | 403), text) => {
             Error::Auth(format!("Profile lookup rejected ({status}): {text}"))
         }
         other => other,
@@ -474,7 +474,10 @@ pub async fn refresh_account_tokens(
 
 #[cfg(test)]
 mod tests {
-    use super::{login_profile_error, profile_lookup, refused, session_from_lookup, McProfile, Session};
+    use super::{
+        login_profile_error, profile_lookup, refused, service_error, session_from_lookup, McProfile, Session,
+        TokenErrorResponse,
+    };
     use std::time::{Duration, Instant};
     use tokio::net::TcpListener;
     use yaminabe_launcher_shared::error::Error;
@@ -522,7 +525,7 @@ mod tests {
 
     #[test]
     fn a_login_the_server_could_not_answer_is_not_a_refusal() {
-        for status in [429, 503] {
+        for status in [400, 405, 429, 503] {
             let e = login_profile_error(Error::HttpRequestRejected(status, String::new()));
             assert!(matches!(e, Error::HttpRequestRejected(..)), "got {e:?}");
         }
@@ -530,7 +533,7 @@ mod tests {
 
     #[test]
     fn a_refused_step_is_an_authentication_failure() {
-        let e = refused("Xbox Live authentication", Error::HttpRequestRejected(400, "url".into()));
+        let e = refused("Xbox Live authentication", Error::HttpRequestRejected(401, "url".into()));
         assert!(matches!(&e, Error::Auth(m) if m.starts_with("Xbox Live authentication: ")), "got {e:?}");
     }
 
@@ -540,6 +543,8 @@ mod tests {
         assert!(matches!(e, Error::RateLimitExceeded(_)), "got {e:?}");
         let e = refused("Xbox Live authentication", Error::HttpRequestRejected(502, "url".into()));
         assert!(matches!(e, Error::HttpRequestRejected(502, _)), "got {e:?}");
+        let e = refused("Xbox Live authentication", Error::HttpRequestRejected(400, "url".into()));
+        assert!(matches!(e, Error::HttpRequestRejected(400, _)), "got {e:?}");
     }
 
     #[tokio::test]
@@ -558,5 +563,46 @@ mod tests {
         assert!(matches!(&lookup, Err(Error::NetworkError(e)) if e.is_timeout()), "got {lookup:?}");
         assert!(matches!(session_from_lookup(lookup), Ok(Session::Unchecked(_))));
         server.abort();
+    }
+    /// Answer one request on a local port with `reply`, a raw HTTP response.
+    async fn reply_once(reply: String) -> reqwest::Response {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let url = format!("http://{}/", listener.local_addr().expect("addr"));
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buf = [0u8; 1024];
+            let read = socket.read(&mut buf).await.expect("read request");
+            assert!(read > 0, "empty request");
+            socket.write_all(reply.as_bytes()).await.expect("write");
+        });
+        reqwest::Client::new().get(&url).send().await.expect("send")
+    }
+
+    fn http_reply(status: &str, body: &str) -> String {
+        format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\n\r\n{body}", body.len())
+    }
+
+    #[tokio::test]
+    async fn a_service_refusal_is_read() {
+        let body = r#"{"error":"invalid_grant","error_description":"expired"}"#;
+        let resp = reply_once(http_reply("400 Bad Request", body)).await;
+        let err = service_error::<TokenErrorResponse>(resp, "url").await.expect("refusal");
+        assert_eq!(err.error, "invalid_grant");
+    }
+
+    #[tokio::test]
+    async fn a_page_that_is_not_the_services_is_inconclusive() {
+        let resp = reply_once(http_reply("403 Forbidden", "<html>blocked</html>")).await;
+        let e = service_error::<TokenErrorResponse>(resp, "url").await.err().expect("not a refusal");
+        assert!(matches!(e, Error::InvalidResponse(_)), "got {e:?}");
+    }
+
+    #[tokio::test]
+    async fn a_server_error_is_inconclusive_whatever_its_body() {
+        let body = r#"{"error":"temporarily_unavailable"}"#;
+        let resp = reply_once(http_reply("503 Service Unavailable", body)).await;
+        let e = service_error::<TokenErrorResponse>(resp, "url").await.err().expect("not a refusal");
+        assert!(matches!(e, Error::HttpRequestRejected(503, _)), "got {e:?}");
     }
 }

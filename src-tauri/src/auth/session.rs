@@ -8,9 +8,11 @@ use super::model::{now_epoch_seconds, MinecraftAccount};
 pub(crate) enum Renewal {
     /// The token is accepted as saved.
     Current,
-    /// The token was renewed or the player name changed, so the account needs
-    /// saving.
+    /// The token was renewed, so the account needs saving.
     Updated,
+    /// The token is accepted, but the player name changed on minecraft.net, so
+    /// the account's record needs saving.
+    Renamed,
     /// Minecraft services could not be asked, so the token is used as saved.
     Unchecked(Error),
 }
@@ -20,10 +22,10 @@ pub(crate) enum Renewal {
 /// Any other is checked first, and refreshed only if Minecraft services turn
 /// it down. `step` hears each stage, for a progress log.
 ///
-/// An error means the token could not be renewed. A transient one
-/// (`Error::is_transient`) says nothing about the account, and a later try may
-/// work. `Error::GameNotOwned` means the account cannot play at all, and any
-/// other means the user has to sign in again.
+/// An error means the token could not be renewed. An inconclusive one
+/// (`Error::is_inconclusive`) says nothing about the account, and a later try
+/// may work. `Error::GameNotOwned` means the account cannot play at all, and
+/// any other means the user has to sign in again.
 pub(crate) async fn renew_session(
     client: &Client,
     account: &mut MinecraftAccount,
@@ -37,7 +39,7 @@ pub(crate) async fn renew_session(
             // The name can change on minecraft.net while the token stays good.
             Session::Valid(profile) => {
                 account.username = profile.name;
-                return Ok(Renewal::Updated);
+                return Ok(Renewal::Renamed);
             }
             Session::Unchecked(e) => return Ok(Renewal::Unchecked(e)),
             Session::Rejected => step("Minecraft services no longer accept the saved sign-in.".to_string()),

@@ -63,15 +63,14 @@ pub enum Error {
 }
 
 impl Error {
-    /// Whether the server could not be reached or could not answer, rather
-    /// than refused. Such an error says nothing about the request, and a later
-    /// try may work.
-    pub fn is_transient(&self) -> bool {
+    /// Whether the error leaves open what the server makes of the request: it
+    /// could not be reached, could not answer, or answered with something other
+    /// than a refusal. Only a 401 or 403 status counts as a refusal, so an odd
+    /// reply, such as a gateway's 400 or a proxy's 407, is not taken for one.
+    pub fn is_inconclusive(&self) -> bool {
         match self {
             Error::NetworkError(_) | Error::RateLimitExceeded(_) | Error::InvalidResponse(_) => true,
-            // 407 and 408 come from a proxy or a slow connection, not from a
-            // verdict on the request.
-            Error::HttpRequestRejected(status, _) => *status >= 500 || matches!(status, 407 | 408 | 429),
+            Error::HttpRequestRejected(status, _) => !matches!(status, 401 | 403),
             _ => false,
         }
     }
@@ -104,20 +103,19 @@ mod tests {
     use super::Error;
 
     #[test]
-    fn a_refusal_is_not_transient() {
-        assert!(!Error::Auth("refresh_token rejected (invalid_grant)".into()).is_transient());
-        assert!(!Error::HttpRequestRejected(400, String::new()).is_transient());
-        assert!(!Error::HttpRequestRejected(401, String::new()).is_transient());
-        assert!(!Error::GameNotOwned.is_transient());
-        assert!(!Error::Keyring("read failed".into()).is_transient());
+    fn a_refusal_is_conclusive() {
+        assert!(!Error::Auth("refresh_token rejected (invalid_grant)".into()).is_inconclusive());
+        assert!(!Error::HttpRequestRejected(401, String::new()).is_inconclusive());
+        assert!(!Error::HttpRequestRejected(403, String::new()).is_inconclusive());
+        assert!(!Error::GameNotOwned.is_inconclusive());
+        assert!(!Error::Keyring("read failed".into()).is_inconclusive());
     }
 
     #[test]
-    fn a_server_that_could_not_answer_is_transient() {
-        assert!(Error::HttpRequestRejected(503, String::new()).is_transient());
-        for status in [407, 408, 429] {
-            assert!(Error::HttpRequestRejected(status, String::new()).is_transient(), "{status}");
+    fn any_other_answer_is_inconclusive() {
+        for status in [400, 404, 405, 407, 408, 429, 503] {
+            assert!(Error::HttpRequestRejected(status, String::new()).is_inconclusive(), "{status}");
         }
-        assert!(Error::RateLimitExceeded("api.minecraftservices.com".into()).is_transient());
+        assert!(Error::RateLimitExceeded("api.minecraftservices.com".into()).is_inconclusive());
     }
 }
