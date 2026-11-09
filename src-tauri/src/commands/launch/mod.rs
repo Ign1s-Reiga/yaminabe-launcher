@@ -13,7 +13,7 @@ use yaminabe_launcher_shared::ipc::LogLine;
 use yaminabe_launcher_shared::datamodels::ClientManifest;
 use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, ActivityGuard, AppState, InstanceActivity};
 use crate::auth::{hydrate_account, persist_account, MinecraftAccount, MinecraftAccountRecord};
-use crate::auth::session::{is_unreachable, renew_session, Renewal};
+use crate::auth::session::{renew_session, Renewal};
 use crate::commands::instance::{find_instance_dir, instance_meta_file};
 use crate::commands::java::download_java_runtime;
 use crate::install_task::version_manifest_path;
@@ -365,7 +365,7 @@ async fn resolve_account(
                  Select another account in Settings → Accounts.",
                 account.username
             ))),
-            Err(e) if is_unreachable(&e) => return Err(Error::Auth(format!(
+            Err(e) if e.is_transient() => return Err(Error::Auth(format!(
                 "The sign-in for {} could not be renewed, because Microsoft or Minecraft \
                  services did not answer: {e}. Try again in a moment.",
                 account.username

@@ -62,6 +62,19 @@ pub enum Error {
     Update(String),
 }
 
+impl Error {
+    /// Whether the server could not be reached or could not answer, rather
+    /// than refused. Such an error says nothing about the request, and a later
+    /// try may work.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Error::NetworkError(_) | Error::RateLimitExceeded(_) | Error::InvalidResponse(_) => true,
+            Error::HttpRequestRejected(status, _) => *status >= 500 || *status == 429,
+            _ => false,
+        }
+    }
+}
+
 impl Serialize for Error {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.to_string())
@@ -81,5 +94,26 @@ pub enum InitializationError {
 impl From<PathBuf> for InitializationError {
     fn from(p: PathBuf) -> Self {
         InitializationError::AlreadyInitialized(p.display().to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn a_refusal_is_not_transient() {
+        assert!(!Error::Auth("refresh_token rejected (invalid_grant)".into()).is_transient());
+        assert!(!Error::HttpRequestRejected(400, String::new()).is_transient());
+        assert!(!Error::HttpRequestRejected(401, String::new()).is_transient());
+        assert!(!Error::GameNotOwned.is_transient());
+        assert!(!Error::Keyring("read failed".into()).is_transient());
+    }
+
+    #[test]
+    fn a_server_that_could_not_answer_is_transient() {
+        assert!(Error::HttpRequestRejected(503, String::new()).is_transient());
+        assert!(Error::HttpRequestRejected(429, String::new()).is_transient());
+        assert!(Error::RateLimitExceeded("api.minecraftservices.com".into()).is_transient());
     }
 }

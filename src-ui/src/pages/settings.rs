@@ -229,9 +229,14 @@ fn AccountsSection() -> impl IntoView {
                         AccountSession::Unchecked
                     }
                 };
-                // Leaving Settings meanwhile disposed the map.
+                // Leaving Settings meanwhile disposed the map. A sign-in made
+                // while the check was out has already settled the account.
                 sessions.try_update(|known| {
-                    known.insert(uuid, Some(session));
+                    if let Some(slot) = known.get_mut(&uuid)
+                        && slot.is_none()
+                    {
+                        *slot = Some(session);
+                    }
                 });
             });
         }
