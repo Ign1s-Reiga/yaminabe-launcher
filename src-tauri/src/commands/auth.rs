@@ -9,7 +9,7 @@ use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::ipc::{MsLoginPrompt, MsLoginResult};
 use crate::AppState;
 
-use crate::auth::flow::{finalize_minecraft_login, make_qr_svg, poll_token, request_device_code, require_client_id};
+use crate::auth::flow::{finalize_minecraft_login, make_qr_svg, poll_token, request_device_code, require_client_id, Poll};
 use crate::auth::model::{format_uuid_dashed, now_epoch_seconds, MinecraftAccount, MinecraftAccountRecord, MinecraftAccountSecret};
 use crate::auth::session::{renew_session, save_renewal, Renewal};
 use crate::auth::store::{delete_secret, write_secret};
@@ -113,14 +113,14 @@ pub async fn check_account_session(
         Ok(Renewal::Current) => Ok(AccountSession::Valid),
         Ok(renewal @ (Renewal::Updated | Renewal::Renamed)) => {
             let mut store = state.account_store.lock().unwrap();
-            match save_renewal(&mut store, &account, &renewal, record.expires_at) {
-                Ok(true) if account.username != record.username => Ok(AccountSession::Renamed),
-                Ok(_) => Ok(AccountSession::Valid),
-                Err(e) => {
-                    warn!("failed to save the renewed sign-in for {normalised}: {e}");
-                    Ok(AccountSession::Valid)
-                }
+            let with_secret = matches!(renewal, Renewal::Updated);
+            if let Err(e) = save_renewal(&mut store, &account, &record, with_secret) {
+                warn!("failed to save the renewed sign-in for {normalised}: {e}");
             }
+            // The list the UI fetches holds the name in memory, written to
+            // disk or not.
+            let renamed = store.accounts.iter().any(|a| a.uuid == record.uuid && a.username != record.username);
+            Ok(if renamed { AccountSession::Renamed } else { AccountSession::Valid })
         }
         Ok(Renewal::Unchecked(e)) => {
             warn!("could not check the sign-in for {normalised}: {e}");
@@ -191,7 +191,7 @@ pub async fn start_microsoft_login(
     }
 
     // Poll until the token endpoint returns a grant, the user cancels, or the
-    // device code expires. `interval` is honoured plus bumps on `slow_down`.
+    // device code expires. `interval` is honoured, plus 5 s per `slow_down`.
     let started = SystemTime::now();
     let mut interval = device.interval.max(1) as u64;
     let token = loop {
@@ -210,16 +210,17 @@ pub async fn start_microsoft_login(
         }
         sleep(Duration::from_secs(interval)).await;
         match poll_token(&client, client_id, &device.device_code).await {
-            Ok(Some(t)) => break t,
-            Ok(None) => {
-                interval = interval.saturating_add(1).min(30);
+            Ok(Poll::Granted(t)) => break t,
+            Ok(Poll::Pending) => continue,
+            // RFC 8628 §3.5: a slow_down adds 5 s to every later poll.
+            Ok(Poll::SlowDown) => {
+                interval = interval.saturating_add(5);
                 continue;
             }
             // One poll that gets no clear answer does not end the sign-in;
             // the code expiring does.
             Err(e) if e.is_inconclusive() => {
                 warn!("token poll got no clear answer, polling again: {e}");
-                interval = interval.saturating_add(1).min(30);
                 continue;
             }
             Err(e) => {

@@ -127,13 +127,23 @@ pub(crate) async fn request_device_code(client: &Client, client_id: &str) -> Res
         .map_err(|e| Error::Auth(format!("device code request: {e}")))
 }
 
-/// Poll the token endpoint. `Ok(Some)` is a real grant, `Ok(None)` means MS
-/// asked us to keep waiting, `Err` is non-recoverable.
+/// What one poll of the token endpoint got back.
+pub(crate) enum Poll {
+    /// The user signed in.
+    Granted(TokenResponse),
+    /// The user has not finished signing in yet.
+    Pending,
+    /// Microsoft asks for the polls to come less often.
+    SlowDown,
+}
+
+/// Poll the token endpoint once. `Err` ends the sign-in unless it is
+/// inconclusive.
 pub(crate) async fn poll_token(
     client: &Client,
     client_id: &str,
     device_code: &str,
-) -> Result<Option<TokenResponse>, Error> {
+) -> Result<Poll, Error> {
     let resp = client
         .post(TOKEN_URL)
         .form(&[
@@ -146,7 +156,7 @@ pub(crate) async fn poll_token(
         .await?;
 
     if resp.status().is_success() {
-        return Ok(Some(
+        return Ok(Poll::Granted(
             resp.json::<TokenResponse>()
                 .await
                 .map_err(Error::InvalidResponse)?,
@@ -156,7 +166,8 @@ pub(crate) async fn poll_token(
     let err = service_error::<TokenErrorResponse>(resp, TOKEN_URL).await?;
     match err.error.as_str() {
         // RFC 8628 §3.5: keep polling.
-        "authorization_pending" | "slow_down" => Ok(None),
+        "authorization_pending" => Ok(Poll::Pending),
+        "slow_down" => Ok(Poll::SlowDown),
         "authorization_declined" | "access_denied" => Err(Error::Auth(
             "User declined the sign-in request.".to_string(),
         )),
