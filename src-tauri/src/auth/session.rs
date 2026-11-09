@@ -57,32 +57,44 @@ fn still_saved(store: &AccountStore, read: &MinecraftAccountRecord) -> bool {
     store.accounts.iter().any(|a| a.uuid == read.uuid && a.expires_at == read.expires_at)
 }
 
-/// Save `account` after a renewal that started from `read`. `with_secret`
-/// says its tokens changed, which go to the keyring too; a new player name
-/// alone changes only the record. Nothing is saved unless `read` is still the
-/// saved record, so a late renewal neither brings a removed account back
-/// without its keyring entry nor overwrites a newer sign-in. Returns whether it
-/// saved.
+/// What saving a renewal came to.
+pub(crate) struct RenewalSave {
+    /// Whether it applied, which it does only while the record it started
+    /// from is still the saved one.
+    pub(crate) applied: bool,
+    /// Whether the accounts in memory now carry a new player name from it,
+    /// written to disk or not.
+    pub(crate) renamed: bool,
+    /// Why writing it out failed, if it did.
+    pub(crate) failure: Option<Error>,
+}
+
+/// Save `account` after `renewal`, which started from `read`. Renewed tokens
+/// go to the keyring and the record; a new player name alone changes only the
+/// record. Nothing is saved unless `read` is still the saved record, so a late
+/// renewal neither brings a removed account back without its keyring entry nor
+/// overwrites a newer sign-in.
 pub(crate) fn save_renewal(
     store: &mut AccountStore,
     account: &MinecraftAccount,
     read: &MinecraftAccountRecord,
-    with_secret: bool,
-) -> Result<bool, Error> {
+    renewal: &Renewal,
+) -> RenewalSave {
     if !still_saved(store, read) {
-        return Ok(false);
+        return RenewalSave { applied: false, renamed: false, failure: None };
     }
-    if with_secret {
-        persist_account(store, account)?;
-    } else {
-        save_record(store, account)?;
-    }
-    Ok(true)
+    let written = match renewal {
+        Renewal::Updated => persist_account(store, account),
+        Renewal::Renamed => save_record(store, account),
+        Renewal::Current | Renewal::Unchecked(_) => Ok(()),
+    };
+    let renamed = store.accounts.iter().any(|a| a.uuid == read.uuid && a.username != read.username);
+    RenewalSave { applied: true, renamed, failure: written.err() }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{save_renewal, still_saved};
+    use super::{save_renewal, still_saved, Renewal};
     use crate::auth::model::{AccountStore, MinecraftAccount, MinecraftAccountRecord};
 
     fn renamed_account() -> MinecraftAccount {
@@ -100,8 +112,8 @@ mod tests {
     fn a_removed_account_is_not_saved_back() {
         let mut store = AccountStore::default();
         let read = MinecraftAccountRecord::from_account(&renamed_account());
-        let saved = save_renewal(&mut store, &renamed_account(), &read, false).expect("no save attempted");
-        assert!(!saved);
+        let saved = save_renewal(&mut store, &renamed_account(), &read, &Renewal::Renamed);
+        assert!(!saved.applied && !saved.renamed && saved.failure.is_none());
         assert!(store.accounts.is_empty());
     }
 
@@ -113,8 +125,8 @@ mod tests {
         let mut store = AccountStore::default();
         store.accounts.push(newer);
         let read = MinecraftAccountRecord::from_account(&renamed_account());
-        let saved = save_renewal(&mut store, &renamed_account(), &read, false).expect("no save attempted");
-        assert!(!saved);
+        let saved = save_renewal(&mut store, &renamed_account(), &read, &Renewal::Renamed);
+        assert!(!saved.applied && !saved.renamed);
         assert_eq!(store.accounts[0].username, "Fresh");
     }
 

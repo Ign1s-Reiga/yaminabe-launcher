@@ -340,6 +340,7 @@ async fn resolve_account(
     app: &AppHandle,
     instance_id: &str,
 ) -> Result<Option<MinecraftAccount>, Error> {
+    let read = auth_record.clone();
     let mut auth_account: Option<MinecraftAccount> = match auth_record {
         Some(record) => Some(hydrate_account(&record).map_err(|e| Error::Auth(format!(
             "Stored credentials for {} are missing or unreadable ({e}). \
@@ -349,25 +350,28 @@ async fn resolve_account(
         None => None,
     };
 
-    if let Some(account) = auth_account.as_mut() {
-        let read = MinecraftAccountRecord::from_account(account);
+    if let (Some(account), Some(read)) = (auth_account.as_mut(), read.as_ref()) {
         let renewal = renew_session(&state.http_client, account, |line| emit_log(app, instance_id, line)).await;
         match renewal {
             Ok(Renewal::Current) => {}
             Ok(renewal @ (Renewal::Updated | Renewal::Renamed)) => {
                 // Failure is non-fatal: `account` still holds good tokens for
-                // this launch.
-                let mut store = state.account_store.lock().unwrap();
-                match save_renewal(&mut store, account, &read, matches!(renewal, Renewal::Updated)) {
-                    Ok(true) if account.username != read.username => {
-                        app.emit(EVT_ACCOUNTS_CHANGED, account.uuid_dashed()).ok();
-                    }
-                    Ok(true) => {}
-                    Ok(false) => emit_log(app, instance_id,
-                        "note: the account was removed or signed in again during this launch, \
-                         so its renewed sign-in was not saved.",
-                    ),
-                    Err(e) => emit_log(app, instance_id, format!("warning: failed to save the renewed sign-in: {e}")),
+                // this launch. The store's lock is let go before emitting.
+                let saved = save_renewal(&mut state.account_store.lock().unwrap(), account, read, &renewal);
+                if let Some(e) = saved.failure {
+                    emit_log(app, instance_id, format!("warning: failed to save the renewed sign-in: {e}"));
+                }
+                if !saved.applied {
+                    emit_log(app, instance_id,
+                        "note: the saved sign-in changed during this launch, as it does when the \
+                         account is removed, signed in again or renewed by the launcher's own check, \
+                         so this launch's renewal was not saved.",
+                    );
+                }
+                if saved.renamed
+                    && let Err(e) = app.emit(EVT_ACCOUNTS_CHANGED, account.uuid_dashed())
+                {
+                    emit_log(app, instance_id, format!("warning: could not show the new player name: {e}"));
                 }
             }
             Ok(Renewal::Unchecked(e)) => emit_log(app, instance_id, format!(
