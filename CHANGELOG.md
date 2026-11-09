@@ -3,6 +3,18 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.2.3 — 2026-11-09
+
+- Show a player name changed on minecraft.net as soon as the launcher has
+  checked the account, in the navigation bar and in Settings.
+- Keep the sign-in dialog waiting when one of its checks with Microsoft gets
+  no clear answer, instead of ending the sign-in. It still ends when the code
+  expires.
+- Say again, as before 1.2.2, that the sign-in could not start when Microsoft
+  turns down the request for a code.
+- Keep a launch from putting back an account you removed while it was
+  starting, which then could not be used.
+
 ## 1.2.2 — 2026-11-09
 
 - Mark an account in the navigation bar's account switcher whose sign-in has
