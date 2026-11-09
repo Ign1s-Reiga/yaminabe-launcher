@@ -20,8 +20,10 @@ pub(crate) enum Renewal {
 /// Any other is checked first, and refreshed only if Minecraft services turn
 /// it down. `step` hears each stage, for a progress log.
 ///
-/// An error means the token could not be renewed: a network error says
-/// nothing about the account, any other means the user has to sign in again.
+/// An error means the token could not be renewed. A transient one
+/// (`Error::is_transient`) says nothing about the account, and a later try may
+/// work. `Error::GameNotOwned` means the account cannot play at all, and any
+/// other means the user has to sign in again.
 pub(crate) async fn renew_session(
     client: &Client,
     account: &mut MinecraftAccount,
@@ -44,34 +46,4 @@ pub(crate) async fn renew_session(
     step(format!("Refreshing Microsoft credentials for {}...", account.username));
     refresh_account_tokens(client, account).await?;
     Ok(Renewal::Updated)
-}
-
-/// Whether a failed renewal leaves the account's state unknown, because the
-/// services could not be reached or did not answer properly.
-pub(crate) fn is_unreachable(e: &Error) -> bool {
-    matches!(
-        e,
-        Error::NetworkError(_)
-            | Error::HttpRequestRejected(..)
-            | Error::RateLimitExceeded(_)
-            | Error::InvalidResponse(_)
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_unreachable;
-    use yaminabe_launcher_shared::error::Error;
-
-    #[test]
-    fn a_refused_renewal_needs_a_new_sign_in() {
-        assert!(!is_unreachable(&Error::Auth("refresh_token rejected (invalid_grant)".into())));
-        assert!(!is_unreachable(&Error::Keyring("read failed".into())));
-    }
-
-    #[test]
-    fn a_server_that_could_not_answer_leaves_the_account_unknown() {
-        assert!(is_unreachable(&Error::HttpRequestRejected(503, String::new())));
-        assert!(is_unreachable(&Error::RateLimitExceeded("api.minecraftservices.com".into())));
-    }
 }

@@ -11,7 +11,7 @@ use crate::AppState;
 
 use crate::auth::flow::{finalize_minecraft_login, make_qr_svg, poll_token, request_device_code, require_client_id};
 use crate::auth::model::{format_uuid_dashed, now_epoch_seconds, MinecraftAccount, MinecraftAccountRecord, MinecraftAccountSecret};
-use crate::auth::session::{is_unreachable, renew_session, Renewal};
+use crate::auth::session::{renew_session, Renewal};
 use crate::auth::store::{delete_secret, write_secret};
 use crate::auth::{hydrate_account, persist_account};
 
@@ -125,7 +125,7 @@ pub async fn check_account_session(
             Ok(AccountSession::Unchecked)
         }
         Err(Error::GameNotOwned) => Ok(AccountSession::NotOwned),
-        Err(e) if is_unreachable(&e) => {
+        Err(e) if e.is_transient() => {
             warn!("could not renew the sign-in for {normalised}: {e}");
             Ok(AccountSession::Unchecked)
         }

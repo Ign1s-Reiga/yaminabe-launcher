@@ -1,7 +1,7 @@
 use qrcode::render::svg;
 use qrcode::QrCode;
 use std::time::Duration;
-use reqwest::{Client, Method, StatusCode};
+use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
 use yaminabe_launcher_shared::error::Error;
 use crate::http_utils::{fetch_json, rejected_status};
@@ -181,14 +181,17 @@ async fn refresh_access_token(
         ])
         .send()
         .await?;
-    if could_not_answer(resp.status()) {
-        return Err(rejected_status(resp.status(), TOKEN_URL));
-    }
     if !resp.status().is_success() {
+        let status = resp.status();
+        let rejection = rejected_status(status, TOKEN_URL);
+        if rejection.is_transient() {
+            return Err(rejection);
+        }
+        // An unreadable reason does not make the refusal any less of one.
         let err = resp
             .json::<TokenErrorResponse>()
             .await
-            .map_err(Error::InvalidResponse)?;
+            .map_err(|e| Error::Auth(format!("refresh_token rejected ({status}): {e}")))?;
         return Err(Error::Auth(format!(
             "refresh_token rejected ({}): {}",
             err.error,
@@ -200,19 +203,14 @@ async fn refresh_access_token(
         .map_err(Error::InvalidResponse)
 }
 
-/// Whether a status says the server could not answer, rather than refused.
-fn could_not_answer(status: StatusCode) -> bool {
-    status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS
-}
-
-/// A sign-in step the server refused is an authentication failure. One the
-/// server could not answer is passed on as it is, since it says nothing about
-/// the account and a later try may work.
+/// A sign-in step the server refused is an authentication failure. A
+/// transient error is passed on as it is, since it says nothing about the
+/// account.
 fn refused(step: &str, e: Error) -> Error {
-    match e {
-        Error::HttpRequestRejected(status, _) if status >= 500 => e,
-        Error::NetworkError(_) | Error::RateLimitExceeded(_) | Error::InvalidResponse(_) => e,
-        other => Error::Auth(format!("{step}: {other}")),
+    if e.is_transient() {
+        e
+    } else {
+        Error::Auth(format!("{step}: {e}"))
     }
 }
 
@@ -282,16 +280,18 @@ async fn xsts_authorize(client: &Client, xbl_token: &str) -> Result<XboxAuthResp
         .await?;
     // XSTS uses HTTP 401 to signal specific user-facing problems via XErr.
     if resp.status().as_u16() == 401 {
+        // An unreadable reason does not make the refusal any less of one.
         let err = resp
             .json::<XstsErrorResponse>()
             .await
-            .map_err(Error::InvalidResponse)?;
+            .map_err(|e| Error::Auth(format!("Xbox Live rejected the account: {e}")))?;
         return Err(Error::Auth(xsts_error_message(err.xerr, err.message)));
     }
-    if could_not_answer(resp.status()) {
-        return Err(rejected_status(resp.status(), XSTS_AUTH_URL));
-    }
     if !resp.status().is_success() {
+        let rejection = rejected_status(resp.status(), XSTS_AUTH_URL);
+        if rejection.is_transient() {
+            return Err(rejection);
+        }
         let status = resp.status().as_u16();
         let text = resp.text().await.unwrap_or_default();
         return Err(Error::Auth(format!(
@@ -390,9 +390,9 @@ pub(crate) async fn check_session(client: &Client, mc_access_token: &str) -> Res
 fn session_from_lookup(lookup: Result<McProfile, Error>) -> Result<Session, Error> {
     match lookup {
         Ok(profile) => Ok(Session::Valid(profile)),
-        Err(Error::HttpRequestRejected(401 | 403, _)) => Ok(Session::Rejected),
-        Err(e @ Error::GameNotOwned) => Err(e),
-        Err(e) => Ok(Session::Unchecked(e)),
+        Err(e) if e.is_transient() => Ok(Session::Unchecked(e)),
+        Err(Error::HttpRequestRejected(..)) => Ok(Session::Rejected),
+        Err(e) => Err(e),
     }
 }
 
@@ -423,11 +423,12 @@ pub(crate) async fn finalize_minecraft_login(
 }
 
 /// A refused profile lookup during login or refresh is an authentication
-/// failure, reported with the server's status and reason. One the server could
-/// not answer is passed on as it is.
+/// failure, reported with the server's status and reason. A transient error is
+/// passed on as it is.
 fn login_profile_error(e: Error) -> Error {
     match e {
-        Error::HttpRequestRejected(status, text) if status < 500 && status != 429 => {
+        e if e.is_transient() => e,
+        Error::HttpRequestRejected(status, text) => {
             Error::Auth(format!("Profile lookup rejected ({status}): {text}"))
         }
         other => other,
@@ -479,10 +480,16 @@ mod tests {
 
     #[test]
     fn a_turned_down_token_is_rejected() {
-        for status in [401, 403] {
+        for status in [400, 401, 403] {
             let lookup = Err(Error::HttpRequestRejected(status, String::new()));
             assert!(matches!(session_from_lookup(lookup), Ok(Session::Rejected)));
         }
+    }
+
+    #[test]
+    fn a_rate_limited_lookup_leaves_the_token_unchecked() {
+        let lookup = Err(Error::HttpRequestRejected(429, String::new()));
+        assert!(matches!(session_from_lookup(lookup), Ok(Session::Unchecked(_))));
     }
 
     #[test]
