@@ -3,6 +3,15 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.2.1 — 2026-11-09
+
+- Keep an account in Settings from being marked "Sign-in expired" again just
+  after you sign it in again, when the check that Settings started on opening
+  came back late.
+- Offer "Sign in again" when Microsoft or Xbox Live turn a sign-in down with
+  a reason the launcher cannot read. Until now, such a refusal was taken for
+  a server that could not be reached, and a launch said to try again later.
+
 ## 1.2.0 — 2026-11-09
 
 - Switch the account you play as from the right end of the navigation bar. It
