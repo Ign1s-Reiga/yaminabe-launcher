@@ -78,7 +78,8 @@ src-ui/src/
 ├── app.rs                   # Router, install-sidebar wiring, navbar
 ├── ipc.rs                   # `call` / `call_noargs` / `on_event` wrappers around Tauri
 ├── curseforge.rs            # Frontend wrappers around CurseForge backend commands
-├── accounts.rs              # `Accounts`: saved Microsoft accounts + the selected one,
+├── accounts.rs              # `Accounts`: saved Microsoft accounts, the selected one and
+│                            # each one's sign-in state,
 │                            # shared by the navbar switcher and Settings
 ├── bookmarks.rs             # `Bookmarks`: the bookmarked modpacks + their IPC calls
 ├── pages.rs / pages/

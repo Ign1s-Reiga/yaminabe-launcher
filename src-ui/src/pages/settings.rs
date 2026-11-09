@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use bamboo_css_macro::{css, styled};
 use leptos::prelude::*;
 use leptos::{component, IntoView, view};
@@ -7,7 +5,7 @@ use phosphor_leptos::{Icon, IconWeight, CHECK_CIRCLE, PLUS, TRASH, WARNING};
 use serde::Serialize;
 use yaminabe_launcher_shared::datamodels::{AccountSession, AccountSummary, AppSettings};
 
-use crate::accounts::Accounts;
+use crate::accounts::{avatar_url, session_problem, Accounts};
 use crate::components::activity_dock::{InstallJob, RunningRegistry};
 use crate::components::modal::login_modal::LoginModal;
 use crate::components::settings::{SaveState, SettingsSection, SettingsProp};
@@ -174,86 +172,17 @@ pub fn SettingsPage() -> impl IntoView {
 }
 
 /// Lists configured Microsoft accounts, lets the user select one as active,
-/// remove any of them, and add a new one via QR-code login. Each account's
-/// sign-in is checked once here, and one that can no longer be renewed is
-/// marked, with a way to sign it in again. Backs onto the `get_accounts`,
-/// `get_selected_account`, `set_selected_account`, `remove_account`,
-/// `check_account_session`, and `start_microsoft_login` IPC commands.
+/// remove any of them, and add a new one via QR-code login. An account whose
+/// sign-in can no longer be renewed, or which does not own the game, is
+/// marked, and an expired one can be signed in again. The accounts and their
+/// sign-ins come from the shared `Accounts` store; removing one goes through
+/// the `remove_account` IPC command.
 #[component]
 fn AccountsSection() -> impl IntoView {
-    // Bump this counter after any backend mutation to refetch both resources.
-    // It is the shared store's, so the navbar's account switcher follows too.
     let store = use_context::<Accounts>().expect("accounts");
-    let refresh: RwSignal<u32> = store.revision;
     let show_modal: RwSignal<bool> = RwSignal::new(false);
     // The account the open login modal signs in again; `None` adds a new one.
     let relogin_name: RwSignal<Option<String>> = RwSignal::new(None);
-    // Each account's sign-in by UUID, `None` while its check is out.
-    let sessions: RwSignal<HashMap<String, Option<AccountSession>>> = RwSignal::new(HashMap::new());
-
-    let accounts = LocalResource::new(move || {
-        refresh.track();
-        async move {
-            ipc::call_noargs::<Vec<AccountSummary>>("get_accounts")
-                .await
-                .unwrap_or_default()
-        }
-    });
-    let selected = LocalResource::new(move || {
-        refresh.track();
-        async move {
-            ipc::call_noargs::<Option<String>>("get_selected_account")
-                .await
-                .ok()
-                .flatten()
-        }
-    });
-
-    // Check each account once, not again every time the list is refetched.
-    Effect::new(move |_| {
-        let Some(list) = accounts.get() else { return };
-        for acc in list {
-            let uuid = acc.uuid;
-            if sessions.with_untracked(|known| known.contains_key(&uuid)) {
-                continue;
-            }
-            sessions.update(|known| {
-                known.insert(uuid.clone(), None);
-            });
-            leptos::task::spawn_local(async move {
-                let args = AccountArgs { uuid: uuid.clone() };
-                let session = match ipc::call::<_, AccountSession>("check_account_session", args).await {
-                    Ok(session) => session,
-                    Err(e) => {
-                        log::warn!("check_account_session failed: {e}");
-                        AccountSession::Unchecked
-                    }
-                };
-                // Leaving Settings meanwhile disposed the map. A sign-in made
-                // while the check was out has already settled the account.
-                sessions.try_update(|known| {
-                    if let Some(slot) = known.get_mut(&uuid)
-                        && slot.is_none()
-                    {
-                        *slot = Some(session);
-                    }
-                });
-            });
-        }
-    });
-
-    // A fresh sign-in, here or from the navbar, needs no check. One made
-    // before Settings opened is checked like the rest.
-    Effect::new(move |opened: Option<()>| {
-        let fresh = store.last_signed_in();
-        if opened.is_some()
-            && let Some(uuid) = fresh
-        {
-            sessions.update(|known| {
-                known.insert(uuid, Some(AccountSession::Valid));
-            });
-        }
-    });
 
     let row = css! {
         display: flex;
@@ -353,118 +282,95 @@ fn AccountsSection() -> impl IntoView {
             "Sign in with a Microsoft account to launch with your real profile. The selected account is used for every instance launch."
         </p>
 
-        {move || match accounts.get() {
-            None => view! { <p class=empty>"Loading accounts…"</p> }.into_any(),
-            Some(list) if list.is_empty() => view! {
-                <p class=empty>"No accounts yet. Sign in below to add one."</p>
-            }.into_any(),
-            Some(list) => {
-                let selected_uuid = selected.get().flatten();
-                list.into_iter().map(|acc| {
-                    let acc_uuid = acc.uuid.clone();
-                    let undashed = acc_uuid.replace('-', "");
-                    let avatar_url = format!("https://mc-heads.net/avatar/{undashed}/64");
-                    let is_selected = selected_uuid.as_deref() == Some(acc_uuid.as_str());
-                    let acc_uuid_for_use = acc_uuid.clone();
-                    let acc_uuid_for_remove = acc_uuid.clone();
-                    let acc_uuid_for_session = acc_uuid.clone();
-                    let acc_uuid_for_expired = acc_uuid.clone();
-                    // What keeps the account from playing, if anything, as a
-                    // label and the reason behind it.
-                    let problem = Memo::new(move |_| sessions.with(|known| {
-                        match known.get(&acc_uuid_for_session) {
-                            Some(Some(AccountSession::NeedsSignIn(reason))) => Some(("Sign-in expired", reason.clone())),
-                            Some(Some(AccountSession::NotOwned)) => Some((
-                                "Game not owned",
-                                "This Microsoft account does not own Minecraft: Java Edition.".to_string(),
-                            )),
-                            _ => None,
-                        }
-                    }));
-                    // Only an expired sign-in is fixed by signing in again.
-                    let expired = Memo::new(move |_| sessions.with(|known| {
-                        matches!(known.get(&acc_uuid_for_expired), Some(Some(AccountSession::NeedsSignIn(_))))
-                    }));
-                    let username = acc.username.clone();
-                    view! {
-                        <div class=row>
-                            <img class=avatar src=avatar_url alt="" />
-                            <div class=meta>
-                                <div class=name_line>
-                                    <div class=name>{acc.username}</div>
-                                    {move || problem.get().map(|(label, reason)| view! {
-                                        <span class=expired_pill title=reason>
-                                            <Icon icon=WARNING size="14px" weight=IconWeight::Fill />
-                                            {label}
-                                        </span>
-                                    })}
-                                </div>
-                                <div class=uuid_mono>{acc_uuid}</div>
+        {move || {
+            let list = store.list();
+            if !store.loaded() {
+                return view! { <p class=empty>"Loading accounts…"</p> }.into_any();
+            }
+            if list.is_empty() {
+                return view! { <p class=empty>"No accounts yet. Sign in below to add one."</p> }.into_any();
+            }
+            list.into_iter().map(|acc| {
+                let acc_uuid = acc.uuid.clone();
+                let is_selected = store.is_selected(&acc_uuid);
+                let acc_uuid_for_use = acc_uuid.clone();
+                let acc_uuid_for_remove = acc_uuid.clone();
+                let acc_uuid_for_session = acc_uuid.clone();
+                let session = Memo::new(move |_| store.session(&acc_uuid_for_session));
+                let username = acc.username.clone();
+                view! {
+                    <div class=row>
+                        <img class=avatar src=avatar_url(&acc_uuid) alt="" />
+                        <div class=meta>
+                            <div class=name_line>
+                                <div class=name>{acc.username}</div>
+                                {move || session.with(|s| s.as_ref().and_then(session_problem)).map(|(label, reason)| view! {
+                                    <span class=expired_pill title=reason>
+                                        <Icon icon=WARNING size="14px" weight=IconWeight::Fill />
+                                        {label}
+                                    </span>
+                                })}
                             </div>
-                            <div class=actions>
-                                <Show when=move || expired.get() fallback=|| ()>
+                            <div class=uuid_mono>{acc_uuid}</div>
+                        </div>
+                        <div class=actions>
+                            // Only an expired sign-in is fixed by signing in again.
+                            <Show
+                                when=move || session.with(|s| matches!(s, Some(AccountSession::NeedsSignIn(_))))
+                                fallback=|| ()
+                            >
+                                <Button
+                                    variant=ButtonVariant::Secondary
+                                    size=ButtonSize::Big
+                                    on_click={
+                                        let username = username.clone();
+                                        Callback::new(move |_| {
+                                            relogin_name.set(Some(username.clone()));
+                                            show_modal.set(true);
+                                        })
+                                    }
+                                >
+                                    "Sign in again"
+                                </Button>
+                            </Show>
+                            {if is_selected {
+                                view! {
+                                    <span class=pill>
+                                        <Icon icon=CHECK_CIRCLE size="14px" weight=IconWeight::Fill />
+                                        "Selected"
+                                    </span>
+                                }.into_any()
+                            } else {
+                                view! {
+                                    // Big, to stand as tall as the remove button.
                                     <Button
                                         variant=ButtonVariant::Secondary
                                         size=ButtonSize::Big
-                                        on_click={
-                                            let username = username.clone();
-                                            Callback::new(move |_| {
-                                                relogin_name.set(Some(username.clone()));
-                                                show_modal.set(true);
-                                            })
-                                        }
+                                        on_click=Callback::new(move |_| store.select(acc_uuid_for_use.clone()))
                                     >
-                                        "Sign in again"
+                                        "Use this"
                                     </Button>
-                                </Show>
-                                {if is_selected {
-                                    view! {
-                                        <span class=pill>
-                                            <Icon icon=CHECK_CIRCLE size="14px" weight=IconWeight::Fill />
-                                            "Selected"
-                                        </span>
-                                    }.into_any()
-                                } else {
-                                    view! {
-                                        // Big, to stand as tall as the remove button.
-                                        <Button
-                                            variant=ButtonVariant::Secondary
-                                            size=ButtonSize::Big
-                                            on_click=Callback::new(move |_| {
-                                                let uuid = acc_uuid_for_use.clone();
-                                                leptos::task::spawn_local(async move {
-                                                    let args = SelectArgs { uuid: Some(uuid) };
-                                                    match ipc::call::<_, ()>("set_selected_account", args).await {
-                                                        Ok(_) => refresh.update(|n| *n += 1),
-                                                        Err(e) => log::error!("set_selected_account failed: {e}"),
-                                                    }
-                                                });
-                                            })
-                                        >
-                                            "Use this"
-                                        </Button>
-                                    }.into_any()
-                                }}
-                                <IconButton
-                                    variant=ButtonVariant::Danger
-                                    icon=TRASH
-                                    label="Remove account"
-                                    on_click=Callback::new(move |_| {
-                                        let uuid = acc_uuid_for_remove.clone();
-                                        leptos::task::spawn_local(async move {
-                                            let args = RemoveArgs { uuid };
-                                            match ipc::call::<_, ()>("remove_account", args).await {
-                                                Ok(_) => refresh.update(|n| *n += 1),
-                                                Err(e) => log::error!("remove_account failed: {e}"),
-                                            }
-                                        });
-                                    })
-                                />
-                            </div>
+                                }.into_any()
+                            }}
+                            <IconButton
+                                variant=ButtonVariant::Danger
+                                icon=TRASH
+                                label="Remove account"
+                                on_click=Callback::new(move |_| {
+                                    let uuid = acc_uuid_for_remove.clone();
+                                    leptos::task::spawn_local(async move {
+                                        let args = RemoveArgs { uuid };
+                                        match ipc::call::<_, ()>("remove_account", args).await {
+                                            Ok(_) => store.changed(),
+                                            Err(e) => log::error!("remove_account failed: {e}"),
+                                        }
+                                    });
+                                })
+                            />
                         </div>
-                    }
-                }).collect_view().into_any()
-            }
+                    </div>
+                }
+            }).collect_view().into_any()
         }}
 
         <div class=add_row>
@@ -608,17 +514,7 @@ fn SoftwareUpdateSection() -> impl IntoView {
 }
 
 #[derive(Serialize)]
-struct SelectArgs {
-    uuid: Option<String>,
-}
-
-#[derive(Serialize)]
 struct RemoveArgs {
-    uuid: String,
-}
-
-#[derive(Serialize)]
-struct AccountArgs {
     uuid: String,
 }
 

@@ -3,22 +3,18 @@ use leptos::html;
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
 use leptos_router::hooks::use_navigate;
-use phosphor_leptos::{Icon, IconWeight, CARET_UP, CHECK, PLUS, USER_CIRCLE, USER_GEAR};
+use phosphor_leptos::{Icon, IconWeight, CARET_UP, CHECK, PLUS, USER_CIRCLE, USER_GEAR, WARNING};
 use yaminabe_launcher_shared::datamodels::AccountSummary;
 
-use crate::accounts::Accounts;
+use crate::accounts::{avatar_url, session_problem, Accounts};
 use crate::components::modal::login_modal::LoginModal;
 use crate::components::ui::DropdownItem;
-
-/// A player's head, as Settings shows it.
-fn avatar_url(account: &AccountSummary) -> String {
-    format!("https://mc-heads.net/avatar/{}/64", account.uuid.replace('-', ""))
-}
 
 /// The navbar's account switcher, at its right end: shaped like a
 /// `NavigationButton`, with the selected player's head and name. It opens a
 /// menu upward, over the page, to pick the account launches use, add one, or
-/// manage them in Settings. A click outside or Escape closes it.
+/// manage them in Settings. A click outside or Escape closes it. An account
+/// that cannot play as it stands, as Settings marks it, carries a warning.
 #[component]
 pub fn AccountSwitcher() -> impl IntoView {
     let accounts = use_context::<Accounts>().expect("accounts");
@@ -138,15 +134,26 @@ pub fn AccountSwitcher() -> impl IntoView {
         flex-shrink: 0;
         color: #3a9e5f;
     };
+    // The amber of Settings' "Sign-in expired" pill.
+    let warn = css! {
+        display: flex;
+        flex-shrink: 0;
+        color: color-mix(in srgb, #d4a017 55%, var(--text-color));
+    };
     let divider = css! {
         height: 1px;
         margin: 4px 0;
         background-color: var(--secondary-color);
     };
 
-    let title = move || match accounts.selected() {
-        Some(account) => format!("Playing as {}", account.username),
-        None => "No account selected".to_string(),
+    // What keeps the selected account from playing, if anything.
+    let selected_problem = Memo::new(move |_| {
+        accounts.selected().and_then(|a| accounts.session(&a.uuid)).as_ref().and_then(session_problem)
+    });
+    let title = move || match (accounts.selected(), selected_problem.get()) {
+        (Some(account), Some((label, reason))) => format!("Playing as {}. {label}: {reason}", account.username),
+        (Some(account), None) => format!("Playing as {}", account.username),
+        (None, _) => "No account selected".to_string(),
     };
 
     view! {
@@ -172,13 +179,16 @@ pub fn AccountSwitcher() -> impl IntoView {
                 on:click=move |_| open.update(|o| *o = !*o)
             >
                 {move || match accounts.selected() {
-                    Some(account) => view! { <img class=head src=avatar_url(&account) alt="" /> }.into_any(),
+                    Some(account) => view! { <img class=head src=avatar_url(&account.uuid) alt="" /> }.into_any(),
                     None => view! { <Icon icon=USER_CIRCLE size="32px" weight=IconWeight::Regular /> }.into_any(),
                 }}
                 <p class=label>
                     <span class=label_text>
                         {move || accounts.selected().map(|a| a.username).unwrap_or_else(|| "Sign in".to_string())}
                     </span>
+                    {move || selected_problem.get().map(|_| view! {
+                        <span class=warn><Icon icon=WARNING size="14px" weight=IconWeight::Fill /></span>
+                    })}
                     <span class=caret><Icon icon=CARET_UP size="14px" weight=IconWeight::Bold /></span>
                 </p>
             </button>
@@ -192,6 +202,8 @@ pub fn AccountSwitcher() -> impl IntoView {
                         children=move |account: AccountSummary| {
                             let uuid = account.uuid.clone();
                             let picked = uuid.clone();
+                            let checked = uuid.clone();
+                            let problem = Memo::new(move |_| accounts.session(&checked).as_ref().and_then(session_problem));
                             view! {
                                 <DropdownItem on_select=Callback::new(move |_| {
                                     if !accounts.is_selected(&picked) {
@@ -199,8 +211,13 @@ pub fn AccountSwitcher() -> impl IntoView {
                                     }
                                 })>
                                     <span class=row>
-                                        <img class=row_head src=avatar_url(&account) alt="" />
+                                        <img class=row_head src=avatar_url(&account.uuid) alt="" />
                                         <span class=row_name>{account.username}</span>
+                                        {move || problem.get().map(|(label, reason)| view! {
+                                            <span class=warn title=format!("{label}: {reason}")>
+                                                <Icon icon=WARNING size="16px" weight=IconWeight::Fill />
+                                            </span>
+                                        })}
                                         <Show when=move || accounts.is_selected(&uuid) fallback=|| ()>
                                             <span class=tick>
                                                 <Icon icon=CHECK size="16px" weight=IconWeight::Bold />
