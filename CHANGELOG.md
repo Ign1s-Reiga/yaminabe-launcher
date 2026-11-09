@@ -3,6 +3,21 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.2.2 — 2026-11-09
+
+- Mark an account in the navigation bar's account switcher whose sign-in has
+  expired, or which does not own Minecraft: Java Edition, as Settings does.
+  Point at the mark to read why. Until now, you found out when a launch failed.
+- Check each account's sign-in once when the launcher starts, instead of every
+  time you open Settings.
+- Keep an account from being marked "Sign-in expired" when the reply that
+  turned it down came from a proxy or a gateway, or made no sense, rather than
+  from Microsoft or Minecraft. Such a reply now leaves the sign-in as it is.
+- Give up on a sign-in request after 30 seconds, so a network that never
+  answers can no longer hold a launch or a check for good.
+- Keep a new player name even when the launcher cannot write to Windows'
+  credential store.
+
 ## 1.2.1 — 2026-11-09
 
 - Keep an account in Settings from being marked "Sign-in expired" again just
