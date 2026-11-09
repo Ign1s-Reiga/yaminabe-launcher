@@ -27,7 +27,7 @@ pub fn session_problem(session: &AccountSession) -> Option<(&'static str, String
     match session {
         AccountSession::NeedsSignIn(reason) => Some(("Sign-in expired", reason.clone())),
         AccountSession::NotOwned(reason) => Some(("Game not owned", reason.clone())),
-        AccountSession::Valid | AccountSession::Unchecked => None,
+        AccountSession::Valid | AccountSession::Renamed | AccountSession::Unchecked => None,
     }
 }
 
@@ -104,9 +104,13 @@ impl Accounts {
                 // A sign-in made while the check was out has already settled
                 // the account.
                 if self.sessions.with_untracked(|known| matches!(known.get(&uuid), Some(None))) {
+                    let renamed = session == AccountSession::Renamed;
                     self.sessions.update(|known| {
                         known.insert(uuid, Some(session));
                     });
+                    if renamed {
+                        self.changed();
+                    }
                 }
             });
         }

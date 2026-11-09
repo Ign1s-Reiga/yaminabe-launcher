@@ -124,7 +124,7 @@ pub(crate) async fn request_device_code(client: &Client, client_id: &str) -> Res
         .timeout(REQUEST_TIMEOUT)
         .send::<DeviceCodeResponse>()
         .await
-        .map_err(|e| refused("device code request", e))
+        .map_err(|e| Error::Auth(format!("device code request: {e}")))
 }
 
 /// Poll the token endpoint. `Ok(Some)` is a real grant, `Ok(None)` means MS
