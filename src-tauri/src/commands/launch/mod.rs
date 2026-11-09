@@ -12,8 +12,8 @@ use yaminabe_launcher_shared::error::Error;
 use yaminabe_launcher_shared::ipc::LogLine;
 use yaminabe_launcher_shared::datamodels::ClientManifest;
 use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, ActivityGuard, AppState, InstanceActivity};
-use crate::auth::{hydrate_account, persist_account, save_record, MinecraftAccount, MinecraftAccountRecord};
-use crate::auth::session::{renew_session, Renewal};
+use crate::auth::{hydrate_account, MinecraftAccount, MinecraftAccountRecord};
+use crate::auth::session::{renew_session, save_renewal, Renewal};
 use crate::commands::instance::{find_instance_dir, instance_meta_file};
 use crate::commands::java::download_java_runtime;
 use crate::install_task::version_manifest_path;
@@ -346,21 +346,16 @@ async fn resolve_account(
     };
 
     if let Some(account) = auth_account.as_mut() {
+        let saved_expiry = account.expires_at;
         let renewal = renew_session(&state.http_client, account, |line| emit_log(app, instance_id, line)).await;
         match renewal {
             Ok(Renewal::Current) => {}
-            Ok(Renewal::Updated) => {
+            Ok(renewal @ (Renewal::Updated | Renewal::Renamed)) => {
                 // Failure is non-fatal: `account` still holds good tokens for
                 // this launch.
                 let mut store = state.account_store.lock().unwrap();
-                if let Err(e) = persist_account(&mut store, account) {
-                    emit_log(app, instance_id, format!("warning: failed to persist refreshed tokens: {e}"));
-                }
-            }
-            Ok(Renewal::Renamed) => {
-                let mut store = state.account_store.lock().unwrap();
-                if let Err(e) = save_record(&mut store, account) {
-                    emit_log(app, instance_id, format!("warning: failed to save the new player name: {e}"));
+                if let Err(e) = save_renewal(&mut store, account, &renewal, saved_expiry) {
+                    emit_log(app, instance_id, format!("warning: failed to save the renewed sign-in: {e}"));
                 }
             }
             Ok(Renewal::Unchecked(e)) => emit_log(app, instance_id, format!(

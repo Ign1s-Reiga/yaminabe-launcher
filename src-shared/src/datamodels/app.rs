@@ -131,6 +131,9 @@ pub struct AccountSummary {
 pub enum AccountSession {
     /// Accepted as saved, or renewed on the way.
     Valid,
+    /// Accepted, under a player name that changed on minecraft.net and has been
+    /// saved, so the account list needs refetching.
+    Renamed,
     /// The saved sign-in can no longer be renewed, for the reason given, so the
     /// user has to sign in again.
     NeedsSignIn(String),
