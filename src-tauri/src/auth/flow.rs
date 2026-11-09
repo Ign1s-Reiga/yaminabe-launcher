@@ -135,6 +135,8 @@ pub(crate) enum Poll {
     Pending,
     /// Microsoft asks for the polls to come less often.
     SlowDown,
+    /// The code expired before the user signed in.
+    Expired,
 }
 
 /// Poll the token endpoint once. `Err` ends the sign-in unless it is
@@ -171,9 +173,7 @@ pub(crate) async fn poll_token(
         "authorization_declined" | "access_denied" => Err(Error::Auth(
             "User declined the sign-in request.".to_string(),
         )),
-        "expired_token" | "code_expired" => Err(Error::Auth(
-            "The login request expired before authentication completed.".to_string(),
-        )),
+        "expired_token" | "code_expired" => Ok(Poll::Expired),
         other => Err(Error::Auth(format!(
             "Microsoft token endpoint returned {other}: {}",
             err.error_description.unwrap_or_default()
