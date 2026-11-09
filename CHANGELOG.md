@@ -3,6 +3,17 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.2.4 — 2026-11-09
+
+- Show a player name changed on minecraft.net once a launch has found it, too,
+  in the navigation bar and in Settings. Since 1.2.3, only the check when the
+  launcher starts did.
+- Keep the sign-in dialog checking with Microsoft at the pace it asks for.
+  Until now, each check came a little later than the last, so after a couple
+  of minutes the dialog could take half a minute to notice you had signed in.
+- Say in a launch's log when the account was removed or signed in again while
+  the launch renewed its sign-in, so the renewal was not saved.
+
 ## 1.2.3 — 2026-11-09
 
 - Show a player name changed on minecraft.net as soon as the launcher has
