@@ -25,6 +25,10 @@ use self::assets::download_assets;
 use self::classpath::{build_classpath, extract_natives, find_main_class_jar, jar_contains_class};
 use self::manifest::{load_manifest, merge_manifest};
 
+/// Tells the UI that a saved account changed, e.g. its player name, so it
+/// refetches the accounts. The payload is the account's dashed UUID.
+const EVT_ACCOUNTS_CHANGED: &str = "accounts-changed";
+
 /// Emit a progress line (`done: false`) to an instance's `instance-log` stream.
 fn emit_log(app: &AppHandle, instance_id: &str, line: impl Into<String>) {
     app.emit("instance-log", LogLine {
@@ -346,7 +350,7 @@ async fn resolve_account(
     };
 
     if let Some(account) = auth_account.as_mut() {
-        let saved_expiry = account.expires_at;
+        let read = MinecraftAccountRecord::from_account(account);
         let renewal = renew_session(&state.http_client, account, |line| emit_log(app, instance_id, line)).await;
         match renewal {
             Ok(Renewal::Current) => {}
@@ -354,8 +358,16 @@ async fn resolve_account(
                 // Failure is non-fatal: `account` still holds good tokens for
                 // this launch.
                 let mut store = state.account_store.lock().unwrap();
-                if let Err(e) = save_renewal(&mut store, account, &renewal, saved_expiry) {
-                    emit_log(app, instance_id, format!("warning: failed to save the renewed sign-in: {e}"));
+                match save_renewal(&mut store, account, &read, matches!(renewal, Renewal::Updated)) {
+                    Ok(true) if account.username != read.username => {
+                        app.emit(EVT_ACCOUNTS_CHANGED, account.uuid_dashed()).ok();
+                    }
+                    Ok(true) => {}
+                    Ok(false) => emit_log(app, instance_id,
+                        "note: the account was removed or signed in again during this launch, \
+                         so its renewed sign-in was not saved.",
+                    ),
+                    Err(e) => emit_log(app, instance_id, format!("warning: failed to save the renewed sign-in: {e}")),
                 }
             }
             Ok(Renewal::Unchecked(e)) => emit_log(app, instance_id, format!(
