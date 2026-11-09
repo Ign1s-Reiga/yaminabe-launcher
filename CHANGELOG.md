@@ -3,6 +3,18 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.2.5 — 2026-11-09
+
+- Check with Microsoft less often in the sign-in dialog while it is being
+  turned away, for example for asking too often, and go back to the usual
+  pace once it answers again. Since 1.2.4, the dialog kept asking at full
+  pace.
+- Close the sign-in dialog within a second when you cancel it or its code
+  expires, and say that the code expired rather than that something went
+  wrong.
+- Show a player name changed on minecraft.net even when the launcher cannot
+  save it to disk.
+
 ## 1.2.4 — 2026-11-09
 
 - Show a player name changed on minecraft.net once a launch has found it, too,
