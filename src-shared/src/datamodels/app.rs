@@ -134,6 +134,8 @@ pub enum AccountSession {
     /// The saved sign-in can no longer be renewed, for the reason given, so the
     /// user has to sign in again.
     NeedsSignIn(String),
+    /// The account signs in but does not own Minecraft: Java Edition.
+    NotOwned,
     /// Minecraft services or Microsoft could not be reached to tell.
     Unchecked,
 }

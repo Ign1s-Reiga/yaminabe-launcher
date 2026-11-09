@@ -235,7 +235,7 @@ pub fn AccountSwitcher() -> impl IntoView {
         <Show when=move || show_login.get() fallback=|| ()>
             <LoginModal
                 on_close=Callback::new(move |_| show_login.set(false))
-                on_success=Callback::new(move |_: AccountSummary| accounts.changed())
+                on_success=Callback::new(move |summary: AccountSummary| accounts.signed_in(summary.uuid))
             />
         </Show>
     }

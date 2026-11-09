@@ -48,6 +48,10 @@ pub enum Error {
     /// Authentication-flow failure (Microsoft / Xbox Live / Minecraft services).
     #[error("Authentication failed: {0}")]
     Auth(String),
+    /// The Microsoft account signed in fine but does not own the game, which
+    /// signing in again cannot change.
+    #[error("This Microsoft account does not own Minecraft: Java Edition.")]
+    GameNotOwned,
     /// Failure interacting with the OS credential store (keyring backend).
     /// Kept separate from `Auth` so a storage-layer problem doesn't get
     /// mislabelled as an authentication error.

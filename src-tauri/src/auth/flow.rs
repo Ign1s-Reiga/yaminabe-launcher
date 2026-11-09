@@ -1,10 +1,10 @@
 use qrcode::render::svg;
 use qrcode::QrCode;
 use std::time::Duration;
-use reqwest::{Client, Method};
+use reqwest::{Client, Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use yaminabe_launcher_shared::error::Error;
-use crate::http_utils::fetch_json;
+use crate::http_utils::{fetch_json, rejected_status};
 use super::model::{now_epoch_seconds, MinecraftAccount};
 
 /// Build-time Azure Application (client) ID for the OAuth 2.0 device-code
@@ -181,6 +181,9 @@ async fn refresh_access_token(
         ])
         .send()
         .await?;
+    if could_not_answer(resp.status()) {
+        return Err(rejected_status(resp.status(), TOKEN_URL));
+    }
     if !resp.status().is_success() {
         let err = resp
             .json::<TokenErrorResponse>()
@@ -195,6 +198,22 @@ async fn refresh_access_token(
     resp.json::<TokenResponse>()
         .await
         .map_err(Error::InvalidResponse)
+}
+
+/// Whether a status says the server could not answer, rather than refused.
+fn could_not_answer(status: StatusCode) -> bool {
+    status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS
+}
+
+/// A sign-in step the server refused is an authentication failure. One the
+/// server could not answer is passed on as it is, since it says nothing about
+/// the account and a later try may work.
+fn refused(step: &str, e: Error) -> Error {
+    match e {
+        Error::HttpRequestRejected(status, _) if status >= 500 => e,
+        Error::NetworkError(_) | Error::RateLimitExceeded(_) | Error::InvalidResponse(_) => e,
+        other => Error::Auth(format!("{step}: {other}")),
+    }
 }
 
 /// XBL/XSTS request body — both endpoints share the outer shape; only the
@@ -243,7 +262,7 @@ async fn xbl_authenticate(client: &Client, ms_access_token: &str) -> Result<Xbox
         .payload(&body)
         .send::<XboxAuthResponse>()
         .await
-        .map_err(|e| Error::Auth(format!("Xbox Live authentication: {e}")))
+        .map_err(|e| refused("Xbox Live authentication", e))
 }
 
 async fn xsts_authorize(client: &Client, xbl_token: &str) -> Result<XboxAuthResponse, Error> {
@@ -268,6 +287,9 @@ async fn xsts_authorize(client: &Client, xbl_token: &str) -> Result<XboxAuthResp
             .await
             .map_err(Error::InvalidResponse)?;
         return Err(Error::Auth(xsts_error_message(err.xerr, err.message)));
+    }
+    if could_not_answer(resp.status()) {
+        return Err(rejected_status(resp.status(), XSTS_AUTH_URL));
     }
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
@@ -312,12 +334,12 @@ async fn mc_login_with_xbox(
         })
         .send::<McLoginResponse>()
         .await
-        .map_err(|e| Error::Auth(format!("Minecraft services rejected the Xbox token: {e}")))
+        .map_err(|e| refused("Minecraft services rejected the Xbox token", e))
 }
 
-/// Look up the profile `mc_access_token` belongs to. An `Error::Auth` means the
-/// account cannot play at all; a refusal comes back as `HttpRequestRejected`,
-/// carrying the server's status and reason.
+/// Look up the profile `mc_access_token` belongs to. `Error::GameNotOwned`
+/// means the account cannot play at all; a refusal comes back as
+/// `HttpRequestRejected`, carrying the server's status and reason.
 async fn mc_fetch_profile(client: &Client, mc_access_token: &str) -> Result<McProfile, Error> {
     profile_lookup(client, MC_PROFILE_URL, mc_access_token, PROFILE_TIMEOUT).await
 }
@@ -335,9 +357,7 @@ async fn profile_lookup(
         .send()
         .await?;
     if resp.status().as_u16() == 404 {
-        return Err(Error::Auth(
-            "Signed-in Microsoft account does not own Minecraft: Java Edition.".into(),
-        ));
+        return Err(Error::GameNotOwned);
     }
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
@@ -371,7 +391,7 @@ fn session_from_lookup(lookup: Result<McProfile, Error>) -> Result<Session, Erro
     match lookup {
         Ok(profile) => Ok(Session::Valid(profile)),
         Err(Error::HttpRequestRejected(401 | 403, _)) => Ok(Session::Rejected),
-        Err(e @ Error::Auth(_)) => Err(e),
+        Err(e @ Error::GameNotOwned) => Err(e),
         Err(e) => Ok(Session::Unchecked(e)),
     }
 }
@@ -403,10 +423,11 @@ pub(crate) async fn finalize_minecraft_login(
 }
 
 /// A refused profile lookup during login or refresh is an authentication
-/// failure, reported with the server's status and reason.
+/// failure, reported with the server's status and reason. One the server could
+/// not answer is passed on as it is.
 fn login_profile_error(e: Error) -> Error {
     match e {
-        Error::HttpRequestRejected(status, text) => {
+        Error::HttpRequestRejected(status, text) if status < 500 && status != 429 => {
             Error::Auth(format!("Profile lookup rejected ({status}): {text}"))
         }
         other => other,
@@ -451,7 +472,7 @@ pub async fn refresh_account_tokens(
 
 #[cfg(test)]
 mod tests {
-    use super::{login_profile_error, profile_lookup, session_from_lookup, McProfile, Session};
+    use super::{login_profile_error, profile_lookup, refused, session_from_lookup, McProfile, Session};
     use std::time::{Duration, Instant};
     use tokio::net::TcpListener;
     use yaminabe_launcher_shared::error::Error;
@@ -479,14 +500,36 @@ mod tests {
 
     #[test]
     fn an_account_without_the_game_fails() {
-        let lookup = Err(Error::Auth("does not own Minecraft".into()));
-        assert!(matches!(session_from_lookup(lookup), Err(Error::Auth(_))));
+        let lookup = Err(Error::GameNotOwned);
+        assert!(matches!(session_from_lookup(lookup), Err(Error::GameNotOwned)));
     }
 
     #[test]
     fn a_refused_login_keeps_the_server_reason() {
         let e = login_profile_error(Error::HttpRequestRejected(403, "account restricted".into()));
         assert!(matches!(&e, Error::Auth(m) if m == "Profile lookup rejected (403): account restricted"), "got {e:?}");
+    }
+
+    #[test]
+    fn a_login_the_server_could_not_answer_is_not_a_refusal() {
+        for status in [429, 503] {
+            let e = login_profile_error(Error::HttpRequestRejected(status, String::new()));
+            assert!(matches!(e, Error::HttpRequestRejected(..)), "got {e:?}");
+        }
+    }
+
+    #[test]
+    fn a_refused_step_is_an_authentication_failure() {
+        let e = refused("Xbox Live authentication", Error::HttpRequestRejected(400, "url".into()));
+        assert!(matches!(&e, Error::Auth(m) if m.starts_with("Xbox Live authentication: ")), "got {e:?}");
+    }
+
+    #[test]
+    fn a_step_the_server_could_not_answer_is_passed_on() {
+        let e = refused("Xbox Live authentication", Error::RateLimitExceeded("url".into()));
+        assert!(matches!(e, Error::RateLimitExceeded(_)), "got {e:?}");
+        let e = refused("Xbox Live authentication", Error::HttpRequestRejected(502, "url".into()));
+        assert!(matches!(e, Error::HttpRequestRejected(502, _)), "got {e:?}");
     }
 
     #[tokio::test]

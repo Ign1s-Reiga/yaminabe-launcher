@@ -124,6 +124,7 @@ pub async fn check_account_session(
             warn!("could not check the sign-in for {normalised}: {e}");
             Ok(AccountSession::Unchecked)
         }
+        Err(Error::GameNotOwned) => Ok(AccountSession::NotOwned),
         Err(e) if is_unreachable(&e) => {
             warn!("could not renew the sign-in for {normalised}: {e}");
             Ok(AccountSession::Unchecked)
