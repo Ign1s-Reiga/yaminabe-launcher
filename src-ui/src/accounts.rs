@@ -17,6 +17,7 @@ pub struct Accounts {
     pub revision: RwSignal<u32>,
     list: RwSignal<Vec<AccountSummary>>,
     selected: RwSignal<Option<String>>,
+    signed_in: RwSignal<Option<String>>,
 }
 
 impl Accounts {
@@ -27,6 +28,7 @@ impl Accounts {
             revision: RwSignal::new(0),
             list: RwSignal::new(Vec::new()),
             selected: RwSignal::new(None),
+            signed_in: RwSignal::new(None),
         };
         Effect::new(move |_| {
             let asked_at = accounts.revision.get();
@@ -79,5 +81,17 @@ impl Accounts {
     /// Refetch the accounts, after a change made elsewhere.
     pub fn changed(self) {
         self.revision.update(|n| *n += 1);
+    }
+
+    /// Record that `uuid` has just signed in, from either login dialog, and
+    /// refetch the accounts.
+    pub fn signed_in(self, uuid: String) {
+        self.signed_in.set(Some(uuid));
+        self.changed();
+    }
+
+    /// The account signed in most recently, tracked.
+    pub fn last_signed_in(self) -> Option<String> {
+        self.signed_in.get()
     }
 }

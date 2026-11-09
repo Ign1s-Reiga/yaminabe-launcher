@@ -183,7 +183,8 @@ pub fn SettingsPage() -> impl IntoView {
 fn AccountsSection() -> impl IntoView {
     // Bump this counter after any backend mutation to refetch both resources.
     // It is the shared store's, so the navbar's account switcher follows too.
-    let refresh: RwSignal<u32> = use_context::<Accounts>().expect("accounts").revision;
+    let store = use_context::<Accounts>().expect("accounts");
+    let refresh: RwSignal<u32> = store.revision;
     let show_modal: RwSignal<bool> = RwSignal::new(false);
     // The account the open login modal signs in again; `None` adds a new one.
     let relogin_name: RwSignal<Option<String>> = RwSignal::new(None);
@@ -232,6 +233,19 @@ fn AccountsSection() -> impl IntoView {
                 sessions.try_update(|known| {
                     known.insert(uuid, Some(session));
                 });
+            });
+        }
+    });
+
+    // A fresh sign-in, here or from the navbar, needs no check. One made
+    // before Settings opened is checked like the rest.
+    Effect::new(move |opened: Option<()>| {
+        let fresh = store.last_signed_in();
+        if opened.is_some()
+            && let Some(uuid) = fresh
+        {
+            sessions.update(|known| {
+                known.insert(uuid, Some(AccountSession::Valid));
             });
         }
     });
@@ -349,12 +363,22 @@ fn AccountsSection() -> impl IntoView {
                     let acc_uuid_for_use = acc_uuid.clone();
                     let acc_uuid_for_remove = acc_uuid.clone();
                     let acc_uuid_for_session = acc_uuid.clone();
-                    // Why the sign-in can no longer be renewed, when it can't.
-                    let expired = Memo::new(move |_| sessions.with(|known| {
+                    let acc_uuid_for_expired = acc_uuid.clone();
+                    // What keeps the account from playing, if anything, as a
+                    // label and the reason behind it.
+                    let problem = Memo::new(move |_| sessions.with(|known| {
                         match known.get(&acc_uuid_for_session) {
-                            Some(Some(AccountSession::NeedsSignIn(reason))) => Some(reason.clone()),
+                            Some(Some(AccountSession::NeedsSignIn(reason))) => Some(("Sign-in expired", reason.clone())),
+                            Some(Some(AccountSession::NotOwned)) => Some((
+                                "Game not owned",
+                                "This Microsoft account does not own Minecraft: Java Edition.".to_string(),
+                            )),
                             _ => None,
                         }
+                    }));
+                    // Only an expired sign-in is fixed by signing in again.
+                    let expired = Memo::new(move |_| sessions.with(|known| {
+                        matches!(known.get(&acc_uuid_for_expired), Some(Some(AccountSession::NeedsSignIn(_))))
                     }));
                     let username = acc.username.clone();
                     view! {
@@ -363,17 +387,17 @@ fn AccountsSection() -> impl IntoView {
                             <div class=meta>
                                 <div class=name_line>
                                     <div class=name>{acc.username}</div>
-                                    {move || expired.get().map(|reason| view! {
+                                    {move || problem.get().map(|(label, reason)| view! {
                                         <span class=expired_pill title=reason>
                                             <Icon icon=WARNING size="14px" weight=IconWeight::Fill />
-                                            "Sign-in expired"
+                                            {label}
                                         </span>
                                     })}
                                 </div>
                                 <div class=uuid_mono>{acc_uuid}</div>
                             </div>
                             <div class=actions>
-                                <Show when=move || expired.with(Option::is_some) fallback=|| ()>
+                                <Show when=move || expired.get() fallback=|| ()>
                                     <Button
                                         variant=ButtonVariant::Secondary
                                         size=ButtonSize::Big
@@ -451,14 +475,9 @@ fn AccountsSection() -> impl IntoView {
             <LoginModal
                 account_name=relogin_name.get_untracked()
                 on_close=Callback::new(move |_| show_modal.set(false))
-                on_success=Callback::new(move |summary: AccountSummary| {
-                    // A fresh sign-in needs no check. One into another Microsoft
-                    // account adds that account and leaves the expired one marked.
-                    sessions.update(|known| {
-                        known.insert(summary.uuid, Some(AccountSession::Valid));
-                    });
-                    refresh.update(|n| *n += 1);
-                })
+                // One into another Microsoft account adds that account and
+                // leaves the expired one marked.
+                on_success=Callback::new(move |summary: AccountSummary| store.signed_in(summary.uuid))
             />
         </Show>
     }
