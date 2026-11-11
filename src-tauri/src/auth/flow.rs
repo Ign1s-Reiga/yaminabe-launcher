@@ -142,31 +142,37 @@ pub(crate) enum Poll {
     Expired,
 }
 
-/// The longest extra wait that unclear answers add between two polls.
-const MAX_BACKOFF: u64 = 300;
+/// The longest backoff that unclear answers build up between two polls.
+const MAX_BACKOFF: u64 = 60;
+
+/// The longest rest before one poll that a throttled poll's `Retry-After`
+/// can ask for.
+const MAX_REST: u64 = 300;
 
 /// How long the sign-in dialog waits before each poll of the token endpoint:
 /// Microsoft's interval, which it is never shorter than, plus a backoff while
-/// the endpoint gives no clear answer.
+/// the endpoint gives no clear answer, or the rest it asked for if longer.
 pub(crate) struct PollPace {
     interval: u64,
     backoff: u64,
+    rest: u64,
 }
 
 impl PollPace {
     pub(crate) fn new(interval: u32) -> Self {
-        PollPace { interval: u64::from(interval.max(1)), backoff: 0 }
+        PollPace { interval: u64::from(interval.max(1)), backoff: 0, rest: 0 }
     }
 
     /// Seconds to wait before the next poll.
     pub(crate) fn wait(&self) -> u64 {
-        self.interval.saturating_add(self.backoff)
+        self.interval.saturating_add(self.backoff.max(self.rest))
     }
 
-    /// A clear answer takes 5 s off the backoff rather than dropping it, so
-    /// an endpoint that turns away every other poll still gets spaced out.
+    /// A clear answer halves the backoff rather than dropping it, so an
+    /// endpoint that turns away every other poll still gets spaced out.
     pub(crate) fn answered(&mut self) {
-        self.backoff = self.backoff.saturating_sub(5);
+        self.backoff /= 2;
+        self.rest = 0;
     }
 
     /// RFC 8628 §3.5: a `slow_down` adds 5 s to every later poll.
@@ -175,12 +181,50 @@ impl PollPace {
         self.answered();
     }
 
-    /// An unclear answer adds 10 s of backoff, or the rest the server asked
-    /// for if that is longer, up to `MAX_BACKOFF`.
+    /// An unclear answer adds 5 s of backoff, up to `MAX_BACKOFF`. The rest a
+    /// throttled poll asked for applies before the next poll only, up to
+    /// `MAX_REST`.
     pub(crate) fn unclear(&mut self, retry_after: Option<u64>) {
-        let more = self.backoff.saturating_add(10);
-        self.backoff = retry_after.map_or(more, |asked| asked.max(more)).min(MAX_BACKOFF);
+        self.backoff = self.backoff.saturating_add(5).min(MAX_BACKOFF);
+        self.rest = retry_after.unwrap_or(0).min(MAX_REST);
     }
+}
+
+/// Seconds a `Retry-After` header asks to wait, given as seconds or as an
+/// HTTP date; `now` is the current Unix time.
+fn retry_after_seconds(value: &str, now: i64) -> Option<u64> {
+    let value = value.trim();
+    value.parse::<u64>().ok().or_else(|| seconds_until_http_date(value, now))
+}
+
+/// Seconds from `now` until an HTTP date such as
+/// `Wed, 11 Nov 2026 12:05:00 GMT`, 0 if it has passed.
+fn seconds_until_http_date(value: &str, now: i64) -> Option<u64> {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let parts: Vec<&str> = value.split_whitespace().collect();
+    let [_, day, month, year, time, "GMT"] = parts.as_slice() else {
+        return None;
+    };
+    let day: i64 = day.parse().ok()?;
+    let month = MONTHS.iter().position(|m| m == month)? as i64 + 1;
+    let year: i64 = year.parse().ok()?;
+    let hms: Vec<i64> = time.split(':').map(str::parse).collect::<Result<_, _>>().ok()?;
+    let [h, m, s] = hms.as_slice() else {
+        return None;
+    };
+    let at = days_from_civil(year, month, day) * 86_400 + h * 3600 + m * 60 + s;
+    Some(u64::try_from(at - now).unwrap_or(0))
+}
+
+/// Days from 1970-01-01 to the given date, after Howard Hinnant's
+/// `days_from_civil`.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
 }
 
 async fn post_token_request(client: &Client, form: &[(&str, &str)]) -> Result<Response, Error> {
@@ -206,7 +250,7 @@ pub(crate) async fn poll_token(
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.trim().parse::<u64>().ok());
+            .and_then(|v| retry_after_seconds(v, now_epoch_seconds()));
         return Ok(Poll::Throttled(retry_after));
     }
     if resp.status().is_success() {
@@ -532,8 +576,8 @@ pub async fn refresh_account_tokens(
 #[cfg(test)]
 mod tests {
     use super::{
-        login_profile_error, profile_lookup, refused, service_error, session_from_lookup, McProfile, PollPace,
-        Session, TokenErrorResponse, MAX_BACKOFF,
+        login_profile_error, profile_lookup, refused, retry_after_seconds, service_error, session_from_lookup,
+        McProfile, PollPace, Session, TokenErrorResponse, MAX_BACKOFF, MAX_REST,
     };
     use std::time::{Duration, Instant};
     use tokio::net::TcpListener;
@@ -670,7 +714,7 @@ mod tests {
         }
         assert_eq!(pace.wait(), 105);
         pace.unclear(None);
-        assert_eq!(pace.wait(), 115);
+        assert_eq!(pace.wait(), 110);
     }
 
     #[test]
@@ -678,28 +722,52 @@ mod tests {
         let mut pace = PollPace::new(5);
         pace.unclear(None);
         pace.unclear(None);
-        assert_eq!(pace.wait(), 25);
+        assert_eq!(pace.wait(), 15);
         pace.answered();
-        assert_eq!(pace.wait(), 20);
-        // Every other poll turned away still builds up a backoff.
+        assert_eq!(pace.wait(), 10);
+        // Every other poll turned away still keeps a backoff.
         for _ in 0..6 {
             pace.unclear(None);
             pace.answered();
         }
-        assert_eq!(pace.wait(), 50);
-        // A run of clear answers brings the pace back to Microsoft's.
-        for _ in 0..20 {
+        assert_eq!(pace.wait(), 10);
+        // A few clear answers bring the pace back to Microsoft's.
+        for _ in 0..3 {
             pace.answered();
         }
         assert_eq!(pace.wait(), 5);
     }
 
     #[test]
-    fn a_throttled_poll_rests_as_long_as_asked() {
+    fn a_long_outage_backs_off_only_so_far() {
         let mut pace = PollPace::new(5);
-        pace.unclear(Some(30));
-        assert_eq!(pace.wait(), 35);
-        pace.unclear(Some(10_000));
+        for _ in 0..100 {
+            pace.unclear(None);
+        }
         assert_eq!(pace.wait(), 5 + MAX_BACKOFF);
+    }
+
+    #[test]
+    fn a_throttled_poll_rests_as_long_as_asked_once() {
+        let mut pace = PollPace::new(5);
+        pace.unclear(Some(120));
+        assert_eq!(pace.wait(), 125);
+        // The rest is over once the endpoint answers again.
+        pace.answered();
+        assert_eq!(pace.wait(), 7);
+        pace.unclear(Some(10_000));
+        assert_eq!(pace.wait(), 5 + MAX_REST);
+    }
+
+    #[test]
+    fn retry_after_is_read_as_seconds_or_a_date() {
+        // 784111777 is Sun, 06 Nov 1994 08:49:37 GMT.
+        let now = 784_111_777;
+        assert_eq!(retry_after_seconds(" 30 ", now), Some(30));
+        assert_eq!(retry_after_seconds("Sun, 06 Nov 1994 08:51:37 GMT", now), Some(120));
+        assert_eq!(retry_after_seconds("Sun, 06 Nov 1994 08:00:00 GMT", now), Some(0));
+        assert_eq!(retry_after_seconds("Wed, 11 Nov 2026 12:05:00 GMT", 1_794_398_400), Some(300));
+        assert_eq!(retry_after_seconds("soon", now), None);
+        assert_eq!(retry_after_seconds("Sun, 06 Nov 1994 08:51:37 PST", now), None);
     }
 }

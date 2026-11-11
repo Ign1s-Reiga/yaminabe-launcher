@@ -203,12 +203,12 @@ async fn device_code_sign_in(app: &AppHandle, state: &AppState) -> Result<LoginE
         if state.ms_login_cancel.load(Ordering::SeqCst) {
             return Ok(LoginEnd::Cancelled);
         }
-        if Instant::now() >= expires_at {
-            return Ok(LoginEnd::Expired);
-        }
+        // Once the code's time is up, one last poll catches a sign-in finished
+        // during the final wait.
+        let last = Instant::now() >= expires_at;
         // Wait in one-second steps, so a cancel or the code's expiry is seen
         // within a second rather than after a whole wait.
-        if waited < pace.wait() {
+        if !last && waited < pace.wait() {
             sleep(Duration::from_secs(1)).await;
             waited += 1;
             continue;
@@ -219,8 +219,8 @@ async fn device_code_sign_in(app: &AppHandle, state: &AppState) -> Result<LoginE
             Ok(Poll::Pending) => pace.answered(),
             Ok(Poll::SlowDown) => pace.slow_down(),
             Ok(Poll::Throttled(retry_after)) => {
-                warn!("token poll turned away for coming too often, resting {retry_after:?} s");
                 pace.unclear(retry_after);
+                warn!("token poll turned away for coming too often, polling again in {} s", pace.wait());
             }
             Ok(Poll::Expired) => return Ok(LoginEnd::Expired),
             // One poll that gets no clear answer does not end the sign-in;
@@ -230,6 +230,9 @@ async fn device_code_sign_in(app: &AppHandle, state: &AppState) -> Result<LoginE
                 pace.unclear(None);
             }
             Err(e) => return Err(e),
+        }
+        if last {
+            return Ok(LoginEnd::Expired);
         }
     };
 

@@ -140,11 +140,10 @@ mod tests {
         store.accounts.push(read.clone());
         assert!(still_saved(&store, &read));
     }
+
     #[test]
     fn a_rename_is_saved_and_reported() {
-        let path = crate::ACCOUNTS_PATH.get_or_init(|| {
-            std::env::temp_dir().join(format!("yaminabe-accounts-test-{}.json", std::process::id()))
-        });
+        crate::test_accounts_path();
         let mut before = renamed_account();
         before.username = "OldName".into();
         let read = MinecraftAccountRecord::from_account(&before);
@@ -153,6 +152,5 @@ mod tests {
         let saved = save_renewal(&mut store, &renamed_account(), &read, false);
         assert!(saved.applied && saved.renamed && saved.failure.is_none(), "got {saved:?}");
         assert_eq!(store.accounts[0].username, "NewName");
-        std::fs::remove_file(path).ok();
     }
 }
