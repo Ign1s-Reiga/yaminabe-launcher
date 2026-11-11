@@ -82,9 +82,9 @@ struct XstsErrorResponse {
 }
 
 #[derive(Deserialize)]
-pub(crate) struct McLoginResponse {
-    pub(crate) access_token: String,
-    pub(crate) expires_in: u32,
+struct McLoginResponse {
+    access_token: String,
+    expires_in: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -183,6 +183,10 @@ impl PollPace {
     }
 }
 
+async fn post_token_request(client: &Client, form: &[(&str, &str)]) -> Result<Response, Error> {
+    Ok(client.post(TOKEN_URL).form(form).timeout(REQUEST_TIMEOUT).send().await?)
+}
+
 /// Poll the token endpoint once. `Err` ends the sign-in unless it is
 /// inconclusive.
 pub(crate) async fn poll_token(
@@ -190,16 +194,12 @@ pub(crate) async fn poll_token(
     client_id: &str,
     device_code: &str,
 ) -> Result<Poll, Error> {
-    let resp = client
-        .post(TOKEN_URL)
-        .form(&[
-            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-            ("client_id", client_id),
-            ("device_code", device_code),
-        ])
-        .timeout(REQUEST_TIMEOUT)
-        .send()
-        .await?;
+    let resp = post_token_request(client, &[
+        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+        ("client_id", client_id),
+        ("device_code", device_code),
+    ])
+    .await?;
 
     if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
         let retry_after = resp
@@ -238,17 +238,13 @@ async fn refresh_access_token(
     client_id: &str,
     refresh_token: &str,
 ) -> Result<TokenResponse, Error> {
-    let resp = client
-        .post(TOKEN_URL)
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("client_id", client_id),
-            ("scope", SCOPE),
-            ("refresh_token", refresh_token),
-        ])
-        .timeout(REQUEST_TIMEOUT)
-        .send()
-        .await?;
+    let resp = post_token_request(client, &[
+        ("grant_type", "refresh_token"),
+        ("client_id", client_id),
+        ("scope", SCOPE),
+        ("refresh_token", refresh_token),
+    ])
+    .await?;
     if !resp.status().is_success() {
         let err = service_error::<TokenErrorResponse>(resp, TOKEN_URL).await?;
         return Err(Error::Auth(format!(
@@ -461,13 +457,10 @@ fn session_from_lookup(lookup: Result<McProfile, Error>) -> Result<Session, Erro
     }
 }
 
-/// Run the XBL → XSTS → MC → profile chain for an MS access token. Used by
-/// both the initial device-code flow and the refresh path on launch.
-pub(crate) async fn finalize_minecraft_login(
-    client: &Client,
-    ms_access_token: &str,
-) -> Result<(McProfile, McLoginResponse, String), Error> {
-    let xbl = xbl_authenticate(client, ms_access_token).await?;
+/// Run the XBL → XSTS → MC → profile chain for a Microsoft token, giving the
+/// account it signs in. Used by both the device-code flow and a refresh.
+pub(crate) async fn minecraft_sign_in(client: &Client, ms: TokenResponse) -> Result<MinecraftAccount, Error> {
+    let xbl = xbl_authenticate(client, &ms.access_token).await?;
     let user_hash = xbl
         .display_claims
         .xui
@@ -484,7 +477,14 @@ pub(crate) async fn finalize_minecraft_login(
     // Minecraft relying party (frequently absent), so the authoritative
     // source for ${auth_xuid} is the MC access token's JWT payload.
     let xuid = xuid_from_mc_token(&mc.access_token).unwrap_or_default();
-    Ok((profile, mc, xuid))
+    Ok(MinecraftAccount {
+        uuid: profile.id,
+        username: profile.name,
+        mc_access_token: mc.access_token,
+        expires_at: now_epoch_seconds() + i64::from(mc.expires_in),
+        ms_refresh_token: ms.refresh_token,
+        xuid,
+    })
 }
 
 /// A profile lookup refused during login or refresh, with a 401 or 403, is an
@@ -525,13 +525,7 @@ pub async fn refresh_account_tokens(
 ) -> Result<(), Error> {
     let client_id = require_client_id()?;
     let token = refresh_access_token(client, client_id, &account.ms_refresh_token).await?;
-    let (profile, mc, xuid) = finalize_minecraft_login(client, &token.access_token).await?;
-    account.uuid = profile.id;
-    account.username = profile.name;
-    account.mc_access_token = mc.access_token;
-    account.expires_at = now_epoch_seconds() + mc.expires_in as i64;
-    account.ms_refresh_token = token.refresh_token;
-    account.xuid = xuid;
+    *account = minecraft_sign_in(client, token).await?;
     Ok(())
 }
 

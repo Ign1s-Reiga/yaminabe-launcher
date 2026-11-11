@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use leptos::prelude::*;
 use serde::Serialize;
 use yaminabe_launcher_shared::datamodels::{AccountSession, AccountSummary};
+use yaminabe_launcher_shared::ipc::EVT_ACCOUNTS_CHANGED;
 
 use crate::ipc;
 
@@ -78,7 +79,7 @@ impl Accounts {
             });
         });
         // A launch that finds a new player name saves it and says so.
-        ipc::on_event::<String, _>("accounts-changed", move |_| accounts.changed());
+        ipc::on_event::<String, _>(EVT_ACCOUNTS_CHANGED, move |_| accounts.changed());
         provide_context(accounts);
         accounts
     }

@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use yaminabe_launcher_shared::ipc::{ReleaseInfo, UpdateCheck, UpdateProgress};
+use yaminabe_launcher_shared::ipc::{ReleaseInfo, UpdateCheck, UpdateProgress, EVT_UPDATE_PROGRESS};
 
 use crate::ipc;
 
@@ -43,7 +43,7 @@ impl Updates {
     pub fn provide() -> Self {
         let updates = Updates(RwSignal::new(UpdateState::Unchecked));
         provide_context(updates);
-        ipc::on_event::<UpdateProgress, _>("update-download-progress", move |progress| {
+        ipc::on_event::<UpdateProgress, _>(EVT_UPDATE_PROGRESS, move |progress| {
             updates.0.update(|state| {
                 if let UpdateState::Installing(_, latest) = state {
                     *latest = Some(progress);

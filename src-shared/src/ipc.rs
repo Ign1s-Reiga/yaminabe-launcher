@@ -1,9 +1,23 @@
 use serde::{Deserialize, Serialize};
 
-/// One log line emitted by an instance launch.
-///
-/// Emitted via `app.emit("instance-log", LogLine { … })` from the backend's
-/// `launch_instance` and consumed by `PlayPage` on the frontend.
+/// Carries a [`LogLine`] from an instance launch.
+pub const EVT_INSTANCE_LOG: &str = "instance-log";
+/// Carries the id of an instance whose game process has started.
+pub const EVT_PROCESS_STARTED: &str = "instance-process-started";
+/// Carries an [`InstallProgress`].
+pub const EVT_INSTALL_PROGRESS: &str = "instance-install-progress";
+/// Carries an [`MsLoginPrompt`].
+pub const EVT_MS_LOGIN_PROMPT: &str = "ms-login-prompt";
+/// Carries an [`MsLoginResult`].
+pub const EVT_MS_LOGIN_RESULT: &str = "ms-login-result";
+/// Says a saved account changed, e.g. its player name, so the frontend
+/// refetches the accounts. Carries the account's dashed UUID.
+pub const EVT_ACCOUNTS_CHANGED: &str = "accounts-changed";
+/// Carries an [`UpdateProgress`].
+pub const EVT_UPDATE_PROGRESS: &str = "update-download-progress";
+
+/// One log line emitted by an instance launch, as [`EVT_INSTANCE_LOG`], from
+/// the backend's `launch_instance` and consumed by `PlayPage` on the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogLine {
     pub instance_id: String,
@@ -14,8 +28,8 @@ pub struct LogLine {
 
 /// Install pipeline progress for a single instance creation.
 ///
-/// Emitted via `app.emit("instance-install-progress", InstallProgress { … })`
-/// from `emit_progress` and consumed by the frontend's `ActivityDock`.
+/// Emitted as [`EVT_INSTALL_PROGRESS`] from `emit_progress` and consumed by
+/// the frontend's `ActivityDock`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InstallProgress {
     pub id: String,
@@ -32,7 +46,7 @@ pub struct InstallProgress {
 /// The MS v2.0 consumer endpoint does not return `verification_uri_complete`,
 /// so the user opens `verification_uri` and types `user_code` to authenticate.
 ///
-/// Emitted as `ms-login-prompt`.
+/// Emitted as [`EVT_MS_LOGIN_PROMPT`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MsLoginPrompt {
@@ -47,7 +61,7 @@ pub struct MsLoginPrompt {
 /// `"success"`, `"error"`, `"cancelled"`, or `"expired"`; `account` is set only
 /// on `success` and carries the newly persisted account's public summary.
 ///
-/// Emitted as `ms-login-result`.
+/// Emitted as [`EVT_MS_LOGIN_RESULT`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MsLoginResult {
@@ -77,7 +91,7 @@ pub enum UpdateCheck {
 /// How far an update's download has got. `total` is absent when the server
 /// sends no length.
 ///
-/// Emitted as `update-download-progress`.
+/// Emitted as [`EVT_UPDATE_PROGRESS`].
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct UpdateProgress {
     pub downloaded: u64,

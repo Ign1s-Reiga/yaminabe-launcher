@@ -9,7 +9,7 @@ use log::info;
 use tauri::{AppHandle, Emitter, State};
 use yaminabe_launcher_shared::datamodels::{InstanceMeta, LaunchMode};
 use yaminabe_launcher_shared::error::Error;
-use yaminabe_launcher_shared::ipc::LogLine;
+use yaminabe_launcher_shared::ipc::{LogLine, EVT_ACCOUNTS_CHANGED, EVT_INSTANCE_LOG, EVT_PROCESS_STARTED};
 use yaminabe_launcher_shared::datamodels::ClientManifest;
 use crate::{assets_dir, libraries_dir, runtimes_dir, versions_dir, ActivityGuard, AppState, InstanceActivity};
 use crate::auth::{hydrate_account, MinecraftAccount, MinecraftAccountRecord};
@@ -25,27 +25,23 @@ use self::assets::download_assets;
 use self::classpath::{build_classpath, extract_natives, find_main_class_jar, jar_contains_class};
 use self::manifest::{load_manifest, merge_manifest};
 
-/// Tells the UI that a saved account changed, e.g. its player name, so it
-/// refetches the accounts. The payload is the account's dashed UUID.
-const EVT_ACCOUNTS_CHANGED: &str = "accounts-changed";
-
 /// Emit a progress line (`done: false`) to an instance's `instance-log` stream.
 fn emit_log(app: &AppHandle, instance_id: &str, line: impl Into<String>) {
-    app.emit("instance-log", LogLine {
+    app.emit(EVT_INSTANCE_LOG, LogLine {
         instance_id: instance_id.to_string(), line: line.into(), done: false, error: None,
     }).ok();
 }
 
 /// Emit a terminal line (`done: true`, no error).
 fn emit_done(app: &AppHandle, instance_id: &str, line: impl Into<String>) {
-    app.emit("instance-log", LogLine {
+    app.emit(EVT_INSTANCE_LOG, LogLine {
         instance_id: instance_id.to_string(), line: line.into(), done: true, error: None,
     }).ok();
 }
 
 /// Emit a terminal failure line (`done: true`) carrying the error text.
 fn emit_fail(app: &AppHandle, instance_id: &str, message: String) {
-    app.emit("instance-log", LogLine {
+    app.emit(EVT_INSTANCE_LOG, LogLine {
         instance_id: instance_id.to_string(), line: message.clone(), done: true, error: Some(message),
     }).ok();
 }
@@ -340,68 +336,64 @@ async fn resolve_account(
     app: &AppHandle,
     instance_id: &str,
 ) -> Result<Option<MinecraftAccount>, Error> {
-    // The account, with the record it was read from, which a renewal is saved
-    // against.
-    let mut auth: Option<(MinecraftAccount, MinecraftAccountRecord)> = match auth_record {
-        Some(record) => Some((hydrate_account(&record).map_err(|e| Error::Auth(format!(
-            "Stored credentials for {} are missing or unreadable ({e}). \
-             Sign in again from Settings → Accounts.",
-            record.username
-        )))?, record)),
-        None => None,
+    let Some(record) = auth_record else {
+        emit_log(app, instance_id, if launch_mode == LaunchMode::Offline {
+            "Offline mode selected — launching as OfflinePlayer."
+        } else {
+            "No Microsoft account selected — launching as OfflinePlayer."
+        });
+        return Ok(None);
     };
+    let mut account = hydrate_account(&record).map_err(|e| Error::Auth(format!(
+        "Stored credentials for {} are missing or unreadable ({e}). \
+         Sign in again from Settings → Accounts.",
+        record.username
+    )))?;
 
-    if let Some((account, read)) = auth.as_mut() {
-        let renewal = renew_session(&state.http_client, account, |line| emit_log(app, instance_id, line)).await;
-        match renewal {
-            Ok(Renewal::Current) => {}
-            Ok(renewal @ (Renewal::Updated | Renewal::Renamed)) => {
-                // Failure is non-fatal: `account` still holds good tokens for
-                // this launch. The store's lock is let go before emitting.
-                let with_secret = matches!(renewal, Renewal::Updated);
-                let saved = save_renewal(&mut state.account_store.lock().unwrap(), account, read, with_secret);
-                if let Some(e) = saved.failure {
-                    emit_log(app, instance_id, format!("warning: failed to save the renewed sign-in: {e}"));
-                }
-                if !saved.applied {
-                    emit_log(app, instance_id,
-                        "note: the saved sign-in changed during this launch, as it does when the \
-                         account is removed, signed in again or renewed by the launcher's own check, \
-                         so this launch's renewal was not saved.",
-                    );
-                }
-                if saved.renamed
-                    && let Err(e) = app.emit(EVT_ACCOUNTS_CHANGED, account.uuid_dashed())
-                {
-                    emit_log(app, instance_id, format!("warning: could not show the new player name: {e}"));
-                }
+    let renewal = renew_session(&state.http_client, &mut account, |line| emit_log(app, instance_id, line)).await;
+    match renewal {
+        Ok(Renewal::Current) => {}
+        Ok(renewal @ (Renewal::Updated | Renewal::Renamed)) => {
+            // Failure is non-fatal: `account` still holds good tokens for this
+            // launch. The store's lock is let go before emitting.
+            let with_secret = matches!(renewal, Renewal::Updated);
+            let saved = save_renewal(&mut state.account_store.lock().unwrap(), &account, &record, with_secret);
+            if let Some(e) = saved.failure {
+                emit_log(app, instance_id, format!("warning: failed to save the renewed sign-in: {e}"));
             }
-            Ok(Renewal::Unchecked(e)) => emit_log(app, instance_id, format!(
-                "warning: could not check the sign-in ({e}); launching with it as saved."
-            )),
-            Err(e @ Error::GameNotOwned) => return Err(Error::Auth(format!(
-                "{} cannot launch the game. {e} Select another account in Settings → Accounts.",
-                account.username
-            ))),
-            Err(e) if e.is_inconclusive() => return Err(Error::Auth(format!(
-                "The sign-in for {} could not be renewed, because Microsoft or Minecraft \
-                 services did not answer as expected: {e}. Try again in a moment.",
-                account.username
-            ))),
-            Err(e) => return Err(Error::Auth(format!(
-                "The sign-in for {} could not be renewed: {e}. \
-                 Sign in again from Settings → Accounts.",
-                account.username
-            ))),
+            if !saved.applied {
+                emit_log(app, instance_id,
+                    "note: the saved sign-in changed during this launch, as it does when the \
+                     account is removed, signed in again or renewed by the launcher's own check, \
+                     so this launch's renewal was not saved.",
+                );
+            }
+            if saved.renamed
+                && let Err(e) = app.emit(EVT_ACCOUNTS_CHANGED, account.uuid_dashed())
+            {
+                emit_log(app, instance_id, format!("warning: could not show the new player name: {e}"));
+            }
         }
-        emit_log(app, instance_id, format!("Signed in as {}.", account.username));
-    } else if launch_mode == LaunchMode::Offline {
-        emit_log(app, instance_id, "Offline mode selected — launching as OfflinePlayer.");
-    } else {
-        emit_log(app, instance_id, "No Microsoft account selected — launching as OfflinePlayer.");
+        Ok(Renewal::Unchecked(e)) => emit_log(app, instance_id, format!(
+            "warning: could not check the sign-in ({e}); launching with it as saved."
+        )),
+        Err(e @ Error::GameNotOwned) => return Err(Error::Auth(format!(
+            "{} cannot launch the game. {e} Select another account in Settings → Accounts.",
+            account.username
+        ))),
+        Err(e) if e.is_inconclusive() => return Err(Error::Auth(format!(
+            "The sign-in for {} could not be renewed, because Microsoft or Minecraft \
+             services did not answer as expected: {e}. Try again in a moment.",
+            account.username
+        ))),
+        Err(e) => return Err(Error::Auth(format!(
+            "The sign-in for {} could not be renewed: {e}. \
+             Sign in again from Settings → Accounts.",
+            account.username
+        ))),
     }
-
-    Ok(auth.map(|(account, _)| account))
+    emit_log(app, instance_id, format!("Signed in as {}.", account.username));
+    Ok(Some(account))
 }
 
 /// Resolve the Java executable: the instance's configured `jrePath` wins;
@@ -511,7 +503,7 @@ async fn spawn_and_drain(
         // Frontend gates its Stop control on this event — without it, a click
         // during the preparation phase would reach kill_instance before a PID
         // is recorded (the entry is still InstanceActivity::Preparing).
-        app.emit("instance-process-started", instance_id).ok();
+        app.emit(EVT_PROCESS_STARTED, instance_id).ok();
     }
 
     // Read bytes (not lines) and decode lossily — Java stderr is system-
@@ -530,7 +522,7 @@ async fn spawn_and_drain(
             let raw = String::from_utf8_lossy(bytes);
             let trimmed = raw.trim_end_matches(|c| c == '\r' || c == '\n');
             let line = if is_stderr { format!("[STDERR] {trimmed}") } else { trimmed.to_string() };
-            app.emit("instance-log", LogLine {
+            app.emit(EVT_INSTANCE_LOG, LogLine {
                 instance_id: id.to_string(), line, done: false, error: None,
             }).ok();
         };
