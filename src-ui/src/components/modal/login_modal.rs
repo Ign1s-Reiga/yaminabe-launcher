@@ -4,7 +4,7 @@ use bamboo_css_macro::css;
 use leptos::prelude::*;
 use leptos::{component, view, IntoView};
 use yaminabe_launcher_shared::datamodels::AccountSummary;
-use yaminabe_launcher_shared::ipc::{MsLoginPrompt, MsLoginResult};
+use yaminabe_launcher_shared::ipc::{MsLoginPrompt, MsLoginResult, EVT_MS_LOGIN_PROMPT, EVT_MS_LOGIN_RESULT};
 
 use crate::components::ui::*;
 use crate::ipc;
@@ -39,12 +39,12 @@ pub fn LoginModal(
     });
 
     let prompt_token = my_token;
-    ipc::on_event::<MsLoginPrompt, _>("ms-login-prompt", move |prompt| {
+    ipc::on_event::<MsLoginPrompt, _>(EVT_MS_LOGIN_PROMPT, move |prompt| {
         if ACTIVE_MODAL.with(|c| c.get()) != prompt_token { return; }
         phase.set(LoginPhase::Prompted(prompt));
     });
     let result_token = my_token;
-    ipc::on_event::<MsLoginResult, _>("ms-login-result", move |result| {
+    ipc::on_event::<MsLoginResult, _>(EVT_MS_LOGIN_RESULT, move |result| {
         if ACTIVE_MODAL.with(|c| c.get()) != result_token { return; }
         match result.kind.as_str() {
             "success" => {

@@ -42,7 +42,7 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use tauri::{Emitter, Manager};
 use yaminabe_launcher_shared::datamodels::{AppSettings, JavaInstall, ModProjectInfo};
 use yaminabe_launcher_shared::error::InitializationError;
-use yaminabe_launcher_shared::ipc::InstallProgress;
+use yaminabe_launcher_shared::ipc::{InstallProgress, EVT_INSTALL_PROGRESS};
 
 pub fn emit_progress(
     app: &tauri::AppHandle,
@@ -53,7 +53,7 @@ pub fn emit_progress(
     error: Option<String>,
 ) {
     if let Err(e) = app.emit(
-        "instance-install-progress",
+        EVT_INSTALL_PROGRESS,
         InstallProgress {
             id: id.to_string(),
             name: name.to_string(),
@@ -62,7 +62,7 @@ pub fn emit_progress(
             error,
         },
     ) {
-        warn!("failed to emit instance-install-progress for {id}: {e}");
+        warn!("failed to emit {EVT_INSTALL_PROGRESS} for {id}: {e}");
     }
 }
 

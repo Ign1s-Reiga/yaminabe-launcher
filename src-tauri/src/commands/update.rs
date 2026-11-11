@@ -5,7 +5,7 @@ use log::warn;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_updater::{Update, UpdaterExt};
 use yaminabe_launcher_shared::error::Error;
-use yaminabe_launcher_shared::ipc::{ReleaseInfo, UpdateCheck, UpdateProgress};
+use yaminabe_launcher_shared::ipc::{ReleaseInfo, UpdateCheck, UpdateProgress, EVT_UPDATE_PROGRESS};
 
 /// The release the last check found, kept so the install that follows fetches
 /// exactly what the user was shown.
@@ -81,8 +81,8 @@ pub async fn install_update(
             |chunk, total| {
                 downloaded += chunk as u64;
                 let progress = UpdateProgress { downloaded, total };
-                if let Err(e) = app.emit("update-download-progress", progress) {
-                    warn!("failed to emit update-download-progress: {e}");
+                if let Err(e) = app.emit(EVT_UPDATE_PROGRESS, progress) {
+                    warn!("failed to emit {EVT_UPDATE_PROGRESS}: {e}");
                 }
             },
             || {},

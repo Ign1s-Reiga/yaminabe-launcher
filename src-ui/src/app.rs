@@ -28,7 +28,7 @@ use phosphor_leptos::{
 use yaminabe_launcher_shared::datamodels::{
     AppSettings, InstanceList, InstanceMeta, LaunchMode, ModProjectInfo, SkippedInstance,
 };
-use yaminabe_launcher_shared::ipc::LogLine;
+use yaminabe_launcher_shared::ipc::{LogLine, EVT_INSTALL_PROGRESS, EVT_INSTANCE_LOG, EVT_PROCESS_STARTED};
 
 styled!(MainViewWrapper, div, {
     height: 100vh;
@@ -120,7 +120,7 @@ pub fn App() -> impl IntoView {
     let dock_expanded = RwSignal::new(false);
     provide_context(ActivityDockOpen(dock_expanded));
 
-    ipc::on_event::<InstallJob, _>("instance-install-progress", move |job| {
+    ipc::on_event::<InstallJob, _>(EVT_INSTALL_PROGRESS, move |job| {
         let job_succeeded = job.done && job.error.is_none();
         let is_new = install_jobs.with_untracked(|list| !list.iter().any(|j| j.id == job.id));
         // A job that arrives already failed still has something to say. Without
@@ -140,7 +140,7 @@ pub fn App() -> impl IntoView {
         }
     });
 
-    ipc::on_event::<LogLine, _>("instance-log", move |msg| {
+    ipc::on_event::<LogLine, _>(EVT_INSTANCE_LOG, move |msg| {
         running_registry.update(|list| {
             if let Some(r) = list.iter_mut().find(|r| r.id == msg.instance_id) {
                 r.log_lines.push(msg.line);
@@ -153,7 +153,7 @@ pub fn App() -> impl IntoView {
             }
         });
     });
-    ipc::on_event::<String, _>("instance-process-started", move |id| {
+    ipc::on_event::<String, _>(EVT_PROCESS_STARTED, move |id| {
         running_registry.update(|list| {
             if let Some(r) = list.iter_mut().find(|r| r.id == id) {
                 // Promote only from Preparing so a race can't resurrect a
