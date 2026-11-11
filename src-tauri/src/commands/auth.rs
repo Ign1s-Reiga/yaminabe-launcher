@@ -6,20 +6,16 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::time::sleep;
 use yaminabe_launcher_shared::datamodels::{AccountSession, AccountSummary};
 use yaminabe_launcher_shared::error::Error;
-use yaminabe_launcher_shared::ipc::{MsLoginPrompt, MsLoginResult};
+use yaminabe_launcher_shared::ipc::{MsLoginPrompt, MsLoginResult, EVT_MS_LOGIN_PROMPT, EVT_MS_LOGIN_RESULT};
 use crate::AppState;
 
 use crate::auth::flow::{
-    finalize_minecraft_login, make_qr_svg, poll_token, request_device_code, require_client_id, Poll, PollPace,
+    make_qr_svg, minecraft_sign_in, poll_token, request_device_code, require_client_id, Poll, PollPace,
 };
-use crate::auth::model::{format_uuid_dashed, now_epoch_seconds, MinecraftAccount, MinecraftAccountRecord, MinecraftAccountSecret};
+use crate::auth::model::{format_uuid_dashed, MinecraftAccountRecord};
 use crate::auth::session::{renew_session, save_renewal, Renewal};
-use crate::auth::store::{delete_secret, write_secret};
+use crate::auth::store::{delete_secret, save_record, write_account_secret};
 use crate::auth::hydrate_account;
-
-const EVT_PROMPT: &str = "ms-login-prompt";
-const EVT_RESULT: &str = "ms-login-result";
-
 
 fn emit_result(app: &AppHandle, kind: &str, message: impl Into<String>, account: Option<AccountSummary>) {
     let payload = MsLoginResult {
@@ -27,8 +23,8 @@ fn emit_result(app: &AppHandle, kind: &str, message: impl Into<String>, account:
         message: message.into(),
         account,
     };
-    if let Err(e) = app.emit(EVT_RESULT, payload) {
-        warn!("failed to emit {EVT_RESULT}: {e}");
+    if let Err(e) = app.emit(EVT_MS_LOGIN_RESULT, payload) {
+        warn!("failed to emit {EVT_MS_LOGIN_RESULT}: {e}");
     }
 }
 
@@ -141,6 +137,13 @@ pub async fn cancel_microsoft_login(state: State<'_, AppState>) -> Result<(), Er
     Ok(())
 }
 
+/// How a device-code sign-in ended, other than with an error.
+enum LoginEnd {
+    SignedIn(AccountSummary),
+    Cancelled,
+    Expired,
+}
+
 /// Drive the device-code grant from start to finish. Emits `ms-login-prompt`
 /// once the device code has been registered and `ms-login-result` exactly
 /// once at the end regardless of outcome.
@@ -149,36 +152,36 @@ pub async fn start_microsoft_login(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), Error> {
-    let client_id = match require_client_id() {
-        Ok(id) => id,
+    match device_code_sign_in(&app, &state).await {
+        Ok(LoginEnd::SignedIn(summary)) => {
+            emit_result(&app, "success", format!("Signed in as {}.", summary.username), Some(summary));
+            Ok(())
+        }
+        Ok(LoginEnd::Cancelled) => {
+            emit_result(&app, "cancelled", "Login cancelled.", None);
+            Ok(())
+        }
+        Ok(LoginEnd::Expired) => {
+            let msg = "The login request expired before authentication completed.";
+            emit_result(&app, "expired", msg, None);
+            Err(Error::Auth(msg.into()))
+        }
         Err(e) => {
             emit_result(&app, "error", e.to_string(), None);
-            return Err(e);
+            Err(e)
         }
-    };
+    }
+}
 
+async fn device_code_sign_in(app: &AppHandle, state: &AppState) -> Result<LoginEnd, Error> {
+    let client_id = require_client_id()?;
     state.ms_login_cancel.store(false, Ordering::SeqCst);
-    let cancel = state.ms_login_cancel.clone();
-    let client = state.http_client.clone();
+    let client = &state.http_client;
 
-    let device = match request_device_code(&client, client_id).await {
-        Ok(d) => d,
-        Err(e) => {
-            emit_result(&app, "error", e.to_string(), None);
-            return Err(e);
-        }
-    };
-
-    let qr_svg = match make_qr_svg(&device.verification_uri) {
-        Ok(svg) => svg,
-        Err(e) => {
-            emit_result(&app, "error", e.to_string(), None);
-            return Err(e);
-        }
-    };
-
+    let device = request_device_code(client, client_id).await?;
+    let qr_svg = make_qr_svg(&device.verification_uri)?;
     if let Err(e) = app.emit(
-        EVT_PROMPT,
+        EVT_MS_LOGIN_PROMPT,
         MsLoginPrompt {
             verification_uri: device.verification_uri.clone(),
             user_code: device.user_code.clone(),
@@ -187,27 +190,21 @@ pub async fn start_microsoft_login(
             interval: device.interval,
         },
     ) {
-        warn!("failed to emit {EVT_PROMPT}: {e}");
+        warn!("failed to emit {EVT_MS_LOGIN_PROMPT}: {e}");
     }
 
     // Poll until the token endpoint returns a grant, the user cancels, or the
     // device code expires, at the pace `PollPace` sets. `Instant` keeps a
     // change to the system clock from ending the sign-in early.
-    let expire = || {
-        let msg = "The login request expired before authentication completed.";
-        emit_result(&app, "expired", msg, None);
-        Err(Error::Auth(msg.into()))
-    };
     let expires_at = Instant::now() + Duration::from_secs(u64::from(device.expires_in));
     let mut pace = PollPace::new(device.interval);
     let mut waited = 0u64;
     let token = loop {
-        if cancel.load(Ordering::SeqCst) {
-            emit_result(&app, "cancelled", "Login cancelled.", None);
-            return Ok(());
+        if state.ms_login_cancel.load(Ordering::SeqCst) {
+            return Ok(LoginEnd::Cancelled);
         }
         if Instant::now() >= expires_at {
-            return expire();
+            return Ok(LoginEnd::Expired);
         }
         // Wait in one-second steps, so a cancel or the code's expiry is seen
         // within a second rather than after a whole wait.
@@ -217,7 +214,7 @@ pub async fn start_microsoft_login(
             continue;
         }
         waited = 0;
-        match poll_token(&client, client_id, &device.device_code).await {
+        match poll_token(client, client_id, &device.device_code).await {
             Ok(Poll::Granted(t)) => break t,
             Ok(Poll::Pending) => pace.answered(),
             Ok(Poll::SlowDown) => pace.slow_down(),
@@ -225,63 +222,26 @@ pub async fn start_microsoft_login(
                 warn!("token poll turned away for coming too often, resting {retry_after:?} s");
                 pace.unclear(retry_after);
             }
-            Ok(Poll::Expired) => return expire(),
+            Ok(Poll::Expired) => return Ok(LoginEnd::Expired),
             // One poll that gets no clear answer does not end the sign-in;
             // the code expiring does.
             Err(e) if e.is_inconclusive() => {
                 warn!("token poll got no clear answer, polling again later: {e}");
                 pace.unclear(None);
             }
-            Err(e) => {
-                emit_result(&app, "error", e.to_string(), None);
-                return Err(e);
-            }
+            Err(e) => return Err(e),
         }
     };
 
-    let (profile, mc, xuid) = match finalize_minecraft_login(&client, &token.access_token).await {
-        Ok(v) => v,
-        Err(e) => {
-            emit_result(&app, "error", e.to_string(), None);
-            return Err(e);
-        }
-    };
-
-    let account = MinecraftAccount {
-        uuid: profile.id,
-        username: profile.name,
-        mc_access_token: mc.access_token,
-        expires_at: now_epoch_seconds() + mc.expires_in as i64,
-        ms_refresh_token: token.refresh_token,
-        xuid,
-    };
-    let summary = account.summary();
-
+    let account = minecraft_sign_in(client, token).await?;
     // Keyring write must succeed before login is reported as successful:
-    // otherwise the user sees a selectable account whose next launch fails
-    // in `hydrate_account` because no tokens are persisted.
-    let secret = MinecraftAccountSecret {
-        mc_access_token: account.mc_access_token.clone(),
-        ms_refresh_token: account.ms_refresh_token.clone(),
-    };
-    if let Err(e) = write_secret(&account.uuid, &secret) {
+    // otherwise the account is listed but its next launch finds no tokens.
+    if let Err(e) = write_account_secret(&account) {
         warn!("keyring write failed for {}: {e}", account.uuid);
-        emit_result(&app, "error", e.to_string(), None);
         return Err(e);
     }
-
-    {
-        let mut store = state.account_store.lock().unwrap();
-        store.upsert(MinecraftAccountRecord::from_account(&account));
-        if let Err(e) = store.save() {
-            warn!("failed to save accounts.json after login: {e}");
-        }
+    if let Err(e) = save_record(&mut state.account_store.lock().unwrap(), &account) {
+        warn!("failed to save accounts.json after login: {e}");
     }
-    emit_result(
-        &app,
-        "success",
-        format!("Signed in as {}.", summary.username),
-        Some(summary),
-    );
-    Ok(())
+    Ok(LoginEnd::SignedIn(account.summary()))
 }

@@ -66,7 +66,7 @@ fn read_secret(uuid: &str) -> Result<MinecraftAccountSecret, Error> {
     })
 }
 
-pub(crate) fn write_secret(uuid: &str, secret: &MinecraftAccountSecret) -> Result<(), Error> {
+fn write_secret(uuid: &str, secret: &MinecraftAccountSecret) -> Result<(), Error> {
     write_one(&format!("{uuid}{MC_ACCESS_SUFFIX}"), &secret.mc_access_token)?;
     write_one(&format!("{uuid}{MS_REFRESH_SUFFIX}"), &secret.ms_refresh_token)?;
     Ok(())
