@@ -3,6 +3,17 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.2.6 — 2026-11-11
+
+- Never check with Microsoft sooner than it asks in the sign-in dialog. Since
+  1.2.5, after Microsoft had asked several times for fewer checks, the dialog
+  could check sooner than asked.
+- Wait as long as Microsoft asks when it turns the sign-in dialog away for
+  checking too often.
+- Keep the sign-in dialog open when the computer's clock changes, for example
+  when it is corrected over the network. Until now, a clock change could end
+  the sign-in as expired right after the code appeared.
+
 ## 1.2.5 — 2026-11-09
 
 - Check with Microsoft less often in the sign-in dialog while it is being
