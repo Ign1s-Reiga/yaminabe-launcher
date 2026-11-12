@@ -155,6 +155,15 @@ fn settings_path() -> &'static PathBuf {
 pub fn accounts_path() -> &'static PathBuf {
     ACCOUNTS_PATH.get().unwrap()
 }
+
+/// Point `accounts_path` at a temporary file for tests. Every test in a run
+/// that saves accounts shares it, so none may rely on what it holds.
+#[cfg(test)]
+pub(crate) fn test_accounts_path() -> &'static PathBuf {
+    ACCOUNTS_PATH.get_or_init(|| {
+        std::env::temp_dir().join(format!("yaminabe-accounts-test-{}.json", std::process::id()))
+    })
+}
 pub fn bookmarks_path() -> &'static PathBuf {
     BOOKMARKS_PATH.get().unwrap()
 }
