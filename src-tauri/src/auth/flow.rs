@@ -198,21 +198,27 @@ fn retry_after_seconds(value: &str, now: i64) -> Option<u64> {
 }
 
 /// Seconds from `now` until an HTTP date such as
-/// `Wed, 11 Nov 2026 12:05:00 GMT`, 0 if it has passed.
+/// `Wed, 11 Nov 2026 12:05:00 GMT`, 0 if it has passed. A date that does not
+/// exist, or outside years 1 to 9999, is not read.
 fn seconds_until_http_date(value: &str, now: i64) -> Option<u64> {
     const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     let parts: Vec<&str> = value.split_whitespace().collect();
     let [_, day, month, year, time, "GMT"] = parts.as_slice() else {
         return None;
     };
-    let day: i64 = day.parse().ok()?;
+    let day: i64 = day.parse().ok().filter(|d| (1..=31).contains(d))?;
     let month = MONTHS.iter().position(|m| m == month)? as i64 + 1;
-    let year: i64 = year.parse().ok()?;
+    let year: i64 = year.parse().ok().filter(|y| (1..=9999).contains(y))?;
     let hms: Vec<i64> = time.split(':').map(str::parse).collect::<Result<_, _>>().ok()?;
-    let [h, m, s] = hms.as_slice() else {
+    let &[h @ 0..=23, m @ 0..=59, s @ 0..=60] = hms.as_slice() else {
         return None;
     };
-    let at = days_from_civil(year, month, day) * 86_400 + h * 3600 + m * 60 + s;
+    let date = days_from_civil(year, month, day);
+    let next_month = if month == 12 { days_from_civil(year + 1, 1, 1) } else { days_from_civil(year, month + 1, 1) };
+    if date >= next_month {
+        return None;
+    }
+    let at = date * 86_400 + h * 3600 + m * 60 + s;
     Some(u64::try_from(at - now).unwrap_or(0))
 }
 
@@ -769,5 +775,16 @@ mod tests {
         assert_eq!(retry_after_seconds("Wed, 11 Nov 2026 12:05:00 GMT", 1_794_398_400), Some(300));
         assert_eq!(retry_after_seconds("soon", now), None);
         assert_eq!(retry_after_seconds("Sun, 06 Nov 1994 08:51:37 PST", now), None);
+    }
+
+    #[test]
+    fn a_date_that_does_not_exist_is_not_read() {
+        let now = 784_111_777;
+        assert_eq!(retry_after_seconds("Tue, 31 Feb 2026 08:00:00 GMT", now), None);
+        assert_eq!(retry_after_seconds("Sun, 00 Nov 1994 08:00:00 GMT", now), None);
+        assert_eq!(retry_after_seconds("Sun, 06 Nov 1994 25:99:99 GMT", now), None);
+        assert_eq!(retry_after_seconds("Sun, 06 Nov 99999999999999999 08:00:00 GMT", now), None);
+        assert_eq!(retry_after_seconds("Sun, 9223372036854775807 Nov 1994 08:00:00 GMT", now), None);
+        assert_eq!(retry_after_seconds("Sat, 29 Feb 2028 00:00:00 GMT", now).map(|s| s > 0), Some(true));
     }
 }

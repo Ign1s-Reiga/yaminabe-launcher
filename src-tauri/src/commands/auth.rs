@@ -203,12 +203,12 @@ async fn device_code_sign_in(app: &AppHandle, state: &AppState) -> Result<LoginE
         if state.ms_login_cancel.load(Ordering::SeqCst) {
             return Ok(LoginEnd::Cancelled);
         }
-        // Once the code's time is up, one last poll catches a sign-in finished
-        // during the final wait.
-        let last = Instant::now() >= expires_at;
+        if Instant::now() >= expires_at {
+            return Ok(LoginEnd::Expired);
+        }
         // Wait in one-second steps, so a cancel or the code's expiry is seen
         // within a second rather than after a whole wait.
-        if !last && waited < pace.wait() {
+        if waited < pace.wait() {
             sleep(Duration::from_secs(1)).await;
             waited += 1;
             continue;
@@ -230,9 +230,6 @@ async fn device_code_sign_in(app: &AppHandle, state: &AppState) -> Result<LoginE
                 pace.unclear(None);
             }
             Err(e) => return Err(e),
-        }
-        if last {
-            return Ok(LoginEnd::Expired);
         }
     };
 

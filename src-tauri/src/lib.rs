@@ -157,7 +157,8 @@ pub fn accounts_path() -> &'static PathBuf {
 }
 
 /// Point `accounts_path` at a temporary file for tests. Every test in a run
-/// that saves accounts shares it, so none may rely on what it holds.
+/// that saves accounts shares it, so none may rely on what it holds, and each
+/// removes it when done.
 #[cfg(test)]
 pub(crate) fn test_accounts_path() -> &'static PathBuf {
     ACCOUNTS_PATH.get_or_init(|| {
