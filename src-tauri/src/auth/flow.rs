@@ -168,8 +168,9 @@ impl PollPace {
         self.interval.saturating_add(self.backoff.max(self.rest))
     }
 
-    /// A clear answer halves the backoff rather than dropping it, so an
-    /// endpoint that turns away every other poll still gets spaced out.
+    /// A clear answer halves the backoff rather than dropping it, so the pace
+    /// comes back to Microsoft's over a few answers. An endpoint that turns
+    /// away every other poll keeps about 5 s of it.
     pub(crate) fn answered(&mut self) {
         self.backoff /= 2;
         self.rest = 0;
