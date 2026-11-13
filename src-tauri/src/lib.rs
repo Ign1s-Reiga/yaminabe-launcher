@@ -156,15 +156,26 @@ pub fn accounts_path() -> &'static PathBuf {
     ACCOUNTS_PATH.get().unwrap()
 }
 
-/// Point `accounts_path` at a temporary file for tests. Every test in a run
-/// that saves accounts shares it, so none may rely on what it holds, and each
-/// removes it when done.
+/// Point `accounts_path` at a temporary file for tests, removed when the
+/// returned guard drops, even if the test fails. Every test in a run that
+/// saves accounts shares it, so none may rely on what it holds.
 #[cfg(test)]
-pub(crate) fn test_accounts_path() -> &'static PathBuf {
-    ACCOUNTS_PATH.get_or_init(|| {
+pub(crate) fn test_accounts_path() -> TestAccountsFile {
+    TestAccountsFile(ACCOUNTS_PATH.get_or_init(|| {
         std::env::temp_dir().join(format!("yaminabe-accounts-test-{}.json", std::process::id()))
-    })
+    }))
 }
+
+#[cfg(test)]
+pub(crate) struct TestAccountsFile(&'static PathBuf);
+
+#[cfg(test)]
+impl Drop for TestAccountsFile {
+    fn drop(&mut self) {
+        std::fs::remove_file(self.0).ok();
+    }
+}
+
 pub fn bookmarks_path() -> &'static PathBuf {
     BOOKMARKS_PATH.get().unwrap()
 }
