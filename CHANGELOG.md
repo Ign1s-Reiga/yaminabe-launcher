@@ -10,8 +10,6 @@ each release is a `## <version> — <date>` heading followed by bullet points.
   check, for longer than the code lasts.
 - Go back to the usual pace within a few checks after a short network drop in
   the sign-in dialog.
-- Check once more when the sign-in code runs out, so a sign-in you finished
-  just before is not lost.
 
 ## 1.2.6 — 2026-11-11
 
