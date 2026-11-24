@@ -2,6 +2,7 @@ use bamboo_css_macro::css;
 use leptos::__reexports::send_wrapper::SendWrapper;
 use leptos::prelude::*;
 use leptos::{IntoView, component, html, view, web_sys};
+use std::collections::VecDeque;
 use std::{cell::RefCell, rc::Rc};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
@@ -136,6 +137,17 @@ impl LogScrollState {
     }
 }
 
+fn join_lines(lines: &VecDeque<String>) -> String {
+    let mut text = String::with_capacity(lines.iter().map(|l| l.len() + 1).sum());
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            text.push('\n');
+        }
+        text.push_str(line);
+    }
+    text
+}
+
 fn log_viewer_class() -> &'static str {
     css! {
         display: flex;
@@ -184,7 +196,7 @@ fn log_box_class() -> &'static str {
 /// above the log box — typically a `<Button>` or two (Stop, Open folder).
 #[component]
 pub fn LogViewer(
-    #[prop(into)] log_lines: Signal<Vec<String>>,
+    #[prop(into)] log_lines: Signal<VecDeque<String>>,
     children: Children,
 ) -> impl IntoView {
     let log_box_ref: NodeRef<html::Div> = NodeRef::new();
@@ -255,7 +267,7 @@ pub fn LogViewer(
                     scroll.finish_text_selection();
                 }
             >
-                {move || log_lines.get().join("\n")}
+                {move || log_lines.with(join_lines)}
             </div>
         </div>
     }

@@ -143,7 +143,7 @@ pub fn App() -> impl IntoView {
     ipc::on_event::<LogLine, _>(EVT_INSTANCE_LOG, move |msg| {
         running_registry.update(|list| {
             if let Some(r) = list.iter_mut().find(|r| r.id == msg.instance_id) {
-                r.log_lines.push(msg.line);
+                r.push_log(msg.line);
                 if msg.done {
                     r.status = match msg.error {
                         Some(e) => RunStatus::Errored(e),
