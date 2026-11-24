@@ -11,6 +11,7 @@ use leptos::prelude::*;
 use leptos::{IntoView, component, view};
 use leptos_router::hooks::{use_navigate, use_params, use_query_map};
 use leptos_router::params::Params;
+use std::collections::VecDeque;
 use yaminabe_launcher_shared::datamodels::{InstanceMeta, LaunchMode};
 
 #[derive(PartialEq, Clone, Params)]
@@ -119,7 +120,7 @@ pub fn PlayPage() -> impl IntoView {
 fn PlayContent(
     instance: InstanceMeta,
     registry: RunningRegistry,
-    log_lines: Signal<Vec<String>>,
+    log_lines: Signal<VecDeque<String>>,
     status: Memo<RunStatus>,
     launch_mode: Memo<LaunchMode>,
 ) -> impl IntoView {
