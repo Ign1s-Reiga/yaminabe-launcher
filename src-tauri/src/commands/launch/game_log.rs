@@ -26,25 +26,34 @@ impl Entry {
 #[derive(Default)]
 pub(super) struct GameLogReader {
     pending: Vec<String>,
+    /// Whether the pending event's last line left a CDATA section open, so the
+    /// next line is part of a message rather than the XML around it.
+    in_cdata: bool,
 }
 
 impl GameLogReader {
     /// Read one output line, adding the entries it completes to `out`.
     pub fn line(&mut self, line: String, out: &mut Vec<Entry>) {
-        let starts = line.trim_start().starts_with(EVENT_START);
+        let starts = !self.in_cdata && line.trim_start().starts_with(EVENT_START);
         if self.pending.is_empty() && !starts {
             out.push(Entry::plain(line));
             return;
         }
         if starts {
             self.flush(out);
+        } else if !self.in_cdata && !line.trim_start().starts_with('<') {
+            // Printed by something else while an event was being written.
+            out.push(Entry::plain(line));
+            return;
         }
-        let ends = line.contains(EVENT_END);
+        self.in_cdata = cdata_open_after(&line, self.in_cdata);
+        let ends = !self.in_cdata && line.trim_end().ends_with(EVENT_END);
         self.pending.push(line);
         if ends {
             match read_event(&self.pending.join("\n")) {
                 Some(entry) => {
                     self.pending.clear();
+                    self.in_cdata = false;
                     out.push(entry);
                 }
                 None => self.flush(out),
@@ -60,7 +69,22 @@ impl GameLogReader {
     }
 
     fn flush(&mut self, out: &mut Vec<Entry>) {
+        self.in_cdata = false;
         out.extend(self.pending.drain(..).map(Entry::plain));
+    }
+}
+
+/// Whether a CDATA section is open at the end of `line`, given whether one was
+/// open at its start.
+fn cdata_open_after(line: &str, mut open: bool) -> bool {
+    let mut rest = line;
+    loop {
+        let (marker, found) = if open { ("]]>", false) } else { ("<![CDATA[", true) };
+        let Some(at) = rest.find(marker) else {
+            return open;
+        };
+        rest = &rest[at + marker.len()..];
+        open = found;
     }
 }
 
@@ -75,7 +99,7 @@ fn read_event(xml: &str) -> Option<Entry> {
         thread: attribute(tag, "thread").unwrap_or_default(),
         level: attribute(tag, "level").and_then(|l| LogLevel::parse(&l)).unwrap_or(LogLevel::Info),
     };
-    let mut text = element_text(body, "log4j:Message").unwrap_or_default();
+    let mut text = element_text(body, "log4j:Message")?;
     if let Some(throwable) = element_text(body, "log4j:Throwable") {
         let throwable = throwable.trim_end();
         if !throwable.is_empty() {
@@ -204,6 +228,30 @@ mod tests {
             r#"<log4j:Event logger="x" timestamp="6" level="INFO" thread="t"><log4j:Message>1 &lt; 2 &#x263A;</log4j:Message></log4j:Event>"#,
         ]);
         assert_eq!(out, [event(5, "t", LogLevel::Warn, "a]]>b"), event(6, "t", LogLevel::Info, "1 < 2 \u{263A}")]);
+    }
+
+    #[test]
+    fn output_printed_inside_an_event_is_kept() {
+        let out = read(&[
+            r#"<log4j:Event logger="x" timestamp="5" level="INFO" thread="t">"#,
+            "native warning",
+            "  <log4j:Message><![CDATA[Loaded]]></log4j:Message>",
+            "</log4j:Event>",
+        ]);
+        assert_eq!(out, [Entry::plain("native warning".to_string()), event(5, "t", LogLevel::Info, "Loaded")]);
+    }
+
+    #[test]
+    fn an_end_tag_inside_a_message_does_not_end_the_event() {
+        let out = read(&[
+            r#"<log4j:Event logger="x" timestamp="5" level="INFO" thread="t">"#,
+            "  <log4j:Message><![CDATA[dump:",
+            "</log4j:Event>",
+            "<log4j:Event logger=\"y\">",
+            "done]]></log4j:Message>",
+            "</log4j:Event>",
+        ]);
+        assert_eq!(out, [event(5, "t", LogLevel::Info, "dump:\n</log4j:Event>\n<log4j:Event logger=\"y\">\ndone")]);
     }
 
     #[test]
