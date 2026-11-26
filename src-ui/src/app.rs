@@ -1,3 +1,4 @@
+use crate::components::log_viewer::LogEntry;
 use crate::components::activity_dock::{
     ActivityDock, ActivityDockOpen, InstallJob, RunStatus, RunningInstance, RunningRegistry,
 };
@@ -147,7 +148,7 @@ pub fn App() -> impl IntoView {
         let Some(log) = log else {
             return;
         };
-        log.update(|log| log.push(msg.line));
+        log.update(|log| log.push(LogEntry { text: msg.line, event: msg.event }));
         if msg.done {
             running_registry.update(|list| {
                 if let Some(r) = list.iter_mut().find(|r| r.id == msg.instance_id) {

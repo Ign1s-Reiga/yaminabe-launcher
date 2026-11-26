@@ -7,7 +7,7 @@ use phosphor_leptos::{Icon, IconWeight, CARET_DOWN, CARET_UP, STOP, X};
 use serde::Serialize;
 use yaminabe_launcher_shared::datamodels::{InstanceMeta, LaunchMode, ModLoader};
 use yaminabe_launcher_shared::ipc::InstallProgress;
-use crate::components::log_viewer::LogBuffer;
+use crate::components::log_viewer::{LogBuffer, LogEntry};
 use crate::ipc;
 use crate::signal_ext::HasId;
 
@@ -35,7 +35,7 @@ pub struct RunningInstance {
 impl RunningInstance {
     /// Append a line to this run's log.
     pub fn push_log(&self, line: String) {
-        self.log.update(|log| log.push(line));
+        self.log.update(|log| log.push(LogEntry::plain(line)));
     }
 }
 

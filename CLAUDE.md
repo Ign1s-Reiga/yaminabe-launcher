@@ -57,6 +57,7 @@ src-tauri/src/
 │       ├── mod.rs           # Tauri command body + lifecycle + stdio drain
 │       ├── manifest.rs      # load_manifest + merge_manifest (inheritsFrom)
 │       ├── classpath.rs     # extract_natives, build_classpath, find_main_class_jar
+│       ├── game_log.rs      # GameLogReader: the game's log4j XML events → log entries
 │       ├── args.rs          # LaunchVars, substitute_vars, eval_rules, process_args
 │       └── assets.rs        # Asset index sync against resources.download.minecraft.net
 ├── install_task/            # Per-loader install pipelines (vanilla + loader prep)

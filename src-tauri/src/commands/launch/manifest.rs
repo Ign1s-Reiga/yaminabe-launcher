@@ -27,6 +27,7 @@ pub(super) fn merge_manifest(version_id: &str) -> Result<ClientManifest, Error> 
     manifest.asset_index = manifest.asset_index.or(parent.asset_index);
     manifest.minecraft_arguments = manifest.minecraft_arguments.or(parent.minecraft_arguments);
     manifest.java_version = manifest.java_version.or(parent.java_version);
+    manifest.logging = manifest.logging.or(parent.logging);
     if manifest.main_class.is_empty() {
         manifest.main_class = parent.main_class;
     }

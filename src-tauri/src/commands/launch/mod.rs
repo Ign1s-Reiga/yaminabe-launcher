@@ -1,6 +1,7 @@
 mod args;
 mod assets;
 mod classpath;
+mod game_log;
 mod manifest;
 
 use std::path::{Path, PathBuf};
@@ -23,26 +24,27 @@ use self::args::{
 };
 use self::assets::download_assets;
 use self::classpath::{build_classpath, extract_natives, find_main_class_jar, jar_contains_class};
+use self::game_log::{Entry, GameLogReader};
 use self::manifest::{load_manifest, merge_manifest};
 
 /// Emit a progress line (`done: false`) to an instance's `instance-log` stream.
 fn emit_log(app: &AppHandle, instance_id: &str, line: impl Into<String>) {
     app.emit(EVT_INSTANCE_LOG, LogLine {
-        instance_id: instance_id.to_string(), line: line.into(), done: false, error: None,
+        instance_id: instance_id.to_string(), line: line.into(), event: None, done: false, error: None,
     }).ok();
 }
 
 /// Emit a terminal line (`done: true`, no error).
 fn emit_done(app: &AppHandle, instance_id: &str, line: impl Into<String>) {
     app.emit(EVT_INSTANCE_LOG, LogLine {
-        instance_id: instance_id.to_string(), line: line.into(), done: true, error: None,
+        instance_id: instance_id.to_string(), line: line.into(), event: None, done: true, error: None,
     }).ok();
 }
 
 /// Emit a terminal failure line (`done: true`) carrying the error text.
 fn emit_fail(app: &AppHandle, instance_id: &str, message: String) {
     app.emit(EVT_INSTANCE_LOG, LogLine {
-        instance_id: instance_id.to_string(), line: message.clone(), done: true, error: Some(message),
+        instance_id: instance_id.to_string(), line: message.clone(), event: None, done: true, error: Some(message),
     }).ok();
 }
 
@@ -309,7 +311,8 @@ pub async fn launch_instance(
 
     // Build the full argument list up front so we can log it verbatim before
     // spawning — useful for diagnosing crashes where Java exits before printing.
-    let launch_args = build_launch_args(&manifest, &vars, &classpath, &natives_str, ram_mb);
+    let log_config = log_config_argument(&manifest);
+    let launch_args = build_launch_args(&manifest, &vars, &classpath, &natives_str, ram_mb, log_config);
 
     // Gated to debug builds so the live MC bearer token can't reach a user's
     // log viewer; `cmd.args` below still receives the real values. `{:?}`
@@ -424,6 +427,19 @@ async fn resolve_java(
     Ok(java_exe.to_string_lossy().into_owned())
 }
 
+/// The JVM argument pointing log4j at Mojang's log config for this version, as
+/// the official launcher passes it, so the game writes its log as XML events
+/// the viewer can read. `None` if the version has no config, or it was not
+/// downloaded at install.
+fn log_config_argument(manifest: &ClientManifest) -> Option<String> {
+    let client = manifest.logging.as_ref()?.client.as_ref()?;
+    let path = assets_dir().join("log_configs").join(&client.file.id);
+    if !path.is_file() {
+        return None;
+    }
+    Some(client.argument.as_deref()?.replace("${path}", &path.to_string_lossy()))
+}
+
 /// Assemble the JVM + main-class + game argument vector from the merged
 /// manifest. Always launches via mainClass + populated classpath (never
 /// `-jar`): Forge's bootstrap needs `${classpath}` and module-path JVM args
@@ -434,6 +450,7 @@ fn build_launch_args(
     classpath: &str,
     natives_str: &str,
     ram_mb: u32,
+    log_config: Option<String>,
 ) -> Vec<String> {
     let mut launch_args: Vec<String> = Vec::new();
     if let Some(args) = &manifest.arguments {
@@ -446,6 +463,7 @@ fn build_launch_args(
             jvm_section.extend(default_jvm);
         }
         jvm_section.extend(process_args(&args.jvm, vars));
+        jvm_section.extend(log_config);
         launch_args.extend(jvm_section);
 
         launch_args.push(manifest.main_class.clone());
@@ -455,6 +473,7 @@ fn build_launch_args(
         launch_args.push(format!("-Xmx{ram_mb}M"));
         launch_args.push(format!("-Djava.library.path={natives_str}"));
         launch_args.push("-Dminecraft.launcher.brand=yaminabe".to_string());
+        launch_args.extend(log_config);
         launch_args.push("-cp".to_string());
         launch_args.push(classpath.to_string());
         launch_args.push(manifest.main_class.clone());
@@ -509,6 +528,15 @@ async fn spawn_and_drain(
     // Read bytes (not lines) and decode lossily — Java stderr is system-
     // codepage on Windows (e.g. CP932), and `BufReader::lines()` aborts on
     // non-UTF-8, dropping exactly the early-JVM-error output we need most.
+    fn read_line(bytes: &[u8], is_stderr: bool, game_log: &mut GameLogReader, entries: &mut Vec<Entry>) {
+        let raw = String::from_utf8_lossy(bytes);
+        let trimmed = raw.trim_end_matches(['\r', '\n']);
+        if is_stderr {
+            entries.push(Entry { text: format!("[STDERR] {trimmed}"), event: None });
+        } else {
+            game_log.line(trimmed.to_string(), entries);
+        }
+    }
     async fn drain(
         mut reader: impl tokio::io::AsyncRead + Unpin,
         app: AppHandle,
@@ -518,13 +546,14 @@ async fn spawn_and_drain(
         use tokio::io::AsyncReadExt;
         let mut buf = [0u8; 4096];
         let mut leftover: Vec<u8> = Vec::new();
-        let emit = |app: &AppHandle, id: &str, bytes: &[u8]| {
-            let raw = String::from_utf8_lossy(bytes);
-            let trimmed = raw.trim_end_matches(|c| c == '\r' || c == '\n');
-            let line = if is_stderr { format!("[STDERR] {trimmed}") } else { trimmed.to_string() };
-            app.emit(EVT_INSTANCE_LOG, LogLine {
-                instance_id: id.to_string(), line, done: false, error: None,
-            }).ok();
+        let mut game_log = GameLogReader::default();
+        let mut entries: Vec<Entry> = Vec::new();
+        let emit = |entries: &mut Vec<Entry>| {
+            for entry in entries.drain(..) {
+                app.emit(EVT_INSTANCE_LOG, LogLine {
+                    instance_id: instance_id.clone(), line: entry.text, event: entry.event, done: false, error: None,
+                }).ok();
+            }
         };
         loop {
             match reader.read(&mut buf).await {
@@ -533,14 +562,17 @@ async fn spawn_and_drain(
                     leftover.extend_from_slice(&buf[..n]);
                     while let Some(pos) = leftover.iter().position(|&b| b == b'\n') {
                         let line_bytes: Vec<u8> = leftover.drain(..=pos).collect();
-                        emit(&app, &instance_id, &line_bytes);
+                        read_line(&line_bytes, is_stderr, &mut game_log, &mut entries);
                     }
+                    emit(&mut entries);
                 }
             }
         }
         if !leftover.is_empty() {
-            emit(&app, &instance_id, &leftover);
+            read_line(&leftover, is_stderr, &mut game_log, &mut entries);
         }
+        game_log.finish(&mut entries);
+        emit(&mut entries);
     }
 
     let stdout = child.stdout.take().unwrap();

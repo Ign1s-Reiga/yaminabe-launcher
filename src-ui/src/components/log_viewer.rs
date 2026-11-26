@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{cell::RefCell, rc::Rc};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
+use yaminabe_launcher_shared::ipc::{LogEvent, LogLevel};
 
 const LOG_STICKY_THRESHOLD_PX: i32 = 8;
 const LOG_SCROLL_THROTTLE_MS: i32 = 50;
@@ -20,18 +21,32 @@ const LINES_SHOWN_CHOICES: [(usize, &str); 3] = [(1_000, "1,000"), (10_000, "10,
 /// from, so it lasts for the session.
 static LINES_SHOWN: AtomicUsize = AtomicUsize::new(10_000);
 
-/// One run's log lines, numbered from the run's start so a reader can tell
-/// which lines it has already seen, even after the oldest are dropped.
+/// One entry of a run's log: a line of the game's output, or of the launcher's
+/// progress. A log4j event's text can span several lines.
+pub struct LogEntry {
+    pub text: String,
+    pub event: Option<LogEvent>,
+}
+
+impl LogEntry {
+    /// An entry that is not a log4j event.
+    pub fn plain(text: String) -> LogEntry {
+        LogEntry { text, event: None }
+    }
+}
+
+/// One run's log entries, numbered from the run's start so a reader can tell
+/// which entries it has already seen, even after the oldest are dropped.
 #[derive(Default)]
 pub struct LogBuffer {
-    lines: VecDeque<String>,
+    lines: VecDeque<LogEntry>,
     pushed: usize,
 }
 
 impl LogBuffer {
     /// Append a line. Once `MAX_LOG_LINES` are held, the oldest tenth goes at
     /// once, so the shown text jumps rarely rather than shifting every line.
-    pub fn push(&mut self, line: String) {
+    pub fn push(&mut self, line: LogEntry) {
         if self.lines.len() >= MAX_LOG_LINES {
             self.lines.drain(..MAX_LOG_LINES / 10);
         }
@@ -45,7 +60,7 @@ impl LogBuffer {
     }
 
     /// The held lines numbered `from` and later.
-    fn since(&self, from: usize) -> impl Iterator<Item = &String> {
+    fn since(&self, from: usize) -> impl Iterator<Item = &LogEntry> {
         self.lines.iter().skip(from.saturating_sub(self.first()))
     }
 }
@@ -101,10 +116,16 @@ fn sync_lines(el: &web_sys::HtmlDivElement, buffer: &LogBuffer, shown: &mut Show
         return dropped > 0;
     };
     let lines = document.create_document_fragment();
-    for text in buffer.since(shown.end) {
+    for entry in buffer.since(shown.end) {
         match document.create_element("div") {
             Ok(line) => {
-                line.set_text_content(Some(text));
+                match &entry.event {
+                    Some(event) => {
+                        line.set_text_content(Some(&event_text(event, &entry.text)));
+                        line.set_class_name(level_class(event.level));
+                    }
+                    None => line.set_text_content(Some(&entry.text)),
+                }
                 if let Err(e) = lines.append_child(&line) {
                     log::warn!("failed to add a log line: {e:?}");
                 }
@@ -117,6 +138,25 @@ fn sync_lines(el: &web_sys::HtmlDivElement, buffer: &LogBuffer, shown: &mut Show
     }
     shown.end = buffer.pushed;
     true
+}
+
+/// An event's line as the game writes it to `latest.log`:
+/// `[12:34:56] [Render thread/INFO]: message`, in local time.
+fn event_text(event: &LogEvent, text: &str) -> String {
+    let at = js_sys::Date::new(&JsValue::from_f64(event.timestamp as f64));
+    format!(
+        "[{:02}:{:02}:{:02}] [{}/{}]: {text}",
+        at.get_hours(), at.get_minutes(), at.get_seconds(), event.thread, event.level.as_str()
+    )
+}
+
+fn level_class(level: LogLevel) -> &'static str {
+    match level {
+        LogLevel::Trace | LogLevel::Debug => css! { color: #8b8b8b; },
+        LogLevel::Info => "",
+        LogLevel::Warn => css! { color: #e5c07b; },
+        LogLevel::Error | LogLevel::Fatal => css! { color: #f07178; },
+    }
 }
 
 struct ScheduledScroll {
@@ -415,13 +455,14 @@ mod tests {
     fn lines_keep_their_numbers_after_the_oldest_are_dropped() {
         let mut buffer = LogBuffer::default();
         for i in 0..MAX_LOG_LINES + 5 {
-            buffer.push(i.to_string());
+            buffer.push(LogEntry::plain(i.to_string()));
         }
         assert_eq!(buffer.lines.len(), MAX_LOG_LINES - MAX_LOG_LINES / 10 + 5);
         assert_eq!(buffer.first(), 10_000);
-        assert_eq!(buffer.since(MAX_LOG_LINES + 3).collect::<Vec<_>>(), ["100003", "100004"]);
-        assert_eq!(buffer.since(0).next().map(String::as_str), Some("10000"));
-        assert_eq!(buffer.since(MAX_LOG_LINES + 5).next(), None);
+        let texts: Vec<_> = buffer.since(MAX_LOG_LINES + 3).map(|e| e.text.as_str()).collect();
+        assert_eq!(texts, ["100003", "100004"]);
+        assert_eq!(buffer.since(0).next().map(|e| e.text.as_str()), Some("10000"));
+        assert!(buffer.since(MAX_LOG_LINES + 5).next().is_none());
     }
 
     #[test]
@@ -429,14 +470,14 @@ mod tests {
         let mut buffer = LogBuffer::default();
         let mut shown = Shown { log: None, window: 1_000, first: 0, end: 0 };
         for i in 0..1_100 {
-            buffer.push(i.to_string());
+            buffer.push(LogEntry::plain(i.to_string()));
         }
         assert_eq!(first_shown(&buffer, &shown), 0);
-        buffer.push(String::new());
+        buffer.push(LogEntry::plain(String::new()));
         assert_eq!(first_shown(&buffer, &shown), 101);
         shown.first = 101;
         shown.end = 1_101;
-        buffer.push(String::new());
+        buffer.push(LogEntry::plain(String::new()));
         assert_eq!(first_shown(&buffer, &shown), 101);
     }
 }

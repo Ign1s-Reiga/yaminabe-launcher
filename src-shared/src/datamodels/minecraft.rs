@@ -300,7 +300,13 @@ pub struct LoggingSection {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LoggingClient {
+    /// The JVM argument that points log4j at `file`, with `${path}` standing
+    /// for where it was saved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument: Option<String>,
     pub file: LoggingFile,
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
