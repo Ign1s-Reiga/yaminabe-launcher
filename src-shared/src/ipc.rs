@@ -18,12 +18,59 @@ pub const EVT_UPDATE_PROGRESS: &str = "update-download-progress";
 
 /// One log line emitted by an instance launch, as [`EVT_INSTANCE_LOG`], from
 /// the backend's `launch_instance` and consumed by `PlayPage` on the frontend.
+/// `line` can span several lines, e.g. a message and its stack trace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogLine {
     pub instance_id: String,
     pub line: String,
+    /// Set when the game logged the line through log4j, rather than printing it
+    /// or the launcher reporting progress.
+    #[serde(default)]
+    pub event: Option<LogEvent>,
     pub done: bool,
     pub error: Option<String>,
+}
+
+/// When, where and how severely the game logged a line, as log4j reports it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LogEvent {
+    /// Milliseconds since the Unix epoch.
+    pub timestamp: i64,
+    pub thread: String,
+    pub level: LogLevel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+    Fatal,
+}
+
+impl LogLevel {
+    pub const ALL: [LogLevel; 6] = [
+        LogLevel::Trace, LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error, LogLevel::Fatal,
+    ];
+
+    /// The level's name as log4j writes it, e.g. `WARN`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LogLevel::Trace => "TRACE",
+            LogLevel::Debug => "DEBUG",
+            LogLevel::Info => "INFO",
+            LogLevel::Warn => "WARN",
+            LogLevel::Error => "ERROR",
+            LogLevel::Fatal => "FATAL",
+        }
+    }
+
+    /// Read a level as log4j writes it, ignoring case.
+    pub fn parse(name: &str) -> Option<LogLevel> {
+        LogLevel::ALL.into_iter().find(|level| level.as_str().eq_ignore_ascii_case(name))
+    }
 }
 
 /// Install pipeline progress for a single instance creation.
