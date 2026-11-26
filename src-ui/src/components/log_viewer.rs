@@ -9,6 +9,92 @@ use wasm_bindgen::{JsCast, JsValue};
 
 const LOG_STICKY_THRESHOLD_PX: i32 = 8;
 const LOG_SCROLL_THROTTLE_MS: i32 = 50;
+/// Most lines kept of one run's log. Older lines are dropped as new ones arrive,
+/// so a long session cannot grow the buffer, or the page, without bound.
+const MAX_LOG_LINES: usize = 100_000;
+
+/// One run's log lines, numbered from the run's start so a reader can tell
+/// which lines it has already seen, even after the oldest are dropped.
+#[derive(Default)]
+pub struct LogBuffer {
+    lines: VecDeque<String>,
+    pushed: usize,
+}
+
+impl LogBuffer {
+    /// Append a line, dropping the oldest once `MAX_LOG_LINES` are held.
+    pub fn push(&mut self, line: String) {
+        if self.lines.len() >= MAX_LOG_LINES {
+            self.lines.pop_front();
+        }
+        self.lines.push_back(line);
+        self.pushed += 1;
+    }
+
+    /// Number of the oldest line still held.
+    fn first(&self) -> usize {
+        self.pushed - self.lines.len()
+    }
+
+    /// The held lines numbered `from` and later.
+    fn since(&self, from: usize) -> impl Iterator<Item = &String> {
+        self.lines.iter().skip(from.saturating_sub(self.first()))
+    }
+}
+
+/// The lines the log box shows, as numbers into the run's [`LogBuffer`]: one
+/// `<div>` child per line, for lines `first` up to `end`.
+struct Shown {
+    log: Option<ArcRwSignal<LogBuffer>>,
+    first: usize,
+    end: usize,
+}
+
+/// Bring the log box's children in line with `buffer`. Only appends new lines
+/// and removes dropped ones from the top, so a selection, and the lines being
+/// read, stay put. Returns whether anything changed.
+fn sync_lines(el: &web_sys::HtmlDivElement, buffer: &LogBuffer, shown: &mut Shown, keep_place: bool) -> bool {
+    let dropped = buffer.first().clamp(shown.first, shown.end) - shown.first;
+    if dropped > 0 {
+        let height = el.scroll_height();
+        for _ in 0..dropped {
+            if let Some(line) = el.first_child() {
+                if let Err(e) = el.remove_child(&line) {
+                    log::warn!("failed to remove a log line: {e:?}");
+                }
+            }
+        }
+        // Lines removed above the view would pull the text up under the reader.
+        if keep_place {
+            el.set_scroll_top(el.scroll_top() - (height - el.scroll_height()));
+        }
+    }
+    shown.first = buffer.first();
+    shown.end = shown.end.max(shown.first);
+    if shown.end == buffer.pushed {
+        return dropped > 0;
+    }
+    let Some(document) = el.owner_document() else {
+        return dropped > 0;
+    };
+    let lines = document.create_document_fragment();
+    for text in buffer.since(shown.end) {
+        match document.create_element("div") {
+            Ok(line) => {
+                line.set_text_content(Some(text));
+                if let Err(e) = lines.append_child(&line) {
+                    log::warn!("failed to add a log line: {e:?}");
+                }
+            }
+            Err(e) => log::warn!("failed to create a log line: {e:?}"),
+        }
+    }
+    if let Err(e) = el.append_child(&lines) {
+        log::warn!("failed to add log lines: {e:?}");
+    }
+    shown.end = buffer.pushed;
+    true
+}
 
 struct ScheduledScroll {
     handle: i32,
@@ -137,17 +223,6 @@ impl LogScrollState {
     }
 }
 
-fn join_lines(lines: &VecDeque<String>) -> String {
-    let mut text = String::with_capacity(lines.iter().map(|l| l.len() + 1).sum());
-    for (i, line) in lines.iter().enumerate() {
-        if i > 0 {
-            text.push('\n');
-        }
-        text.push_str(line);
-    }
-    text
-}
-
 fn log_viewer_class() -> &'static str {
     css! {
         display: flex;
@@ -185,18 +260,23 @@ fn log_box_class() -> &'static str {
         white-space: pre;
         color: #d4d4d4;
         flex: 1;
+        overflow-anchor: none;
+
+        & > div:empty::before {
+            content: " ";
+        }
     }
 }
 
 /// Dark log box with a sticky-tail scroll behaviour and a header slot for
-/// per-page action buttons. Owns its scroll state; the caller just hands in
-/// the line buffer.
+/// per-page action buttons. Owns its scroll state; the caller hands in the
+/// run's log, if there is one yet.
 ///
 /// Children passed to the component are rendered into the header action bar
 /// above the log box — typically a `<Button>` or two (Stop, Open folder).
 #[component]
 pub fn LogViewer(
-    #[prop(into)] log_lines: Signal<VecDeque<String>>,
+    #[prop(into)] log: Signal<Option<ArcRwSignal<LogBuffer>>>,
     children: Children,
 ) -> impl IntoView {
     let log_box_ref: NodeRef<html::Div> = NodeRef::new();
@@ -242,10 +322,24 @@ pub fn LogViewer(
         }
     });
 
+    let shown = StoredValue::new_local(Shown { log: None, first: 0, end: 0 });
     let scroll_for_effect = scroll.clone();
     Effect::new(move |_| {
-        log_lines.track();
-        scroll_for_effect.schedule_scroll_to_bottom();
+        let current = log.get();
+        let Some(el) = log_box_ref.get() else {
+            return;
+        };
+        let keep_place = scroll_for_effect.should_skip_scroll();
+        let changed = shown.try_update_value(|shown| {
+            if shown.log != current {
+                el.set_text_content(None);
+                *shown = Shown { log: current.clone(), first: 0, end: 0 };
+            }
+            current.as_ref().is_some_and(|log| log.with(|buffer| sync_lines(&el, buffer, shown, keep_place)))
+        });
+        if changed == Some(true) {
+            scroll_for_effect.schedule_scroll_to_bottom();
+        }
     });
 
     view! {
@@ -266,9 +360,25 @@ pub fn LogViewer(
                 on:mouseup=move |_| {
                     scroll.finish_text_selection();
                 }
-            >
-                {move || log_lines.with(join_lines)}
-            </div>
+            ></div>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lines_keep_their_numbers_after_the_oldest_are_dropped() {
+        let mut buffer = LogBuffer::default();
+        for i in 0..MAX_LOG_LINES + 5 {
+            buffer.push(i.to_string());
+        }
+        assert_eq!(buffer.lines.len(), MAX_LOG_LINES);
+        assert_eq!(buffer.first(), 5);
+        assert_eq!(buffer.since(MAX_LOG_LINES + 3).collect::<Vec<_>>(), ["100003", "100004"]);
+        assert_eq!(buffer.since(0).next().map(String::as_str), Some("5"));
+        assert_eq!(buffer.since(MAX_LOG_LINES + 5).next(), None);
     }
 }

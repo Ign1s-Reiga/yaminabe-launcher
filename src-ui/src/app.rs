@@ -141,17 +141,23 @@ pub fn App() -> impl IntoView {
     });
 
     ipc::on_event::<LogLine, _>(EVT_INSTANCE_LOG, move |msg| {
-        running_registry.update(|list| {
-            if let Some(r) = list.iter_mut().find(|r| r.id == msg.instance_id) {
-                r.push_log(msg.line);
-                if msg.done {
+        let log = running_registry.with_untracked(|list| {
+            list.iter().find(|r| r.id == msg.instance_id).map(|r| r.log.clone())
+        });
+        let Some(log) = log else {
+            return;
+        };
+        log.update(|log| log.push(msg.line));
+        if msg.done {
+            running_registry.update(|list| {
+                if let Some(r) = list.iter_mut().find(|r| r.id == msg.instance_id) {
                     r.status = match msg.error {
                         Some(e) => RunStatus::Errored(e),
                         None => RunStatus::Stopped,
                     };
                 }
-            }
-        });
+            });
+        }
     });
     ipc::on_event::<String, _>(EVT_PROCESS_STARTED, move |id| {
         running_registry.update(|list| {
