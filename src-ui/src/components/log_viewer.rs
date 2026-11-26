@@ -5,6 +5,7 @@ use leptos::prelude::*;
 use leptos::{IntoView, component, html, view, web_sys};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
@@ -20,6 +21,9 @@ const LINES_SHOWN_CHOICES: [(usize, &str); 3] = [(1_000, "1,000"), (10_000, "10,
 /// The lines-shown choice last made, which a newly opened log viewer starts
 /// from, so it lasts for the session.
 static LINES_SHOWN: AtomicUsize = AtomicUsize::new(10_000);
+/// How long typing must pause before the search runs, as each search goes
+/// through every line the log box shows.
+const SEARCH_DELAY: Duration = Duration::from_millis(150);
 
 /// One entry of a run's log: a line of the game's output, or of the launcher's
 /// progress. A log4j event's text can span several lines.
@@ -467,6 +471,12 @@ pub fn LogViewer(
         format!("Last {label} lines")
     });
     let search = RwSignal::new(String::new());
+    let search_timer = StoredValue::new(None::<TimeoutHandle>);
+    on_cleanup(move || {
+        if let Some(timer) = search_timer.get_value() {
+            timer.clear();
+        }
+    });
     let hidden_levels = RwSignal::new(Vec::<&'static str>::new());
     let level_hidden = move |group: &str| hidden_levels.with(|hidden| hidden.contains(&group));
     let shown = StoredValue::new_local(Shown { log: None, window: 0, search: String::new(), first: 0, end: 0 });
@@ -530,7 +540,19 @@ pub fn LogViewer(
                     <div style="width: 220px;">
                         <TextInput
                             placeholder="Search the log"
-                            on_change=Callback::new(move |text: String| search.set(text))
+                            on_change=Callback::new(move |text: String| {
+                                if let Some(timer) = search_timer.get_value() {
+                                    timer.clear();
+                                }
+                                let typed = text.clone();
+                                match set_timeout_with_handle(move || search.set(typed), SEARCH_DELAY) {
+                                    Ok(timer) => search_timer.set_value(Some(timer)),
+                                    Err(e) => {
+                                        log::warn!("failed to delay the log search: {e:?}");
+                                        search.set(text);
+                                    }
+                                }
+                            })
                         />
                     </div>
                 </div>
