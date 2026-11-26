@@ -8,6 +8,15 @@ each release is a `## <version> — <date>` heading followed by bullet points.
 - A new app icon: a pot of dark broth with mods sinking into it.
 - Keep only the latest 100,000 lines of a game's log on the play page, so a
   long session no longer slows the launcher down or keeps using more memory.
+- Choose how many of the latest log lines the play page shows: 1,000, 10,000
+  (the default) or 100,000.
+- Show each line of the game's log as `latest.log` does, with its time,
+  thread and level, coloured by level. A crash's stack trace stays with the
+  line that reported it. This works for vanilla, Forge, NeoForge, Fabric and
+  Quilt.
+- Hide Debug, Info, Warn or Error lines, and search the log, from the play
+  page.
+- Keep your place and your text selection in the log while new lines arrive.
 
 ## 1.2.7 — 2026-11-13
 
