@@ -503,6 +503,11 @@ pub fn LogViewer(
                 log.with(|buffer| sync_lines(&el, buffer, shown, keep_place));
             }
         });
+        // Keeping the reader's place moves the view up; that must not read as
+        // the user scrolling up, which would turn auto-scroll off.
+        if keep_place {
+            scroll_for_effect.last_scroll_top.set_value(el.scroll_top());
+        }
         scroll_for_effect.schedule_scroll_to_bottom();
     });
 
