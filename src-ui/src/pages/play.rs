@@ -1,4 +1,4 @@
-use crate::components::log_viewer::LogViewer;
+use crate::components::log_viewer::{LogBuffer, LogViewer};
 use crate::components::open_in_file_manager::OpenInFileManager;
 use crate::components::activity_dock::{
     note_played, start_launch, stop_instance, ActivityDockOpen, RunStatus, RunningRegistry,
@@ -11,7 +11,6 @@ use leptos::prelude::*;
 use leptos::{IntoView, component, view};
 use leptos_router::hooks::{use_navigate, use_params, use_query_map};
 use leptos_router::params::Params;
-use std::collections::VecDeque;
 use yaminabe_launcher_shared::datamodels::{InstanceMeta, LaunchMode};
 
 #[derive(PartialEq, Clone, Params)]
@@ -91,15 +90,13 @@ pub fn PlayPage() -> impl IntoView {
     });
 
     // Per-instance view derived from the global registry so logs/status persist
-    // across navigation and stay live while this page is mounted. `status` is a
-    // memo, so it only re-notifies on a real status change, not on every log
-    // line; the lookup itself lives in VecSignalExt::map_by_id.
+    // across navigation and stay live while this page is mounted. Both are
+    // memos, so they re-notify only on a status change or a relaunch; log lines
+    // reach the viewer through the run's own log signal.
     let status = Memo::new(move |_| {
         registry.map_by_id(&id.get(), |r| r.status.clone()).unwrap_or(RunStatus::Stopped)
     });
-    let log_lines = Signal::derive(move || {
-        registry.map_by_id(&id.get(), |r| r.log_lines.clone()).unwrap_or_default()
-    });
+    let log = Memo::new(move |_| registry.map_by_id(&id.get(), |r| r.log.clone()));
 
     view! {
         <Show when=move || instance.get().is_some()>
@@ -107,7 +104,7 @@ pub fn PlayPage() -> impl IntoView {
                 <PlayContent
                     instance=inst
                     registry=registry
-                    log_lines=log_lines
+                    log=log
                     status=status
                     launch_mode=launch_mode
                 />
@@ -120,7 +117,7 @@ pub fn PlayPage() -> impl IntoView {
 fn PlayContent(
     instance: InstanceMeta,
     registry: RunningRegistry,
-    log_lines: Signal<VecDeque<String>>,
+    log: Memo<Option<ArcRwSignal<LogBuffer>>>,
     status: Memo<RunStatus>,
     launch_mode: Memo<LaunchMode>,
 ) -> impl IntoView {
@@ -203,7 +200,7 @@ fn PlayContent(
                 }}
             </div>
 
-            <LogViewer log_lines=log_lines>
+            <LogViewer log=log>
                 <OpenInFileManager instance_id=open_instance_id />
                 <Button
                     variant=ButtonVariant::Danger

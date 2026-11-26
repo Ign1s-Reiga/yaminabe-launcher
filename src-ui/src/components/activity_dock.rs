@@ -5,9 +5,9 @@ use leptos::{component, view, IntoView};
 use leptos_router::components::A;
 use phosphor_leptos::{Icon, IconWeight, CARET_DOWN, CARET_UP, STOP, X};
 use serde::Serialize;
-use std::collections::VecDeque;
 use yaminabe_launcher_shared::datamodels::{InstanceMeta, LaunchMode, ModLoader};
 use yaminabe_launcher_shared::ipc::InstallProgress;
+use crate::components::log_viewer::LogBuffer;
 use crate::ipc;
 use crate::signal_ext::HasId;
 
@@ -25,21 +25,17 @@ pub struct RunningInstance {
     pub id: String,
     pub name: String,
     pub mode: LaunchMode,
-    pub log_lines: VecDeque<String>,
+    /// This run's log, in a signal of its own so a log line notifies only the
+    /// log's readers, not everything that watches the registry. A relaunch gets
+    /// a new one.
+    pub log: ArcRwSignal<LogBuffer>,
     pub status: RunStatus,
 }
 
-/// Most lines kept of one run's log. Older lines are dropped as new ones arrive,
-/// so a long session cannot grow the buffer, and the viewer's text, unbounded.
-const MAX_LOG_LINES: usize = 100_000;
-
 impl RunningInstance {
-    /// Append a log line, dropping the oldest once `MAX_LOG_LINES` are held.
-    pub fn push_log(&mut self, line: String) {
-        if self.log_lines.len() >= MAX_LOG_LINES {
-            self.log_lines.pop_front();
-        }
-        self.log_lines.push_back(line);
+    /// Append a line to this run's log.
+    pub fn push_log(&self, line: String) {
+        self.log.update(|log| log.push(line));
     }
 }
 
@@ -92,9 +88,8 @@ pub type RunningRegistry = RwSignal<Vec<RunningInstance>>;
 #[derive(Clone, Copy)]
 pub struct ActivityDockOpen(pub RwSignal<bool>);
 
-/// Logs-free projection of a `RunningInstance` for the dock list, so log bursts
-/// (which mutate `log_lines`) don't force the `<For>` to clone every instance's
-/// whole buffer on each update.
+/// Projection of a `RunningInstance` for the dock list, holding only what a row
+/// shows.
 #[derive(Clone, PartialEq)]
 struct RowView {
     id: String,
@@ -132,7 +127,7 @@ pub fn start_launch(registry: RunningRegistry, inst: &InstanceMeta, mode: Launch
         id: inst.id.clone(),
         name: inst.name.clone(),
         mode,
-        log_lines: VecDeque::new(),
+        log: ArcRwSignal::new(LogBuffer::default()),
         status: RunStatus::Preparing,
     };
     registry.update(|list| {
@@ -180,8 +175,8 @@ pub fn note_played(instances: RwSignal<Vec<InstanceMeta>>, id: &str) {
 pub fn stop_instance(registry: RunningRegistry, id: String) {
     leptos::task::spawn_local(async move {
         if let Err(e) = ipc::call::<_, ()>("kill_instance", KillArgs { instance_id: id.clone() }).await {
-            registry.update(|list| {
-                if let Some(r) = list.iter_mut().find(|r| r.id == id) {
+            registry.with_untracked(|list| {
+                if let Some(r) = list.iter().find(|r| r.id == id) {
                     r.push_log(format!("[kill_instance failed] {e}"));
                 }
             });
