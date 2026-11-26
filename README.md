@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="src-tauri/icons/logo.svg" alt="" width="128">
+</p>
+
 # Yaminabe Launcher
 
 > A Minecraft modpack launcher built around the spirit of *yaminabe* — throw a
