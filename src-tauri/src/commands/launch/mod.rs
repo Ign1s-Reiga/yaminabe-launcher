@@ -525,9 +525,6 @@ async fn spawn_and_drain(
         app.emit(EVT_PROCESS_STARTED, instance_id).ok();
     }
 
-    // Read bytes (not lines) and decode lossily — Java stderr is system-
-    // codepage on Windows (e.g. CP932), and `BufReader::lines()` aborts on
-    // non-UTF-8, dropping exactly the early-JVM-error output we need most.
     fn read_line(bytes: &[u8], is_stderr: bool, game_log: &mut GameLogReader, entries: &mut Vec<Entry>) {
         let raw = String::from_utf8_lossy(bytes);
         let trimmed = raw.trim_end_matches(['\r', '\n']);
@@ -537,6 +534,10 @@ async fn spawn_and_drain(
             game_log.line(trimmed.to_string(), entries);
         }
     }
+
+    // Read bytes (not lines) and decode lossily — Java stderr is system-
+    // codepage on Windows (e.g. CP932), and `BufReader::lines()` aborts on
+    // non-UTF-8, dropping exactly the early-JVM-error output we need most.
     async fn drain(
         mut reader: impl tokio::io::AsyncRead + Unpin,
         app: AppHandle,
