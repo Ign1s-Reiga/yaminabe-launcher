@@ -3,6 +3,12 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.2.8 — 2026-11-26
+
+- A new app icon: a pot of dark broth with mods sinking into it.
+- Keep only the latest 100,000 lines of a game's log on the play page, so a
+  long session no longer slows the launcher down or keeps using more memory.
+
 ## 1.2.7 — 2026-11-13
 
 - Wait only once as long as Microsoft asks when it turns the sign-in dialog
