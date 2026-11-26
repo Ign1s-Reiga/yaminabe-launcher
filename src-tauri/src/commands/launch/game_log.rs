@@ -33,33 +33,41 @@ pub(super) struct GameLogReader {
 
 impl GameLogReader {
     /// Read one output line, adding the entries it completes to `out`.
-    pub fn line(&mut self, mut line: String, out: &mut Vec<Entry>) {
-        let trimmed = line.trim_start();
+    pub fn line(&mut self, line: String, out: &mut Vec<Entry>) {
+        let mut part = line.as_str();
+        while let Some(rest) = self.read_part(part, out) {
+            part = rest;
+        }
+    }
+
+    /// Read `part` of an output line. Returns what follows an event that ended
+    /// in it, when there is more to read.
+    fn read_part<'a>(&mut self, part: &'a str, out: &mut Vec<Entry>) -> Option<&'a str> {
+        let trimmed = part.trim_start();
         // A message can quote a start tag, but not usually a whole one; taking
         // a real one as text would hold back the output after it.
         let starts = trimmed.starts_with(EVENT_START) && (!self.in_cdata || is_event_tag(trimmed));
         if self.pending.is_empty() && !starts {
-            out.push(Entry::plain(line));
-            return;
+            out.push(Entry::plain(part.to_string()));
+            return None;
         }
         if starts {
             self.flush(out);
         } else if !self.in_cdata && !trimmed.starts_with("<log4j:") && !trimmed.starts_with("</log4j:") {
             // Printed by something else while an event was being written.
-            out.push(Entry::plain(line));
-            return;
+            out.push(Entry::plain(part.to_string()));
+            return None;
         }
-        let (in_cdata, end) = scan(&line, self.in_cdata);
+        let (in_cdata, end) = scan(part, self.in_cdata);
         self.in_cdata = in_cdata;
         let Some(end) = end else {
-            self.pending.push(line);
+            self.pending.push(part.to_string());
             if self.pending.len() >= MAX_EVENT_LINES {
                 self.flush(out);
             }
-            return;
+            return None;
         };
-        let rest = line.split_off(end);
-        self.pending.push(line);
+        self.pending.push(part[..end].to_string());
         match read_event(&self.pending.join("\n")) {
             Some(entry) => {
                 self.pending.clear();
@@ -67,9 +75,8 @@ impl GameLogReader {
             }
             None => self.flush(out),
         }
-        if !rest.trim().is_empty() {
-            self.line(rest, out);
-        }
+        let rest = &part[end..];
+        (!rest.trim().is_empty()).then_some(rest)
     }
 
     /// Pass on what is left of an event the output ended in the middle of.
@@ -98,16 +105,15 @@ fn scan(line: &str, mut open: bool) -> (bool, Option<usize>) {
             open = false;
             continue;
         }
-        let cdata = rest.find("<![CDATA[");
-        match rest.find(EVENT_END) {
-            Some(end) if cdata.is_none_or(|c| end < c) => return (false, Some(at + end + EVENT_END.len())),
-            _ => match cdata {
-                Some(c) => {
-                    at += c + "<![CDATA[".len();
-                    open = true;
-                }
-                None => return (false, None),
-            },
+        // Look for CDATA only before the next end tag, so a line of many events
+        // is read in one pass.
+        let end = rest.find(EVENT_END);
+        match rest[..end.unwrap_or(rest.len())].find("<![CDATA[") {
+            Some(c) => {
+                at += c + "<![CDATA[".len();
+                open = true;
+            }
+            None => return (false, end.map(|end| at + end + EVENT_END.len())),
         }
     }
 }
@@ -292,6 +298,14 @@ mod tests {
             "</log4j:Event>native msg",
         ]);
         assert_eq!(out, [event(5, "t", LogLevel::Info, "Loaded"), Entry::plain("native msg".to_string())]);
+    }
+
+    #[test]
+    fn many_events_on_one_line_are_all_read() {
+        let one = r#"<log4j:Event logger="x" timestamp="5" level="INFO" thread="t"><log4j:Message>m</log4j:Message></log4j:Event>"#;
+        let out = read(&[&one.repeat(100_000)]);
+        assert_eq!(out.len(), 100_000);
+        assert!(out.iter().all(|e| *e == event(5, "t", LogLevel::Info, "m")));
     }
 
     #[test]
