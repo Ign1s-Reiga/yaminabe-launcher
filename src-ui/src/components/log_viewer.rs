@@ -490,6 +490,7 @@ pub fn LogViewer(
             return;
         };
         let keep_place = scroll_for_effect.should_skip_scroll();
+        let top_before = el.scroll_top();
         shown.update_value(|shown| {
             if shown.log != current || shown.window != window {
                 el.set_text_content(None);
@@ -503,10 +504,11 @@ pub fn LogViewer(
                 log.with(|buffer| sync_lines(&el, buffer, shown, keep_place));
             }
         });
-        // Keeping the reader's place moves the view up; that must not read as
-        // the user scrolling up, which would turn auto-scroll off.
-        if keep_place {
-            scroll_for_effect.last_scroll_top.set_value(el.scroll_top());
+        // Keeping the reader's place moves the view up; shift the last seen
+        // position with it, so that move doesn't read as the user scrolling up.
+        let moved = top_before - el.scroll_top();
+        if moved != 0 {
+            scroll_for_effect.last_scroll_top.update_value(|top| *top -= moved);
         }
         scroll_for_effect.schedule_scroll_to_bottom();
     });
