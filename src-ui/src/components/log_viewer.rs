@@ -1,17 +1,24 @@
+use crate::components::ui::{ButtonSize, Dropdown, DropdownItem};
 use bamboo_css_macro::css;
 use leptos::__reexports::send_wrapper::SendWrapper;
 use leptos::prelude::*;
 use leptos::{IntoView, component, html, view, web_sys};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{cell::RefCell, rc::Rc};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
 const LOG_STICKY_THRESHOLD_PX: i32 = 8;
 const LOG_SCROLL_THROTTLE_MS: i32 = 50;
-/// Most lines kept of one run's log. Older lines are dropped as new ones arrive,
-/// so a long session cannot grow the buffer, or the page, without bound.
+/// Most lines kept of one run's log, so a long session cannot grow the buffer,
+/// or the page, without bound.
 const MAX_LOG_LINES: usize = 100_000;
+/// How many of the latest lines the log box can show, as the choices offered.
+const LINES_SHOWN_CHOICES: [(usize, &str); 3] = [(1_000, "1,000"), (10_000, "10,000"), (MAX_LOG_LINES, "100,000")];
+/// The lines-shown choice last made, which a newly opened log viewer starts
+/// from, so it lasts for the session.
+static LINES_SHOWN: AtomicUsize = AtomicUsize::new(10_000);
 
 /// One run's log lines, numbered from the run's start so a reader can tell
 /// which lines it has already seen, even after the oldest are dropped.
@@ -22,10 +29,11 @@ pub struct LogBuffer {
 }
 
 impl LogBuffer {
-    /// Append a line, dropping the oldest once `MAX_LOG_LINES` are held.
+    /// Append a line. Once `MAX_LOG_LINES` are held, the oldest tenth goes at
+    /// once, so the shown text jumps rarely rather than shifting every line.
     pub fn push(&mut self, line: String) {
         if self.lines.len() >= MAX_LOG_LINES {
-            self.lines.pop_front();
+            self.lines.drain(..MAX_LOG_LINES / 10);
         }
         self.lines.push_back(line);
         self.pushed += 1;
@@ -43,18 +51,33 @@ impl LogBuffer {
 }
 
 /// The lines the log box shows, as numbers into the run's [`LogBuffer`]: one
-/// `<div>` child per line, for lines `first` up to `end`.
+/// `<div>` child per line, for lines `first` up to `end`, at most about
+/// `window` of them.
 struct Shown {
     log: Option<ArcRwSignal<LogBuffer>>,
+    window: usize,
     first: usize,
     end: usize,
 }
 
+/// Where the log box's lines should start: no older than the buffer holds, and
+/// within the latest `window` lines. It trims only once the lines overflow the
+/// window by a tenth, so they leave the top in batches.
+fn first_shown(buffer: &LogBuffer, shown: &Shown) -> usize {
+    let first = buffer.first().max(shown.first);
+    if buffer.pushed - first > shown.window + shown.window / 10 {
+        buffer.pushed - shown.window
+    } else {
+        first
+    }
+}
+
 /// Bring the log box's children in line with `buffer`. Only appends new lines
-/// and removes dropped ones from the top, so a selection, and the lines being
+/// and removes old ones from the top, so a selection, and the lines being
 /// read, stay put. Returns whether anything changed.
 fn sync_lines(el: &web_sys::HtmlDivElement, buffer: &LogBuffer, shown: &mut Shown, keep_place: bool) -> bool {
-    let dropped = buffer.first().clamp(shown.first, shown.end) - shown.first;
+    let first = first_shown(buffer, shown);
+    let dropped = first.clamp(shown.first, shown.end) - shown.first;
     if dropped > 0 {
         let height = el.scroll_height();
         for _ in 0..dropped {
@@ -69,8 +92,8 @@ fn sync_lines(el: &web_sys::HtmlDivElement, buffer: &LogBuffer, shown: &mut Show
             el.set_scroll_top(el.scroll_top() - (height - el.scroll_height()));
         }
     }
-    shown.first = buffer.first();
-    shown.end = shown.end.max(shown.first);
+    shown.first = first;
+    shown.end = shown.end.max(first);
     if shown.end == buffer.pushed {
         return dropped > 0;
     }
@@ -322,18 +345,25 @@ pub fn LogViewer(
         }
     });
 
-    let shown = StoredValue::new_local(Shown { log: None, first: 0, end: 0 });
+    let lines_shown = RwSignal::new(LINES_SHOWN.load(Ordering::Relaxed));
+    let lines_shown_label = Signal::derive(move || {
+        let n = lines_shown.get();
+        let label = LINES_SHOWN_CHOICES.iter().find(|(c, _)| *c == n).map_or("", |(_, label)| label);
+        format!("Last {label} lines")
+    });
+    let shown = StoredValue::new_local(Shown { log: None, window: 0, first: 0, end: 0 });
     let scroll_for_effect = scroll.clone();
     Effect::new(move |_| {
         let current = log.get();
+        let window = lines_shown.get();
         let Some(el) = log_box_ref.get() else {
             return;
         };
         let keep_place = scroll_for_effect.should_skip_scroll();
         let changed = shown.try_update_value(|shown| {
-            if shown.log != current {
+            if shown.log != current || shown.window != window {
                 el.set_text_content(None);
-                *shown = Shown { log: current.clone(), first: 0, end: 0 };
+                *shown = Shown { log: current.clone(), window, first: 0, end: 0 };
             }
             current.as_ref().is_some_and(|log| log.with(|buffer| sync_lines(&el, buffer, shown, keep_place)))
         });
@@ -345,6 +375,18 @@ pub fn LogViewer(
     view! {
         <div class=log_viewer_class()>
             <div class=log_viewer_header_class()>
+                <div style="margin-right: auto;">
+                    <Dropdown label=lines_shown_label size=ButtonSize::Small>
+                        {move || LINES_SHOWN_CHOICES.map(|(n, label)| view! {
+                            <DropdownItem on_select=Callback::new(move |_| {
+                                LINES_SHOWN.store(n, Ordering::Relaxed);
+                                lines_shown.set(n);
+                            })>
+                                {format!("Last {label} lines")}
+                            </DropdownItem>
+                        })}
+                    </Dropdown>
+                </div>
                 {children()}
             </div>
             <div
@@ -375,10 +417,26 @@ mod tests {
         for i in 0..MAX_LOG_LINES + 5 {
             buffer.push(i.to_string());
         }
-        assert_eq!(buffer.lines.len(), MAX_LOG_LINES);
-        assert_eq!(buffer.first(), 5);
+        assert_eq!(buffer.lines.len(), MAX_LOG_LINES - MAX_LOG_LINES / 10 + 5);
+        assert_eq!(buffer.first(), 10_000);
         assert_eq!(buffer.since(MAX_LOG_LINES + 3).collect::<Vec<_>>(), ["100003", "100004"]);
-        assert_eq!(buffer.since(0).next().map(String::as_str), Some("5"));
+        assert_eq!(buffer.since(0).next().map(String::as_str), Some("10000"));
         assert_eq!(buffer.since(MAX_LOG_LINES + 5).next(), None);
+    }
+
+    #[test]
+    fn the_window_trims_in_batches() {
+        let mut buffer = LogBuffer::default();
+        let mut shown = Shown { log: None, window: 1_000, first: 0, end: 0 };
+        for i in 0..1_100 {
+            buffer.push(i.to_string());
+        }
+        assert_eq!(first_shown(&buffer, &shown), 0);
+        buffer.push(String::new());
+        assert_eq!(first_shown(&buffer, &shown), 101);
+        shown.first = 101;
+        shown.end = 1_101;
+        buffer.push(String::new());
+        assert_eq!(first_shown(&buffer, &shown), 101);
     }
 }
