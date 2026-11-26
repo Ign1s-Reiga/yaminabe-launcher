@@ -1,5 +1,5 @@
-use crate::components::ui::{ButtonSize, Dropdown, DropdownItem};
-use bamboo_css_macro::css;
+use crate::components::ui::{ButtonSize, Dropdown, DropdownItem, TextInput};
+use bamboo_css_macro::{css, cx};
 use leptos::__reexports::send_wrapper::SendWrapper;
 use leptos::prelude::*;
 use leptos::{IntoView, component, html, view, web_sys};
@@ -67,12 +67,44 @@ impl LogBuffer {
 
 /// The lines the log box shows, as numbers into the run's [`LogBuffer`]: one
 /// `<div>` child per line, for lines `first` up to `end`, at most about
-/// `window` of them.
+/// `window` of them. Lines not containing `search` (in lower case) are hidden.
 struct Shown {
     log: Option<ArcRwSignal<LogBuffer>>,
     window: usize,
+    search: String,
     first: usize,
     end: usize,
+}
+
+/// The level groups the viewer can hide, each as `(data-level value, label)`.
+/// TRACE counts as debug and FATAL as error, as their lines are rare.
+const LEVEL_GROUPS: [(&str, &str); 4] = [("debug", "Debug"), ("info", "Info"), ("warn", "Warn"), ("error", "Error")];
+
+fn level_group(level: LogLevel) -> &'static str {
+    match level {
+        LogLevel::Trace | LogLevel::Debug => "debug",
+        LogLevel::Info => "info",
+        LogLevel::Warn => "warn",
+        LogLevel::Error | LogLevel::Fatal => "error",
+    }
+}
+
+/// Hide `line` unless its text contains `search`, which is in lower case.
+fn show_if_found(line: &web_sys::Element, search: &str) {
+    let found = search.is_empty() || line.text_content().is_some_and(|t| t.to_lowercase().contains(search));
+    if let Err(e) = line.toggle_attribute_with_force("hidden", !found) {
+        log::warn!("failed to filter a log line: {e:?}");
+    }
+}
+
+/// Apply a new search to every line the log box shows.
+fn search_lines(el: &web_sys::HtmlDivElement, search: &str) {
+    let lines = el.children();
+    for i in 0..lines.length() {
+        if let Some(line) = lines.item(i) {
+            show_if_found(&line, search);
+        }
+    }
 }
 
 /// Where the log box's lines should start: no older than the buffer holds, and
@@ -89,8 +121,8 @@ fn first_shown(buffer: &LogBuffer, shown: &Shown) -> usize {
 
 /// Bring the log box's children in line with `buffer`. Only appends new lines
 /// and removes old ones from the top, so a selection, and the lines being
-/// read, stay put. Returns whether anything changed.
-fn sync_lines(el: &web_sys::HtmlDivElement, buffer: &LogBuffer, shown: &mut Shown, keep_place: bool) -> bool {
+/// read, stay put.
+fn sync_lines(el: &web_sys::HtmlDivElement, buffer: &LogBuffer, shown: &mut Shown, keep_place: bool) {
     let first = first_shown(buffer, shown);
     let dropped = first.clamp(shown.first, shown.end) - shown.first;
     if dropped > 0 {
@@ -110,10 +142,10 @@ fn sync_lines(el: &web_sys::HtmlDivElement, buffer: &LogBuffer, shown: &mut Show
     shown.first = first;
     shown.end = shown.end.max(first);
     if shown.end == buffer.pushed {
-        return dropped > 0;
+        return;
     }
     let Some(document) = el.owner_document() else {
-        return dropped > 0;
+        return;
     };
     let lines = document.create_document_fragment();
     for entry in buffer.since(shown.end) {
@@ -123,8 +155,14 @@ fn sync_lines(el: &web_sys::HtmlDivElement, buffer: &LogBuffer, shown: &mut Show
                     Some(event) => {
                         line.set_text_content(Some(&event_text(event, &entry.text)));
                         line.set_class_name(level_class(event.level));
+                        if let Err(e) = line.set_attribute("data-level", level_group(event.level)) {
+                            log::warn!("failed to mark a log line's level: {e:?}");
+                        }
                     }
                     None => line.set_text_content(Some(&entry.text)),
+                }
+                if !shown.search.is_empty() {
+                    show_if_found(&line, &shown.search);
                 }
                 if let Err(e) = lines.append_child(&line) {
                     log::warn!("failed to add a log line: {e:?}");
@@ -137,7 +175,6 @@ fn sync_lines(el: &web_sys::HtmlDivElement, buffer: &LogBuffer, shown: &mut Show
         log::warn!("failed to add log lines: {e:?}");
     }
     shown.end = buffer.pushed;
-    true
 }
 
 /// An event's line as the game writes it to `latest.log`:
@@ -303,6 +340,7 @@ fn log_viewer_header_class() -> &'static str {
         display: flex;
         align-items: center;
         justify-content: flex-end;
+        flex-wrap: wrap;
         gap: 8px;
         padding: 8px 12px;
         background-color: #161616;
@@ -328,6 +366,43 @@ fn log_box_class() -> &'static str {
         & > div:empty::before {
             content: " ";
         }
+        &[data-hide-debug] > [data-level="debug"],
+        &[data-hide-info] > [data-level="info"],
+        &[data-hide-warn] > [data-level="warn"],
+        &[data-hide-error] > [data-level="error"] {
+            display: none;
+        }
+    }
+}
+
+fn controls_class() -> &'static str {
+    css! {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin-right: auto;
+    }
+}
+
+fn level_toggle_class() -> &'static str {
+    css! {
+        padding: 4px 10px;
+        border: 1px solid #2a2a2a;
+        border-radius: 6px;
+        background-color: #222;
+        color: #d4d4d4;
+        font-family: inherit;
+        font-size: 0.8rem;
+        cursor: pointer;
+        transition: opacity 0.12s ease;
+    }
+}
+
+fn level_toggle_off_class() -> &'static str {
+    css! {
+        opacity: 0.4;
+        text-decoration: line-through;
     }
 }
 
@@ -391,31 +466,40 @@ pub fn LogViewer(
         let label = LINES_SHOWN_CHOICES.iter().find(|(c, _)| *c == n).map_or("", |(_, label)| label);
         format!("Last {label} lines")
     });
-    let shown = StoredValue::new_local(Shown { log: None, window: 0, first: 0, end: 0 });
+    let search = RwSignal::new(String::new());
+    let hidden_levels = RwSignal::new(Vec::<&'static str>::new());
+    let level_hidden = move |group: &str| hidden_levels.with(|hidden| hidden.contains(&group));
+    let shown = StoredValue::new_local(Shown { log: None, window: 0, search: String::new(), first: 0, end: 0 });
     let scroll_for_effect = scroll.clone();
     Effect::new(move |_| {
         let current = log.get();
         let window = lines_shown.get();
+        let search = search.with(|s| s.trim().to_lowercase());
+        hidden_levels.track();
         let Some(el) = log_box_ref.get() else {
             return;
         };
         let keep_place = scroll_for_effect.should_skip_scroll();
-        let changed = shown.try_update_value(|shown| {
+        shown.update_value(|shown| {
             if shown.log != current || shown.window != window {
                 el.set_text_content(None);
-                *shown = Shown { log: current.clone(), window, first: 0, end: 0 };
+                *shown = Shown { log: current.clone(), window, search: search.clone(), first: 0, end: 0 };
             }
-            current.as_ref().is_some_and(|log| log.with(|buffer| sync_lines(&el, buffer, shown, keep_place)))
+            if shown.search != search {
+                search_lines(&el, &search);
+                shown.search = search;
+            }
+            if let Some(log) = &current {
+                log.with(|buffer| sync_lines(&el, buffer, shown, keep_place));
+            }
         });
-        if changed == Some(true) {
-            scroll_for_effect.schedule_scroll_to_bottom();
-        }
+        scroll_for_effect.schedule_scroll_to_bottom();
     });
 
     view! {
         <div class=log_viewer_class()>
             <div class=log_viewer_header_class()>
-                <div style="margin-right: auto;">
+                <div class=controls_class()>
                     <Dropdown label=lines_shown_label size=ButtonSize::Small>
                         {move || LINES_SHOWN_CHOICES.map(|(n, label)| view! {
                             <DropdownItem on_select=Callback::new(move |_| {
@@ -426,12 +510,39 @@ pub fn LogViewer(
                             </DropdownItem>
                         })}
                     </Dropdown>
+                    {LEVEL_GROUPS.map(|(group, label)| view! {
+                        <button
+                            type="button"
+                            class=move || cx!(level_toggle_class(), if level_hidden(group) { level_toggle_off_class() } else { "" })
+                            aria-pressed=move || if level_hidden(group) { "false" } else { "true" }
+                            on:click=move |_| hidden_levels.update(|hidden| {
+                                match hidden.iter().position(|g| *g == group) {
+                                    Some(at) => {
+                                        hidden.remove(at);
+                                    }
+                                    None => hidden.push(group),
+                                }
+                            })
+                        >
+                            {label}
+                        </button>
+                    })}
+                    <div style="width: 220px;">
+                        <TextInput
+                            placeholder="Search the log"
+                            on_change=Callback::new(move |text: String| search.set(text))
+                        />
+                    </div>
                 </div>
                 {children()}
             </div>
             <div
                 class=log_box_class()
                 node_ref=log_box_ref
+                data-hide-debug=move || level_hidden("debug").then_some("")
+                data-hide-info=move || level_hidden("info").then_some("")
+                data-hide-warn=move || level_hidden("warn").then_some("")
+                data-hide-error=move || level_hidden("error").then_some("")
                 on:scroll={
                     let scroll = scroll.clone();
                     move |_| scroll.handle_scroll_event()
@@ -468,7 +579,7 @@ mod tests {
     #[test]
     fn the_window_trims_in_batches() {
         let mut buffer = LogBuffer::default();
-        let mut shown = Shown { log: None, window: 1_000, first: 0, end: 0 };
+        let mut shown = Shown { log: None, window: 1_000, search: String::new(), first: 0, end: 0 };
         for i in 0..1_100 {
             buffer.push(LogEntry::plain(i.to_string()));
         }
