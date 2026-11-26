@@ -3,6 +3,17 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.2.9 — 2026-11-26
+
+- Keep output that something else prints while the game is writing a log
+  line. Since 1.2.8, such output could go missing from the play page's log.
+- Keep a log message whole when it contains the text `</log4j:Event>`, instead
+  of showing an empty line and the rest of the message as separate lines.
+- Search the log once you stop typing, so typing no longer lags with 100,000
+  lines shown.
+- Keep following new log lines after you select text near the bottom of the
+  log. Since 1.2.8, the log could stop following until you scrolled down.
+
 ## 1.2.8 — 2026-11-26
 
 - A new app icon: a pot of dark broth with mods sinking into it.
