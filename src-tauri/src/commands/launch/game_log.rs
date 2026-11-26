@@ -33,33 +33,42 @@ pub(super) struct GameLogReader {
 
 impl GameLogReader {
     /// Read one output line, adding the entries it completes to `out`.
-    pub fn line(&mut self, line: String, out: &mut Vec<Entry>) {
-        let starts = !self.in_cdata && line.trim_start().starts_with(EVENT_START);
+    pub fn line(&mut self, mut line: String, out: &mut Vec<Entry>) {
+        let trimmed = line.trim_start();
+        // A message can quote a start tag, but not usually a whole one; taking
+        // a real one as text would hold back the output after it.
+        let starts = trimmed.starts_with(EVENT_START) && (!self.in_cdata || is_event_tag(trimmed));
         if self.pending.is_empty() && !starts {
             out.push(Entry::plain(line));
             return;
         }
         if starts {
             self.flush(out);
-        } else if !self.in_cdata && !line.trim_start().starts_with('<') {
+        } else if !self.in_cdata && !trimmed.starts_with("<log4j:") && !trimmed.starts_with("</log4j:") {
             // Printed by something else while an event was being written.
             out.push(Entry::plain(line));
             return;
         }
-        self.in_cdata = cdata_open_after(&line, self.in_cdata);
-        let ends = !self.in_cdata && line.trim_end().ends_with(EVENT_END);
-        self.pending.push(line);
-        if ends {
-            match read_event(&self.pending.join("\n")) {
-                Some(entry) => {
-                    self.pending.clear();
-                    self.in_cdata = false;
-                    out.push(entry);
-                }
-                None => self.flush(out),
+        let (in_cdata, end) = scan(&line, self.in_cdata);
+        self.in_cdata = in_cdata;
+        let Some(end) = end else {
+            self.pending.push(line);
+            if self.pending.len() >= MAX_EVENT_LINES {
+                self.flush(out);
             }
-        } else if self.pending.len() >= MAX_EVENT_LINES {
-            self.flush(out);
+            return;
+        };
+        let rest = line.split_off(end);
+        self.pending.push(line);
+        match read_event(&self.pending.join("\n")) {
+            Some(entry) => {
+                self.pending.clear();
+                out.push(entry);
+            }
+            None => self.flush(out),
+        }
+        if !rest.trim().is_empty() {
+            self.line(rest, out);
         }
     }
 
@@ -74,18 +83,39 @@ impl GameLogReader {
     }
 }
 
-/// Whether a CDATA section is open at the end of `line`, given whether one was
-/// open at its start.
-fn cdata_open_after(line: &str, mut open: bool) -> bool {
-    let mut rest = line;
+/// Follow `line` through CDATA sections, given whether one was open at its
+/// start. Returns whether one is open at its end, or else where the first
+/// `</log4j:Event>` outside them ends.
+fn scan(line: &str, mut open: bool) -> (bool, Option<usize>) {
+    let mut at = 0;
     loop {
-        let (marker, found) = if open { ("]]>", false) } else { ("<![CDATA[", true) };
-        let Some(at) = rest.find(marker) else {
-            return open;
-        };
-        rest = &rest[at + marker.len()..];
-        open = found;
+        let rest = &line[at..];
+        if open {
+            let Some(close) = rest.find("]]>") else {
+                return (true, None);
+            };
+            at += close + "]]>".len();
+            open = false;
+            continue;
+        }
+        let cdata = rest.find("<![CDATA[");
+        match rest.find(EVENT_END) {
+            Some(end) if cdata.is_none_or(|c| end < c) => return (false, Some(at + end + EVENT_END.len())),
+            _ => match cdata {
+                Some(c) => {
+                    at += c + "<![CDATA[".len();
+                    open = true;
+                }
+                None => return (false, None),
+            },
+        }
     }
+}
+
+/// Whether `line` is a whole event start tag, with a timestamp.
+fn is_event_tag(line: &str) -> bool {
+    let line = line.trim_end();
+    line.ends_with('>') && attribute(line, "timestamp").is_some_and(|t| t.parse::<i64>().is_ok())
 }
 
 /// Read one `log4j:Event` element, as Mojang's `LegacyXMLLayout` writes it.
@@ -252,6 +282,40 @@ mod tests {
             "</log4j:Event>",
         ]);
         assert_eq!(out, [event(5, "t", LogLevel::Info, "dump:\n</log4j:Event>\n<log4j:Event logger=\"y\">\ndone")]);
+    }
+
+    #[test]
+    fn output_after_an_end_tag_on_the_same_line_is_kept() {
+        let out = read(&[
+            r#"<log4j:Event logger="x" timestamp="5" level="INFO" thread="t">"#,
+            "  <log4j:Message><![CDATA[Loaded]]></log4j:Message>",
+            "</log4j:Event>native msg",
+        ]);
+        assert_eq!(out, [event(5, "t", LogLevel::Info, "Loaded"), Entry::plain("native msg".to_string())]);
+    }
+
+    #[test]
+    fn a_new_event_ends_one_cut_off_in_its_message() {
+        let out = read(&[
+            r#"<log4j:Event logger="x" timestamp="5" level="INFO" thread="t">"#,
+            "  <log4j:Message><![CDATA[cut off",
+            r#"<log4j:Event logger="x" timestamp="6" level="INFO" thread="t">"#,
+            "  <log4j:Message><![CDATA[Next]]></log4j:Message>",
+            "</log4j:Event>",
+        ]);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[2], event(6, "t", LogLevel::Info, "Next"));
+    }
+
+    #[test]
+    fn other_output_starting_with_a_tag_is_kept() {
+        let out = read(&[
+            r#"<log4j:Event logger="x" timestamp="5" level="INFO" thread="t">"#,
+            "<init> failed",
+            "  <log4j:Message><![CDATA[Loaded]]></log4j:Message>",
+            "</log4j:Event>",
+        ]);
+        assert_eq!(out, [Entry::plain("<init> failed".to_string()), event(5, "t", LogLevel::Info, "Loaded")]);
     }
 
     #[test]
