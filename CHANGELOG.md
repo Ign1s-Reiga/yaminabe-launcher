@@ -3,6 +3,11 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.2.16 — 2026-11-28
+
+- Keep a carriage return inside a very long log line when the 1 MiB cut
+  falls a few characters after it. 1.2.15 only kept one right before the cut.
+
 ## 1.2.15 — 2026-11-27
 
 - Keep a carriage return inside a very long log line where the 1 MiB cut
