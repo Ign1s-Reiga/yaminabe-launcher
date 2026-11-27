@@ -3,6 +3,15 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.2.11 — 2026-11-27
+
+- Keep the launcher responsive when the game prints one very long line. 1.2.10
+  fixed reading the log entries in such a line, but finding where the line
+  ended could still take many seconds.
+- Show the rest of the game's output when it stops in the middle of a log
+  line, for example a crash report printed after the game crashed while
+  writing one. Until now, that output could stay hidden until the game exited.
+
 ## 1.2.10 — 2026-11-27
 
 - Keep the game's log lines readable when something else prints on the same
