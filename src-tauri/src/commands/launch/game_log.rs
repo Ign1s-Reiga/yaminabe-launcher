@@ -1,4 +1,14 @@
+use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use yaminabe_launcher_shared::ipc::{LogEvent, LogLevel};
+
+/// How long the game's output can stay quiet before an unfinished line or log
+/// event is shown as it came. An event larger than Java's output buffer is
+/// written in parts, so this allows for a long JVM pause between them.
+const HELD_EVENT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Longest line of output held in memory; a longer one, or output that never
+/// prints a newline, is passed on in parts of this size.
+const MAX_LINE_BYTES: usize = 1024 * 1024;
 
 const EVENT_START: &str = "<log4j:Event";
 const EVENT_END: &str = "</log4j:Event>";
@@ -6,34 +16,52 @@ const EVENT_END: &str = "</log4j:Event>";
 /// stray start tag cannot hold back the rest of the output.
 const MAX_EVENT_LINES: usize = 10_000;
 
-/// Splits the game's output bytes into lines. It looks for a newline only in
-/// bytes it has not searched yet, so a very long line is not searched again on
-/// every read.
-#[derive(Default)]
-pub(super) struct Lines {
-    buf: Vec<u8>,
-}
-
-impl Lines {
-    /// Add `bytes`, calling `each` with every line they complete, newline
-    /// included.
-    pub fn push(&mut self, bytes: &[u8], mut each: impl FnMut(&[u8])) {
-        // Between calls `buf` holds no newline, so only the new bytes need a look.
-        let mut from = self.buf.len();
-        self.buf.extend_from_slice(bytes);
-        let mut start = 0;
-        while let Some(at) = self.buf[from..].iter().position(|&b| b == b'\n') {
-            from += at + 1;
-            each(&self.buf[start..from]);
-            start = from;
+/// Read one of the game's output streams until it ends, passing each entry to
+/// `emit`. stdout goes through a [`GameLogReader`]; stderr lines are passed on
+/// as they came, marked `[STDERR]`. Lines are read as bytes and decoded
+/// lossily: Java's stderr uses the system codepage on Windows (e.g. CP932),
+/// and `BufReader::lines()` would stop at the first non-UTF-8 line.
+pub(super) async fn drain(reader: impl AsyncRead + Unpin, is_stderr: bool, mut emit: impl FnMut(Entry)) {
+    let mut reader = BufReader::new(reader);
+    let mut line: Vec<u8> = Vec::new();
+    let mut game_log = GameLogReader::default();
+    let mut entries: Vec<Entry> = Vec::new();
+    let pass_on = |line: &mut Vec<u8>, game_log: &mut GameLogReader, entries: &mut Vec<Entry>| {
+        let raw = String::from_utf8_lossy(line);
+        let trimmed = raw.trim_end_matches(['\r', '\n']);
+        if is_stderr {
+            entries.push(Entry { text: format!("[STDERR] {trimmed}"), event: None });
+        } else {
+            game_log.line(trimmed.to_string(), entries);
         }
-        self.buf.drain(..start);
+        line.clear();
+    };
+    loop {
+        // `line` is always shorter than the cap here, so the limit is never 0.
+        let mut limited = (&mut reader).take((MAX_LINE_BYTES - line.len()) as u64);
+        match tokio::time::timeout(HELD_EVENT_TIMEOUT, limited.read_until(b'\n', &mut line)).await {
+            // Quiet output: pass on what is held back, as a line or event cut
+            // off by a crash would otherwise hide the output after it.
+            Err(_quiet) => {
+                if !line.is_empty() {
+                    pass_on(&mut line, &mut game_log, &mut entries);
+                }
+                game_log.finish(&mut entries);
+            }
+            Ok(Ok(0) | Err(_)) => break,
+            Ok(Ok(_)) => {
+                if line.ends_with(b"\n") || line.len() >= MAX_LINE_BYTES {
+                    pass_on(&mut line, &mut game_log, &mut entries);
+                }
+            }
+        }
+        entries.drain(..).for_each(&mut emit);
     }
-
-    /// The bytes after the last newline.
-    pub fn rest(&self) -> &[u8] {
-        &self.buf
+    if !line.is_empty() {
+        pass_on(&mut line, &mut game_log, &mut entries);
     }
+    game_log.finish(&mut entries);
+    entries.drain(..).for_each(&mut emit);
 }
 
 /// One entry of the game's log, as the viewer shows it.
@@ -339,21 +367,66 @@ mod tests {
         assert!(out.iter().all(|e| *e == event(5, "t", LogLevel::Info, "m")));
     }
 
-    #[test]
-    fn lines_split_across_reads() {
-        let mut lines = Lines::default();
-        let mut out = Vec::new();
-        for bytes in [&b"a\nlo"[..], b"ng ", b"line\nb\nc"] {
-            lines.push(bytes, |line| out.push(line.to_vec()));
+    /// Write `chunks` to a pipe, waiting `pause` between them, and return what
+    /// `drain` passes on with the time (from the start) it did so.
+    async fn drain_chunks(chunks: &[&[u8]], pause: Duration, is_stderr: bool) -> Vec<(Duration, String)> {
+        use tokio::io::AsyncWriteExt;
+        let (mut writer, reader) = tokio::io::duplex(64);
+        let start = tokio::time::Instant::now();
+        let out = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = out.clone();
+        let task = tokio::spawn(drain(reader, is_stderr, move |e| seen.lock().unwrap().push((start.elapsed(), e.text))));
+        for chunk in chunks {
+            writer.write_all(chunk).await.unwrap();
+            tokio::time::sleep(pause).await;
         }
-        assert_eq!(out, [b"a\n".to_vec(), b"long line\n".to_vec(), b"b\n".to_vec()]);
-        assert_eq!(lines.rest(), b"c");
+        drop(writer);
+        task.await.unwrap();
+        std::mem::take(&mut *out.lock().unwrap())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lines_are_read_across_writes() {
+        let out = drain_chunks(&[b"a\nlo", b"ng ", b"line\r\nb\n", b"c"], Duration::ZERO, false).await;
+        let texts: Vec<_> = out.into_iter().map(|(_, t)| t).collect();
+        assert_eq!(texts, ["a", "long line", "b", "c"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stderr_lines_are_marked() {
+        let out = drain_chunks(&[b"Error: \x82\xa0\n"], Duration::ZERO, true).await;
+        assert_eq!(out[0].1, "[STDERR] Error: \u{FFFD}\u{FFFD}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn quiet_output_passes_on_a_cut_off_line_and_event() {
+        let cut_off = concat!(
+            r#"<log4j:Event logger="x" timestamp="5" level="INFO" thread="t">"#,
+            "\n  <log4j:Message><![CDATA[Exception in thr",
+        );
+        let pause = HELD_EVENT_TIMEOUT * 2;
+        let out = drain_chunks(&[cut_off.as_bytes(), b"later\n"], pause, false).await;
+        let texts: Vec<_> = out.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(texts, [
+            r#"<log4j:Event logger="x" timestamp="5" level="INFO" thread="t">"#,
+            "  <log4j:Message><![CDATA[Exception in thr",
+            "later",
+        ]);
+        assert!(out[1].0 < pause, "the cut-off line waited for the output to end");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_line_without_a_newline_is_passed_on_in_parts() {
+        let long = vec![b'x'; MAX_LINE_BYTES * 2 + 10];
+        let out = drain_chunks(&[&long], Duration::ZERO, false).await;
+        let lens: Vec<_> = out.iter().map(|(_, t)| t.len()).collect();
+        assert_eq!(lens, [MAX_LINE_BYTES, MAX_LINE_BYTES, 10]);
     }
 
     /// Taking a whole start tag inside a message as a new event is what keeps
     /// an event cut off mid-message from holding back the output after it. The
-    /// cost is that a message quoting one shows as raw lines, though none of
-    /// them is lost.
+    /// cost is that a message quoting one shows as raw lines. None is lost, but
+    /// the message's tail comes out before the quoted tag, which is still held.
     #[test]
     fn a_message_quoting_a_whole_start_tag_is_shown_raw() {
         let lines = [
@@ -365,11 +438,8 @@ mod tests {
         ];
         let out = read(&lines);
         assert!(out.iter().all(|e| e.event.is_none()));
-        let mut texts: Vec<_> = out.iter().map(|e| e.text.as_str()).collect();
-        texts.sort_unstable();
-        let mut expected = lines.to_vec();
-        expected.sort_unstable();
-        assert_eq!(texts, expected);
+        let texts: Vec<_> = out.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(texts, [lines[0], lines[1], lines[3], lines[2], lines[4]]);
     }
 
     #[test]

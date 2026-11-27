@@ -54,10 +54,10 @@ src-tauri/src/
 │   ├── window.rs            # Startup splash (public/splash.html): close_splashscreen
 │   │                        # shows the hidden main window once the frontend mounts
 │   └── launch/              # launch_instance + kill_instance
-│       ├── mod.rs           # Tauri command body + lifecycle + stdio drain
+│       ├── mod.rs           # Tauri command body + lifecycle
 │       ├── manifest.rs      # load_manifest + merge_manifest (inheritsFrom)
 │       ├── classpath.rs     # extract_natives, build_classpath, find_main_class_jar
-│       ├── game_log.rs      # GameLogReader: the game's log4j XML events → log entries
+│       ├── game_log.rs      # drain (stdout/stderr → log entries) + GameLogReader (log4j XML events)
 │       ├── args.rs          # LaunchVars, substitute_vars, eval_rules, process_args
 │       └── assets.rs        # Asset index sync against resources.download.minecraft.net
 ├── install_task/            # Per-loader install pipelines (vanilla + loader prep)

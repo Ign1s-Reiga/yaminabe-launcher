@@ -5,7 +5,7 @@ mod game_log;
 mod manifest;
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use log::info;
 use tauri::{AppHandle, Emitter, State};
 use yaminabe_launcher_shared::datamodels::{InstanceMeta, LaunchMode};
@@ -24,12 +24,8 @@ use self::args::{
 };
 use self::assets::download_assets;
 use self::classpath::{build_classpath, extract_natives, find_main_class_jar, jar_contains_class};
-use self::game_log::{Entry, GameLogReader, Lines};
+use self::game_log::{drain, Entry};
 use self::manifest::{load_manifest, merge_manifest};
-
-/// How long the game's output can stay quiet before an unfinished log event is
-/// shown as it came. log4j writes an event at once, so a pause means it was cut off.
-const HELD_EVENT_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Emit a progress line (`done: false`) to an instance's `instance-log` stream.
 fn emit_log(app: &AppHandle, instance_id: &str, line: impl Into<String>) {
@@ -529,63 +525,18 @@ async fn spawn_and_drain(
         app.emit(EVT_PROCESS_STARTED, instance_id).ok();
     }
 
-    fn read_line(bytes: &[u8], is_stderr: bool, game_log: &mut GameLogReader, entries: &mut Vec<Entry>) {
-        let raw = String::from_utf8_lossy(bytes);
-        let trimmed = raw.trim_end_matches(['\r', '\n']);
-        if is_stderr {
-            entries.push(Entry { text: format!("[STDERR] {trimmed}"), event: None });
-        } else {
-            game_log.line(trimmed.to_string(), entries);
+    let emit_to = |instance_id: String| {
+        let app = app.clone();
+        move |entry: Entry| {
+            app.emit(EVT_INSTANCE_LOG, LogLine {
+                instance_id: instance_id.clone(), line: entry.text, event: entry.event, done: false, error: None,
+            }).ok();
         }
-    }
-
-    // Read bytes (not lines) and decode lossily — Java stderr is system-
-    // codepage on Windows (e.g. CP932), and `BufReader::lines()` aborts on
-    // non-UTF-8, dropping exactly the early-JVM-error output we need most.
-    async fn drain(
-        mut reader: impl tokio::io::AsyncRead + Unpin,
-        app: AppHandle,
-        instance_id: String,
-        is_stderr: bool,
-    ) {
-        use tokio::io::AsyncReadExt;
-        let mut buf = [0u8; 4096];
-        let mut lines = Lines::default();
-        let mut game_log = GameLogReader::default();
-        let mut entries: Vec<Entry> = Vec::new();
-        let emit = |entries: &mut Vec<Entry>| {
-            for entry in entries.drain(..) {
-                app.emit(EVT_INSTANCE_LOG, LogLine {
-                    instance_id: instance_id.clone(), line: entry.text, event: entry.event, done: false, error: None,
-                }).ok();
-            }
-        };
-        loop {
-            match tokio::time::timeout(HELD_EVENT_TIMEOUT, reader.read(&mut buf)).await {
-                // Quiet output: pass on an event held back, as one cut off by a
-                // crash would otherwise hide the output after it.
-                Err(_quiet) => {
-                    game_log.finish(&mut entries);
-                    emit(&mut entries);
-                }
-                Ok(Ok(0) | Err(_)) => break,
-                Ok(Ok(n)) => {
-                    lines.push(&buf[..n], |line| read_line(line, is_stderr, &mut game_log, &mut entries));
-                    emit(&mut entries);
-                }
-            }
-        }
-        if !lines.rest().is_empty() {
-            read_line(lines.rest(), is_stderr, &mut game_log, &mut entries);
-        }
-        game_log.finish(&mut entries);
-        emit(&mut entries);
-    }
-
+    };
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
-    let t1 = tokio::spawn(drain(stdout, app.clone(), instance_id.to_string(), false));
-    let t2 = tokio::spawn(drain(stderr, app.clone(), instance_id.to_string(), true));
+    let t1 = tokio::spawn(drain(stdout, false, emit_to(instance_id.to_string())));
+    let t2 = tokio::spawn(drain(stderr, true, emit_to(instance_id.to_string())));
 
     let status = child.wait().await?;
     // The active-launches entry is cleared by launch_instance's guard on return.
