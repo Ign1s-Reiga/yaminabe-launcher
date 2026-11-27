@@ -38,6 +38,9 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 keyring-core = "1"
 base64 = "0.22"
 
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1.0.0", default-features = false, features = ["keychain"] }
 
