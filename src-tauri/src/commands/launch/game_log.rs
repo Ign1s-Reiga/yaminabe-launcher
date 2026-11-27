@@ -6,6 +6,36 @@ const EVENT_END: &str = "</log4j:Event>";
 /// stray start tag cannot hold back the rest of the output.
 const MAX_EVENT_LINES: usize = 10_000;
 
+/// Splits the game's output bytes into lines. It looks for a newline only in
+/// bytes it has not searched yet, so a very long line is not searched again on
+/// every read.
+#[derive(Default)]
+pub(super) struct Lines {
+    buf: Vec<u8>,
+}
+
+impl Lines {
+    /// Add `bytes`, calling `each` with every line they complete, newline
+    /// included.
+    pub fn push(&mut self, bytes: &[u8], mut each: impl FnMut(&[u8])) {
+        // Between calls `buf` holds no newline, so only the new bytes need a look.
+        let mut from = self.buf.len();
+        self.buf.extend_from_slice(bytes);
+        let mut start = 0;
+        while let Some(at) = self.buf[from..].iter().position(|&b| b == b'\n') {
+            from += at + 1;
+            each(&self.buf[start..from]);
+            start = from;
+        }
+        self.buf.drain(..start);
+    }
+
+    /// The bytes after the last newline.
+    pub fn rest(&self) -> &[u8] {
+        &self.buf
+    }
+}
+
 /// One entry of the game's log, as the viewer shows it.
 #[derive(Debug, PartialEq)]
 pub(super) struct Entry {
@@ -79,7 +109,8 @@ impl GameLogReader {
         (!rest.trim().is_empty()).then_some(rest)
     }
 
-    /// Pass on what is left of an event the output ended in the middle of.
+    /// Pass on what is left of an event the output ended, or stopped for a
+    /// while, in the middle of.
     pub fn finish(&mut self, out: &mut Vec<Entry>) {
         self.flush(out);
     }
@@ -306,6 +337,39 @@ mod tests {
         let out = read(&[&one.repeat(100_000)]);
         assert_eq!(out.len(), 100_000);
         assert!(out.iter().all(|e| *e == event(5, "t", LogLevel::Info, "m")));
+    }
+
+    #[test]
+    fn lines_split_across_reads() {
+        let mut lines = Lines::default();
+        let mut out = Vec::new();
+        for bytes in [&b"a\nlo"[..], b"ng ", b"line\nb\nc"] {
+            lines.push(bytes, |line| out.push(line.to_vec()));
+        }
+        assert_eq!(out, [b"a\n".to_vec(), b"long line\n".to_vec(), b"b\n".to_vec()]);
+        assert_eq!(lines.rest(), b"c");
+    }
+
+    /// Taking a whole start tag inside a message as a new event is what keeps
+    /// an event cut off mid-message from holding back the output after it. The
+    /// cost is that a message quoting one shows as raw lines, though none of
+    /// them is lost.
+    #[test]
+    fn a_message_quoting_a_whole_start_tag_is_shown_raw() {
+        let lines = [
+            r#"<log4j:Event logger="x" timestamp="5" level="INFO" thread="t">"#,
+            "  <log4j:Message><![CDATA[dump:",
+            r#"<log4j:Event logger="a" timestamp="1" level="INFO" thread="q">"#,
+            "done]]></log4j:Message>",
+            "</log4j:Event>",
+        ];
+        let out = read(&lines);
+        assert!(out.iter().all(|e| e.event.is_none()));
+        let mut texts: Vec<_> = out.iter().map(|e| e.text.as_str()).collect();
+        texts.sort_unstable();
+        let mut expected = lines.to_vec();
+        expected.sort_unstable();
+        assert_eq!(texts, expected);
     }
 
     #[test]
