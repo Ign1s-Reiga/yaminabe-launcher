@@ -43,9 +43,8 @@ pub(super) async fn drain(reader: impl AsyncRead + Unpin, is_stderr: bool, mut e
             game_log.line(text.to_string(), entries);
         }
     };
-    // Pass on what of a line cut short is ready, keeping the rest for later.
-    let pass_on_part = |line: &mut Vec<u8>, continues: &mut bool, game_log: &mut GameLogReader, entries: &mut Vec<Entry>| {
-        let ready = ready_len(line);
+    // Pass on the first `ready` bytes of a line cut short, keeping the rest.
+    let pass_on_part = |line: &mut Vec<u8>, ready: usize, continues: &mut bool, game_log: &mut GameLogReader, entries: &mut Vec<Entry>| {
         if ready > 0 {
             pass_on(&line[..ready], *continues, game_log, entries);
             line.drain(..ready);
@@ -59,7 +58,8 @@ pub(super) async fn drain(reader: impl AsyncRead + Unpin, is_stderr: bool, mut e
             // Quiet output: pass on what is held back, as a line or event cut
             // off by a crash would otherwise hide the output after it.
             Err(_quiet) => {
-                pass_on_part(&mut line, &mut continues, &mut game_log, &mut entries);
+                let ready = ready_len(&line);
+                pass_on_part(&mut line, ready, &mut continues, &mut game_log, &mut entries);
                 game_log.finish(&mut entries);
                 entries.drain(..).for_each(&mut emit);
                 continue;
@@ -80,7 +80,8 @@ pub(super) async fn drain(reader: impl AsyncRead + Unpin, is_stderr: bool, mut e
             line.clear();
             continues = false;
         } else if line.len() >= MAX_LINE_BYTES {
-            pass_on_part(&mut line, &mut continues, &mut game_log, &mut entries);
+            let ready = ready_len(&line).min(line.len() - marker_start_len(&line));
+            pass_on_part(&mut line, ready, &mut continues, &mut game_log, &mut entries);
         }
         entries.drain(..).for_each(&mut emit);
     }
@@ -91,13 +92,11 @@ pub(super) async fn drain(reader: impl AsyncRead + Unpin, is_stderr: bool, mut e
     entries.drain(..).for_each(&mut emit);
 }
 
-/// How much of a line cut short can be passed on now: all but a trailing `\r`,
-/// or a UTF-8 character not finished yet, which wait for the next part.
+/// How much of a line cut short can be passed on now: all but a UTF-8
+/// character not finished yet, which waits for the next part. A `\r\n` split
+/// by the cut needs no care, as the `\n` alone makes an empty part.
 fn ready_len(bytes: &[u8]) -> usize {
     let len = bytes.len();
-    if bytes.ends_with(b"\r") {
-        return len - 1;
-    }
     for back in 1..=len.min(3) {
         let byte = bytes[len - back];
         if byte & 0xC0 != 0x80 {
@@ -111,6 +110,16 @@ fn ready_len(bytes: &[u8]) -> usize {
         }
     }
     len
+}
+
+/// How many bytes at the end of a line cut short begin a marker that [`scan`]
+/// looks for; they wait for the next part so the marker is read whole.
+fn marker_start_len(bytes: &[u8]) -> usize {
+    ["]]>", "<![CDATA[", EVENT_END]
+        .iter()
+        .flat_map(|marker| (1..marker.len()).filter(move |&k| bytes.ends_with(&marker.as_bytes()[..k])))
+        .max()
+        .unwrap_or(0)
 }
 
 /// One entry of the game's log, as the viewer shows it.
@@ -139,6 +148,9 @@ pub(super) struct GameLogReader {
     /// Whether the pending event's last line left a CDATA section open, so the
     /// next line is part of a message rather than the XML around it.
     in_cdata: bool,
+    /// Whether the line being read went into `pending`, so a later part of it
+    /// joins the event rather than showing on its own.
+    line_held: bool,
 }
 
 impl GameLogReader {
@@ -165,11 +177,12 @@ impl GameLogReader {
     /// Read `part` of an output line. Returns what follows an event that ended
     /// in it, when there is more to read.
     fn read_part<'a>(&mut self, part: &'a str, continues: bool, out: &mut Vec<Entry>) -> Option<&'a str> {
-        if continues && self.pending.is_empty() {
+        if continues && !self.line_held {
             out.push(Entry::plain(part.to_string()));
             return None;
         }
         if !continues {
+            self.line_held = false;
             let trimmed = part.trim_start();
             // A message can quote a start tag, but not usually a whole one;
             // taking a real one as text would hold back the output after it.
@@ -194,6 +207,7 @@ impl GameLogReader {
             Some(last) if continues => last.push_str(held),
             _ => self.pending.push(held.to_string()),
         }
+        self.line_held = true;
         let Some(end) = end else {
             if self.pending.len() >= MAX_EVENT_LINES || self.pending_bytes >= MAX_EVENT_BYTES {
                 self.flush(out);
@@ -204,6 +218,7 @@ impl GameLogReader {
             Some(entry) => {
                 self.pending.clear();
                 self.pending_bytes = 0;
+                self.line_held = false;
                 out.push(entry);
             }
             None => self.flush(out),
@@ -221,6 +236,7 @@ impl GameLogReader {
     fn flush(&mut self, out: &mut Vec<Entry>) {
         self.in_cdata = false;
         self.pending_bytes = 0;
+        self.line_held = false;
         out.extend(self.pending.drain(..).map(Entry::plain));
     }
 }
@@ -520,6 +536,41 @@ mod tests {
         let out = drain_chunks(&[&long], Duration::ZERO, false).await;
         let texts: Vec<_> = out.into_iter().map(|(_, t)| t).collect();
         assert_eq!(texts, ["x".repeat(MAX_LINE_BYTES - 1)]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_marker_cut_by_the_line_cap_is_read_whole() {
+        let start = r#"<log4j:Event logger="x" timestamp="5" level="INFO" thread="t">"#;
+        let prefix = "  <log4j:Message><![CDATA[";
+        let text = "x".repeat(MAX_LINE_BYTES - prefix.len() - 1);
+        let output = format!("{start}\n{prefix}{text}]]></log4j:Message>\n</log4j:Event>\n");
+        let out = drain_chunks(&[output.as_bytes()], Duration::ZERO, false).await;
+        let texts: Vec<_> = out.into_iter().map(|(_, t)| t).collect();
+        assert_eq!(texts, [text]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_carriage_return_before_a_pause_is_not_carried_over() {
+        let pause = HELD_EVENT_TIMEOUT * 2;
+        let out = drain_chunks(&[b"50%\r", b"60%\n"], pause, false).await;
+        let texts: Vec<_> = out.into_iter().map(|(_, t)| t).collect();
+        assert_eq!(texts, ["50%", "60%"]);
+    }
+
+    #[test]
+    fn other_output_in_parts_stays_out_of_an_event() {
+        let mut reader = GameLogReader::default();
+        let mut out = Vec::new();
+        reader.line(r#"<log4j:Event logger="x" timestamp="5" level="INFO" thread="t">"#.to_string(), &mut out);
+        reader.line("native".to_string(), &mut out);
+        reader.rest_of_line(" warning".to_string(), &mut out);
+        reader.line("  <log4j:Message><![CDATA[Loaded]]></log4j:Message>".to_string(), &mut out);
+        reader.line("</log4j:Event>".to_string(), &mut out);
+        assert_eq!(out, [
+            Entry::plain("native".to_string()),
+            Entry::plain(" warning".to_string()),
+            event(5, "t", LogLevel::Info, "Loaded"),
+        ]);
     }
 
     #[test]
