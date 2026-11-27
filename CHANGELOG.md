@@ -3,6 +3,18 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.2.13 — 2026-11-27
+
+- Count the 5 seconds of quiet output from the last thing the game printed.
+  Since 1.2.12, a line that arrived slowly could be cut in two even though
+  the output never went quiet.
+- Keep characters such as Japanese text, and line breaks, whole where a very
+  long line is shown in parts.
+- Keep a very long message line in one piece within its log line, instead of
+  breaking it every 1 MiB.
+- Show a huge unfinished log line once it passes 8 MiB, instead of holding it
+  in memory.
+
 ## 1.2.12 — 2026-11-27
 
 - Show a line the game stopped writing halfway once its output goes quiet,
