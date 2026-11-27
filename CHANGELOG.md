@@ -3,6 +3,15 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.2.15 — 2026-11-27
+
+- Keep a carriage return inside a very long log line where the 1 MiB cut
+  falls right after it. Since 1.2.14, it was dropped.
+- Stop output that is just a carriage return, followed by a pause, from
+  showing as an empty line.
+- Drop the carriage return that some progress output writes before each
+  update, instead of showing it at the start of the line.
+
 ## 1.2.14 — 2026-11-27
 
 - Keep another program's very long output line out of a log line the game
