@@ -3,6 +3,15 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.2.14 — 2026-11-27
+
+- Keep another program's very long output line out of a log line the game
+  was writing at the same time. Since 1.2.13, its rest could be joined to it.
+- Read a log line whole when the 1 MiB cut of a very long line falls inside
+  the marker that ends its message, instead of showing it as raw lines.
+- Stop a stray carriage return from appearing at the start of a line after
+  output ending in one, such as a progress bar, goes quiet.
+
 ## 1.2.13 — 2026-11-27
 
 - Count the 5 seconds of quiet output from the last thing the game printed.
