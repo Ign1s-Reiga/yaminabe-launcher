@@ -24,33 +24,7 @@ const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
 /// and `BufReader::lines()` would stop at the first non-UTF-8 line.
 pub(super) async fn drain(reader: impl AsyncRead + Unpin, is_stderr: bool, mut emit: impl FnMut(Entry)) {
     let mut reader = BufReader::new(reader);
-    let mut line: Vec<u8> = Vec::new();
-    // Whether part of `line` was passed on already, so the rest continues it.
-    let mut continues = false;
-    let mut game_log = GameLogReader::default();
-    let mut entries: Vec<Entry> = Vec::new();
-    let pass_on = |bytes: &[u8], continues: bool, game_log: &mut GameLogReader, entries: &mut Vec<Entry>| {
-        let raw = String::from_utf8_lossy(bytes);
-        let text = raw.trim_end_matches(['\r', '\n']);
-        if continues && text.is_empty() {
-            return;
-        }
-        if is_stderr {
-            entries.push(Entry { text: format!("[STDERR] {text}"), event: None });
-        } else if continues {
-            game_log.rest_of_line(text.to_string(), entries);
-        } else {
-            game_log.line(text.to_string(), entries);
-        }
-    };
-    // Pass on the first `ready` bytes of a line cut short, keeping the rest.
-    let pass_on_part = |line: &mut Vec<u8>, ready: usize, continues: &mut bool, game_log: &mut GameLogReader, entries: &mut Vec<Entry>| {
-        if ready > 0 {
-            pass_on(&line[..ready], *continues, game_log, entries);
-            line.drain(..ready);
-            *continues = true;
-        }
-    };
+    let mut out = OutputLine { is_stderr, ..OutputLine::default() };
     loop {
         // The wait is for the next bytes, not the whole line, so a line that
         // arrives slowly is not cut while the output keeps coming.
@@ -58,43 +32,84 @@ pub(super) async fn drain(reader: impl AsyncRead + Unpin, is_stderr: bool, mut e
             // Quiet output: pass on what is held back, as a line or event cut
             // off by a crash would otherwise hide the output after it.
             Err(_quiet) => {
-                let ready = ready_len(&line);
-                pass_on_part(&mut line, ready, &mut continues, &mut game_log, &mut entries);
-                game_log.finish(&mut entries);
-                entries.drain(..).for_each(&mut emit);
+                let ready = ready_len(&out.line);
+                if ready > 0 {
+                    out.pass_on(ready, false);
+                }
+                out.game_log.finish(&mut out.entries);
+                out.entries.drain(..).for_each(&mut emit);
                 continue;
             }
             Ok(Err(_)) => break,
             Ok(Ok([])) => break,
             Ok(Ok(chunk)) => chunk,
         };
-        let room = MAX_LINE_BYTES - line.len();
+        let room = MAX_LINE_BYTES - out.line.len();
         let (taken, ends) = match chunk[..chunk.len().min(room)].iter().position(|&b| b == b'\n') {
             Some(at) => (at + 1, true),
             None => (chunk.len().min(room), false),
         };
-        line.extend_from_slice(&chunk[..taken]);
+        out.line.extend_from_slice(&chunk[..taken]);
         reader.consume(taken);
         if ends {
-            pass_on(&line, continues, &mut game_log, &mut entries);
-            line.clear();
-            continues = false;
-        } else if line.len() >= MAX_LINE_BYTES {
-            let ready = ready_len(&line).min(line.len() - marker_start_len(&line));
-            pass_on_part(&mut line, ready, &mut continues, &mut game_log, &mut entries);
+            out.pass_on(out.line.len(), false);
+        } else if out.line.len() >= MAX_LINE_BYTES {
+            let ready = ready_len(&out.line).min(out.line.len() - held_start_len(&out.line));
+            out.pass_on(ready, true);
         }
-        entries.drain(..).for_each(&mut emit);
+        out.entries.drain(..).for_each(&mut emit);
     }
-    if !line.is_empty() {
-        pass_on(&line, continues, &mut game_log, &mut entries);
+    if !out.line.is_empty() {
+        out.pass_on(out.line.len(), false);
     }
-    game_log.finish(&mut entries);
-    entries.drain(..).for_each(&mut emit);
+    out.game_log.finish(&mut out.entries);
+    out.entries.drain(..).for_each(&mut emit);
+}
+
+/// The line of output [`drain`] is reading, which it passes on in parts when
+/// the line is longer than [`MAX_LINE_BYTES`] or the output goes quiet.
+#[derive(Default)]
+struct OutputLine {
+    is_stderr: bool,
+    line: Vec<u8>,
+    /// Whether part of `line` was passed on already, so the rest continues it.
+    continues: bool,
+    /// Whether the size cap cut the line just before `line`, so it starts in
+    /// the middle of the text rather than where an entry starts.
+    after_cap: bool,
+    game_log: GameLogReader,
+    entries: Vec<Entry>,
+}
+
+impl OutputLine {
+    /// Pass on the first `len` bytes of `line`, which end the line, or were
+    /// cut there by the size cap (`by_cap`) or by quiet output.
+    fn pass_on(&mut self, len: usize, by_cap: bool) {
+        let ends = self.line[..len].ends_with(b"\n");
+        let text = {
+            let raw = String::from_utf8_lossy(&self.line[..len]);
+            let text = raw.trim_end_matches(['\r', '\n']);
+            if self.after_cap { text.to_string() } else { text.trim_start_matches('\r').to_string() }
+        };
+        self.line.drain(..len);
+        // Nothing left is a lone `\r`, or the end of a line split off by a cut.
+        let skip = text.is_empty() && (self.continues || !ends);
+        if !skip {
+            if self.is_stderr {
+                self.entries.push(Entry::plain(format!("[STDERR] {text}")));
+            } else if self.continues {
+                self.game_log.rest_of_line(text, &mut self.entries);
+            } else {
+                self.game_log.line(text, &mut self.entries);
+            }
+        }
+        self.continues = !ends && (self.continues || !skip);
+        self.after_cap = by_cap;
+    }
 }
 
 /// How much of a line cut short can be passed on now: all but a UTF-8
-/// character not finished yet, which waits for the next part. A `\r\n` split
-/// by the cut needs no care, as the `\n` alone makes an empty part.
+/// character not finished yet, which waits for the next part.
 fn ready_len(bytes: &[u8]) -> usize {
     let len = bytes.len();
     for back in 1..=len.min(3) {
@@ -112,10 +127,11 @@ fn ready_len(bytes: &[u8]) -> usize {
     len
 }
 
-/// How many bytes at the end of a line cut short begin a marker that [`scan`]
-/// looks for; they wait for the next part so the marker is read whole.
-fn marker_start_len(bytes: &[u8]) -> usize {
-    ["]]>", "<![CDATA[", EVENT_END]
+/// How many bytes at the end of a line cut at the size cap begin a `\r\n`, or
+/// a marker that [`scan`] looks for; they wait for the next part so each is
+/// read whole, and a `\r` inside the text is kept.
+fn held_start_len(bytes: &[u8]) -> usize {
+    ["\r\n", "]]>", "<![CDATA[", EVENT_END]
         .iter()
         .flat_map(|marker| (1..marker.len()).filter(move |&k| bytes.ends_with(&marker.as_bytes()[..k])))
         .max()
@@ -550,11 +566,22 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_carriage_return_before_a_pause_is_not_carried_over() {
+    async fn carriage_returns_around_a_pause_are_dropped() {
         let pause = HELD_EVENT_TIMEOUT * 2;
-        let out = drain_chunks(&[b"50%\r", b"60%\n"], pause, false).await;
+        let out = drain_chunks(&[b"\r", b"\r50%\r", b"\r60%\n"], pause, false).await;
         let texts: Vec<_> = out.into_iter().map(|(_, t)| t).collect();
         assert_eq!(texts, ["50%", "60%"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_carriage_return_cut_by_the_line_cap_is_kept() {
+        let start = r#"<log4j:Event logger="x" timestamp="5" level="INFO" thread="t">"#;
+        let prefix = "  <log4j:Message><![CDATA[";
+        let text = "x".repeat(MAX_LINE_BYTES - prefix.len() - 1);
+        let output = format!("{start}\n{prefix}{text}\rdone]]></log4j:Message>\n</log4j:Event>\n");
+        let out = drain_chunks(&[output.as_bytes()], Duration::ZERO, false).await;
+        let texts: Vec<_> = out.into_iter().map(|(_, t)| t).collect();
+        assert_eq!(texts, [format!("{text}\rdone")]);
     }
 
     #[test]
