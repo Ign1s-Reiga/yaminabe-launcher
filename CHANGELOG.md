@@ -3,6 +3,16 @@
 Notable changes to Yaminabe Launcher. The launcher reads this file directly, so
 each release is a `## <version> — <date>` heading followed by bullet points.
 
+## 1.2.12 — 2026-11-27
+
+- Show a line the game stopped writing halfway once its output goes quiet,
+  instead of hiding it until more output arrives or the game exits.
+- Wait 5 seconds of quiet output, not 1, before treating a log line as cut
+  off. A long pause in a big modpack while the game was writing a long error
+  could break it into raw lines.
+- Show output that never ends its line, such as a progress bar, in parts,
+  instead of holding it in memory for the whole session.
+
 ## 1.2.11 — 2026-11-27
 
 - Keep the launcher responsive when the game prints one very long line. 1.2.10
