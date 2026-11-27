@@ -5,7 +5,7 @@ mod game_log;
 mod manifest;
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use log::info;
 use tauri::{AppHandle, Emitter, State};
 use yaminabe_launcher_shared::datamodels::{InstanceMeta, LaunchMode};
@@ -24,8 +24,12 @@ use self::args::{
 };
 use self::assets::download_assets;
 use self::classpath::{build_classpath, extract_natives, find_main_class_jar, jar_contains_class};
-use self::game_log::{Entry, GameLogReader};
+use self::game_log::{Entry, GameLogReader, Lines};
 use self::manifest::{load_manifest, merge_manifest};
+
+/// How long the game's output can stay quiet before an unfinished log event is
+/// shown as it came. log4j writes an event at once, so a pause means it was cut off.
+const HELD_EVENT_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Emit a progress line (`done: false`) to an instance's `instance-log` stream.
 fn emit_log(app: &AppHandle, instance_id: &str, line: impl Into<String>) {
@@ -546,7 +550,7 @@ async fn spawn_and_drain(
     ) {
         use tokio::io::AsyncReadExt;
         let mut buf = [0u8; 4096];
-        let mut leftover: Vec<u8> = Vec::new();
+        let mut lines = Lines::default();
         let mut game_log = GameLogReader::default();
         let mut entries: Vec<Entry> = Vec::new();
         let emit = |entries: &mut Vec<Entry>| {
@@ -557,20 +561,22 @@ async fn spawn_and_drain(
             }
         };
         loop {
-            match reader.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    leftover.extend_from_slice(&buf[..n]);
-                    while let Some(pos) = leftover.iter().position(|&b| b == b'\n') {
-                        let line_bytes: Vec<u8> = leftover.drain(..=pos).collect();
-                        read_line(&line_bytes, is_stderr, &mut game_log, &mut entries);
-                    }
+            match tokio::time::timeout(HELD_EVENT_TIMEOUT, reader.read(&mut buf)).await {
+                // Quiet output: pass on an event held back, as one cut off by a
+                // crash would otherwise hide the output after it.
+                Err(_quiet) => {
+                    game_log.finish(&mut entries);
+                    emit(&mut entries);
+                }
+                Ok(Ok(0) | Err(_)) => break,
+                Ok(Ok(n)) => {
+                    lines.push(&buf[..n], |line| read_line(line, is_stderr, &mut game_log, &mut entries));
                     emit(&mut entries);
                 }
             }
         }
-        if !leftover.is_empty() {
-            read_line(&leftover, is_stderr, &mut game_log, &mut entries);
+        if !lines.rest().is_empty() {
+            read_line(lines.rest(), is_stderr, &mut game_log, &mut entries);
         }
         game_log.finish(&mut entries);
         emit(&mut entries);
