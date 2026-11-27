@@ -88,7 +88,8 @@ impl OutputLine {
         let ends = self.line[..len].ends_with(b"\n");
         let text = {
             let raw = String::from_utf8_lossy(&self.line[..len]);
-            let text = raw.trim_end_matches(['\r', '\n']);
+            // A part the cap cut ends in the middle of the text, not at a line end.
+            let text = if by_cap { &raw[..] } else { raw.trim_end_matches(['\r', '\n']) };
             if self.after_cap { text.to_string() } else { text.trim_start_matches('\r').to_string() }
         };
         self.line.drain(..len);
@@ -577,11 +578,14 @@ mod tests {
     async fn a_carriage_return_cut_by_the_line_cap_is_kept() {
         let start = r#"<log4j:Event logger="x" timestamp="5" level="INFO" thread="t">"#;
         let prefix = "  <log4j:Message><![CDATA[";
-        let text = "x".repeat(MAX_LINE_BYTES - prefix.len() - 1);
-        let output = format!("{start}\n{prefix}{text}\rdone]]></log4j:Message>\n</log4j:Event>\n");
-        let out = drain_chunks(&[output.as_bytes()], Duration::ZERO, false).await;
-        let texts: Vec<_> = out.into_iter().map(|(_, t)| t).collect();
-        assert_eq!(texts, [format!("{text}\rdone")]);
+        // The cap falls right after the `\r`, and after a `]` that follows it.
+        for (before_cap, after_cap) in [("\r", "done"), ("\r]", "x")] {
+            let text = "x".repeat(MAX_LINE_BYTES - prefix.len() - before_cap.len());
+            let output = format!("{start}\n{prefix}{text}{before_cap}{after_cap}]]></log4j:Message>\n</log4j:Event>\n");
+            let out = drain_chunks(&[output.as_bytes()], Duration::ZERO, false).await;
+            let texts: Vec<_> = out.into_iter().map(|(_, t)| t).collect();
+            assert_eq!(texts, [format!("{text}{before_cap}{after_cap}")]);
+        }
     }
 
     #[test]
